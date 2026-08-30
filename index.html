@@ -2797,6 +2797,13 @@ ${restHtml}
   // Deep link: index.html?sample opens straight into the showcase note
   // (used by the "Try Proofnote" link and the README hero screenshot).
   if (/[?&]sample\b/.test(location.search)) loadSampleNote();
+  // index.html?diag opens the import dialog pre-filled with a broken note, so
+  // the diagnostics UI can be shown/documented without manual interaction.
+  if (/[?&]diag\b/.test(location.search)) {
+    openImportDialog();
+    document.getElementById("importPasteText").value = '{"meta":{"title":"Broken"},"core":{"problem":"\\sqrt{2}"}}';
+    processImportedText(document.getElementById("importPasteText").value);
+  }
   initBoundFields(document);
   renderWhyList();
   buildBlockEditor(document.getElementById(blockEditorId("core.evidence")), "core.evidence");
