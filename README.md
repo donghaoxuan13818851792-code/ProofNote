@@ -10,7 +10,7 @@ with precise diagnostics, and export beautiful standalone HTML — entirely offl
 
 **AI-friendly · LaTeX-safe · Structured · Diagnosable · Portable**
 
-[Try Proofnote](index.html?sample) · [AI authoring guide](docs/ai-authoring.md) · [Format schema](schema/solution-note-1.0.schema.json) · [Examples](examples/)
+[Try Proofnote](https://donghaoxuan13818851792-code.github.io/proofnote/?sample) · [AI authoring guide](docs/ai-authoring.md) · [Format schema](schema/solution-note-1.0.schema.json) · [Examples](examples/)
 
 <p align="center">
   <img src="docs/assets/proofnote-hero.png" width="900" alt="Proofnote — the Gaussian integer showcase note, rendered">

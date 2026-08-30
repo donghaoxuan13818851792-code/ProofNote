@@ -1,5 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://donghaoxuan13818851792-code.github.io/proofnote/schema/solution-note-1.0.schema.json",
   "title": "Solution Note Format 1.0",
   "description": "Canonical interchange format for a Solution Note — a portable, validated record of a mathematical or computer-science result. Long text fields accept EITHER a plain Markdown string (compact form, what an AI naturally produces) OR a content-block array (what the block editor produces); the importer normalizes both. Fields marked [string] are string-only; fields marked [string | blocks] accept either form.",
   "type": "object",
