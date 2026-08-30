@@ -1,8 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://example.com/solution-note/1.0/schema.json",
   "title": "Solution Note Format 1.0",
-  "description": "Canonical interchange format for a Solution Note — a portable, validated record of a mathematical or computer-science result. Long text fields accept EITHER a plain Markdown string (compact form, what an AI naturally produces) OR a content-block array (what the block editor produces); the importer normalizes both.",
+  "description": "Canonical interchange format for a Solution Note — a portable, validated record of a mathematical or computer-science result. Long text fields accept EITHER a plain Markdown string (compact form, what an AI naturally produces) OR a content-block array (what the block editor produces); the importer normalizes both. Fields marked [string] are string-only; fields marked [string | blocks] accept either form.",
   "type": "object",
   "required": ["format", "version", "meta", "core"],
   "properties": {
@@ -34,7 +33,7 @@
       "type": "object",
       "description": "The essential content of the note.",
       "properties": {
-        "problem": { "type": ["string", "array"], "description": "Problem statement (Markdown string or block array)." },
+        "problem": { "type": "string", "description": "Problem statement. [string] — the importer treats this as a Markdown string." },
         "result": {
           "type": "object",
           "properties": {
@@ -42,8 +41,8 @@
               "enum": ["Theorem", "Main Result", "Construction", "Counterexample", "Computed Value", "Bound", "Formula", "Conjecture", "Algorithmic Result"],
               "description": "Kind of result. Invalid values warn and are kept as-is."
             },
-            "statement": { "type": ["string", "array"], "description": "The principal result, stated precisely." },
-            "explanation": { "type": ["string", "array"], "description": "What the result means, in plain terms." }
+            "statement": { "type": "string", "description": "The principal result, stated precisely. [string]" },
+            "explanation": { "type": "string", "description": "What the result means, in plain terms. [string]" }
           }
         },
         "whyItWorks": {
@@ -52,7 +51,7 @@
           "items": {
             "oneOf": [
               { "type": "string" },
-              { "type": "object", "properties": { "title": { "type": "string" }, "body": { "type": ["string", "array"] } } }
+              { "type": "object", "properties": { "title": { "type": "string" }, "body": { "type": "string" } } }
             ]
           }
         },

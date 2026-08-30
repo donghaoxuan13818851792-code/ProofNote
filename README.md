@@ -10,7 +10,7 @@ with precise diagnostics, and export beautiful standalone HTML — entirely offl
 
 **AI-friendly · LaTeX-safe · Structured · Diagnosable · Portable**
 
-[Try Proofnote](index.html?sample) · [View the format](docs/ai-authoring.md) · [Examples](examples/)
+[Try Proofnote](index.html?sample) · [AI authoring guide](docs/ai-authoring.md) · [Format schema](schema/solution-note-1.0.schema.json) · [Examples](examples/)
 
 <p align="center">
   <img src="docs/assets/proofnote-hero.png" width="900" alt="Proofnote — the Gaussian integer showcase note, rendered">
@@ -87,7 +87,7 @@ JSON errors are reported with structure, not jargon. See
 
 ```
 proofnote/
-├── index.html              ← the whole app (single file, self-contained)
+├── index.html              ← app entry point; runs fully offline from the clone
 ├── src/doc-page.js         ← preview page shell
 ├── vendor/                 ← vendored dependencies (KaTeX, fonts, design system)
 ├── schema/                 ← Solution Note Format 1.0 JSON Schema
@@ -95,6 +95,10 @@ proofnote/
 ├── examples/               ← sample notes (incl. the Gaussian integer showcase)
 └── tests/                  ← regression + i18n suites (npm test)
 ```
+
+> Note: `index.html` is the app's entry point and needs its `vendor/` and `src/`
+> resources — it is *not* a single self-contained file. The **exported HTML**
+> (via the editor) is the truly self-contained, offline artifact.
 
 ## License
 
