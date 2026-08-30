@@ -1,0 +1,13 @@
+{
+  "name": "proofnote",
+  "version": "3.1.0-rc.1",
+  "description": "Proofnote — structured math, without the JSON pain. An editor, validator and renderer for the Solution Note format.",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "test": "node tests/regression.js && node tests/i18n.js"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

@@ -1,0 +1,126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.com/solution-note/1.0/schema.json",
+  "title": "Solution Note Format 1.0",
+  "description": "Canonical interchange format for a Solution Note — a portable, validated record of a mathematical or computer-science result. Long text fields accept EITHER a plain Markdown string (compact form, what an AI naturally produces) OR a content-block array (what the block editor produces); the importer normalizes both.",
+  "type": "object",
+  "required": ["format", "version", "meta", "core"],
+  "properties": {
+    "format": {
+      "const": "solution-note",
+      "description": "Fixed discriminator. Must be exactly \"solution-note\"."
+    },
+    "version": {
+      "const": "1.0",
+      "description": "Format version, not the app version. Must be exactly \"1.0\"."
+    },
+    "meta": {
+      "type": "object",
+      "description": "Bibliographic metadata about the note.",
+      "properties": {
+        "noteNumber": { "type": "string", "description": "Optional reference number for the project/thread." },
+        "title": { "type": "string", "description": "The conclusion itself, searchable by a stranger." },
+        "summary": { "type": "string", "description": "One-paragraph italic subtitle." },
+        "author": { "type": "string", "description": "Author name; empty unless known." },
+        "date": { "type": "string", "description": "Free-form date." },
+        "status": {
+          "enum": ["Solved", "Partial", "Computational", "Conjecture", "Counterexample", "Improved Algorithm"],
+          "description": "Resolution status. Invalid values warn and are kept as-is."
+        },
+        "source": { "type": "string", "description": "Where the problem comes from." }
+      }
+    },
+    "core": {
+      "type": "object",
+      "description": "The essential content of the note.",
+      "properties": {
+        "problem": { "type": ["string", "array"], "description": "Problem statement (Markdown string or block array)." },
+        "result": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "enum": ["Theorem", "Main Result", "Construction", "Counterexample", "Computed Value", "Bound", "Formula", "Conjecture", "Algorithmic Result"],
+              "description": "Kind of result. Invalid values warn and are kept as-is."
+            },
+            "statement": { "type": ["string", "array"], "description": "The principal result, stated precisely." },
+            "explanation": { "type": ["string", "array"], "description": "What the result means, in plain terms." }
+          }
+        },
+        "whyItWorks": {
+          "type": "array",
+          "description": "High-level mechanisms; each item is a string (legacy lead-in form) or { title, body }.",
+          "items": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "object", "properties": { "title": { "type": "string" }, "body": { "type": ["string", "array"] } } }
+            ]
+          }
+        },
+        "evidence": {
+          "description": "What was actually verified, and to what degree.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }
+          ]
+        },
+        "reproduce": {
+          "type": "object",
+          "description": "Everything a reader needs to run the check themselves. Omit entirely when not applicable.",
+          "properties": {
+            "sourceCode": { "type": "string" },
+            "data": { "type": "string" },
+            "verificationScript": { "type": "string" },
+            "certificate": { "type": "string" },
+            "discussion": { "type": "string", "description": "Discussion / original post link." }
+          }
+        }
+      }
+    },
+    "optional": {
+      "type": "object",
+      "description": "Optional sections A–K. Each text section is a Markdown string or block array; references is an array of strings. Omit empty sections.",
+      "properties": {
+        "proof": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }] },
+        "algorithm": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }] },
+        "computationalResults": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }] },
+        "performance": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }] },
+        "examples": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }] },
+        "verificationDetails": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }] },
+        "limitations": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }] },
+        "openQuestions": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }] },
+        "notes": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }] },
+        "references": { "type": "array", "items": { "type": "string" } },
+        "acknowledgements": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/contentBlock" } }] }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "description": "EDITOR UI EXTENSION — not part of the canonical note. Carries display state only; safe to drop.",
+      "properties": {
+        "sections": {
+          "type": "object",
+          "description": "Per-section visibility override: true = force show, false = force hide, null/absent = auto (hidden when empty).",
+          "additionalProperties": { "enum": [true, false, null] }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "contentBlock": {
+      "type": "object",
+      "description": "A structured content block used inside block-array fields.",
+      "properties": {
+        "type": {
+          "enum": ["paragraph", "bullets", "steps", "code", "math", "table", "stats", "keyvalue", "callout"]
+        },
+        "text": { "type": "string" },
+        "kicker": { "type": "string" },
+        "items": {
+          "description": "bullets/steps: array of strings; stats: {kicker,value,body}[]; keyvalue: {label,value}[].",
+          "type": "array"
+        }
+      },
+      "required": ["type"]
+    }
+  }
+}

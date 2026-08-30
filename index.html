@@ -1,0 +1,2818 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proofnote</title>
+<link rel="stylesheet" href="vendor/design-system/classical-4ad24e2c-bede-4e17-ac91-edf84195d97f/styles.css">
+<link rel="stylesheet" href="vendor/katex/katex.min.css">
+<script src="vendor/design-system/classical-4ad24e2c-bede-4e17-ac91-edf84195d97f/_ds_bundle.js"></script>
+<script src="vendor/katex/katex.min.js"></script>
+<script src="vendor/katex/embed.js"></script>
+<script src="vendor/katex/fonts-embed.js"></script>
+<style>doc-page:not(:defined){visibility:hidden}</style>
+<script src="./src/doc-page.js"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; overflow: hidden; }
+  a { color: var(--color-accent-700); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+  a:hover { color: var(--color-accent); }
+
+  #app { display: flex; height: 100vh; }
+
+  /* — editor pane — */
+  #editor {
+    width: 420px; flex: none; display: flex; flex-direction: column;
+    border-right: 1px solid var(--color-divider); background: var(--color-surface);
+  }
+  .editor-toolbar {
+    flex: none; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-divider);
+    background: var(--color-bg); display: flex; flex-direction: column; gap: var(--space-2);
+  }
+  .editor-brand { font-family: var(--font-heading); font-weight: 600; font-size: 16px; }
+  .editor-brand span { color: var(--color-accent); }
+  .editor-brand .sn-version {
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10px; font-weight: 400;
+    color: color-mix(in srgb, var(--color-text) 45%, transparent); margin-left: 6px;
+    border: 1px solid var(--color-divider); border-radius: var(--radius-sm); padding: 1px 5px; vertical-align: 2px;
+  }
+  .toolbar-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+  .toolbar-buttons .btn { font-size: 11px; padding: 6px 9px; min-height: 0; }
+
+  .editor-body { flex: 1; overflow-y: auto; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-6); }
+  .editor-group { display: flex; flex-direction: column; gap: var(--space-2); padding-bottom: var(--space-4); border-bottom: 1px solid var(--color-divider); }
+  .editor-group:last-child { border-bottom: none; padding-bottom: 0; }
+  .editor-group-title {
+    margin: 0; font-family: var(--font-heading); font-weight: 600; font-size: 12px;
+    letter-spacing: 0.1em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  }
+  .editor-group-title-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+  .editor-group-title-row .num { font-family: var(--font-heading); font-weight: 700; color: var(--color-accent); font-size: 12px; }
+  .editor-group-title-row .editor-group-title { margin: 0; }
+
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+  .hint { margin: 0; font-size: 10.5px; line-height: 1.5; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
+  .hint code { font-size: 10px; }
+
+  details.help { font-size: 11px; }
+  details.help summary { cursor: pointer; color: var(--color-accent-700); font-weight: 600; }
+  details.help .hint { margin-top: 6px; }
+
+  .dyn-row { display: flex; gap: 6px; align-items: flex-start; margin-bottom: 6px; }
+  .dyn-row textarea { flex: 1; }
+  .btn-icon-sm {
+    flex: none; width: 30px; height: 36px; padding: 0; font-size: 16px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .opt-row { border: 1px solid var(--color-divider); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); margin-bottom: var(--space-2); transition: opacity 0.15s; }
+  .opt-row.is-empty { opacity: 0.55; }
+  .opt-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .opt-check { display: flex; align-items: center; gap: 6px; flex: 1; cursor: pointer; font-size: 12.5px; user-select: none; }
+  .opt-check input { accent-color: var(--color-accent); width: 14px; height: 14px; }
+  .opt-letter { font-family: var(--font-heading); font-weight: 700; color: var(--color-accent); width: 12px; flex: none; }
+  .opt-title { font-weight: 600; }
+  .opt-auto-btn {
+    font-size: 10px; border: 1px solid var(--color-divider); background: transparent;
+    border-radius: var(--radius-sm); padding: 2px 7px; cursor: pointer;
+    color: color-mix(in srgb, var(--color-text) 50%, transparent); font-family: var(--font-body);
+  }
+  .opt-auto-btn:hover { border-color: var(--color-accent); }
+  .opt-auto-btn.is-forced { border-color: var(--color-accent); color: var(--color-accent-700); background: var(--color-accent-100); }
+  .opt-row .dyn-list { margin-bottom: 6px; }
+
+  /* — reusable content blocks (editor side) — */
+  .block-card { border: 1px solid var(--color-divider); border-radius: var(--radius-md); padding: 8px 9px; margin-bottom: 8px; background: var(--color-bg); }
+  .block-card-head { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+  .block-type-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+  .block-icon-btn {
+    flex: none; width: 24px; height: 24px; border: 1px solid var(--color-divider); background: transparent;
+    border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; line-height: 1;
+    color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  }
+  .block-icon-btn:hover { border-color: var(--color-accent); color: var(--color-accent-700); }
+  .block-card-body .input { margin-bottom: 6px; }
+  .block-add-row { display: flex; gap: 6px; }
+  .block-add-row select { flex: 1; }
+  .stat-item-row, .kv-item-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: flex-start; }
+  .stat-item-row input, .kv-item-row input { flex: 1; }
+  .stat-item-row textarea { flex: 2; }
+
+  .check-inline { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+  .check-inline input { accent-color: var(--color-accent); }
+
+  /* — preview pane — */
+  #previewPane { flex: 1; overflow: auto; min-width: 0; }
+  .accent-prose p, .accent-prose ul, .accent-prose ol { color: var(--color-accent-900); margin: 0 0 8pt; }
+  .accent-prose > *:last-child { margin-bottom: 0; }
+  .mdlite-ul, .mdlite-ol { margin: 0 0 10pt; padding-left: 18pt; }
+  .mdlite-ul li, .mdlite-ol li { margin-bottom: 3pt; }
+  .mdlite p { margin: 0 0 12pt; }
+  .mdlite > *:last-child { margin-bottom: 0; }
+  pre.mdlite-code {
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 9pt; line-height: 1.65;
+    background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: var(--radius-md);
+    padding: 10pt 11pt; overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: 0 0 10pt;
+  }
+  .mdlite-table-wrap { overflow-x: auto; margin: 0 0 10pt; }
+  .mdlite-table-wrap table.table { font-size: 10.5pt; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em; background: var(--color-surface); padding: 1px 4px; border-radius: 3px; }
+  .katex { font-size: 1.04em; }
+  .katex-display { margin: 11pt 0 13pt; overflow-x: auto; overflow-y: hidden; }
+  .math-error { font-family: ui-monospace, Menlo, Consolas, monospace; color: #9f2d24; border-bottom: 1px dotted currentColor; }
+  @media print { .katex-display { overflow: visible; break-inside: avoid; } }
+
+  /* — legacy-math detection banner — */
+  #legacyMathBanner {
+    display: none; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px var(--space-4);
+    background: color-mix(in srgb, var(--color-accent-100) 78%, var(--color-bg));
+    border-bottom: 1px solid var(--color-accent-300);
+    font-size: 12.5px; color: var(--color-text);
+  }
+  #legacyMathBanner.is-open { display: flex; }
+  #legacyMathBanner .banner-msg { flex: 1; min-width: 240px; }
+  #legacyMathBanner code { background: color-mix(in srgb, var(--color-surface) 60%, transparent); }
+
+  /* — mobile tabs (< 700px) — */
+  .mobile-tabs { display: none; flex: none; }
+
+  @media (max-width: 1100px) {
+    #editor { width: 360px; }
+  }
+  @media (max-width: 700px) {
+    #app { flex-direction: column; }
+    .mobile-tabs {
+      display: flex; border-bottom: 1px solid var(--color-divider); background: var(--color-bg);
+    }
+    .mobile-tabs button {
+      flex: 1; border: none; background: transparent; padding: 10px; font-family: var(--font-heading);
+      font-weight: 600; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: color-mix(in srgb, var(--color-text) 55%, transparent); border-bottom: 2px solid transparent; cursor: pointer;
+    }
+    .mobile-tabs button.is-active { color: var(--color-accent-700); border-bottom-color: var(--color-accent); }
+    #editor, #previewPane { width: 100% !important; }
+    #app:not(.show-preview) #previewPane { display: none; }
+    #app.show-preview #editor { display: none; }
+  }
+
+  @page { size: A4; }
+  /* Page numbers live in the bottom margin box (the standard, cross-browser
+     way to print "3 / 8"): counters in position:fixed footer elements render
+     as 0/0 in both Safari and Chrome, so the footer must not carry them. */
+  @page { @bottom-center { content: counter(page) " / " counter(pages); font-family: "Cormorant Garamond", serif; font-size: 8pt; letter-spacing: 0.1em; color: color-mix(in srgb, #201f1d 45%, transparent); } }
+  @media print {
+    body { overflow: visible; }
+    #editor, .mobile-tabs { display: none !important; }
+    #app { display: block; height: auto; }
+    #previewPane { overflow: visible; height: auto; }
+    .sn-document { font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0; }
+    .sn-section-head { break-inside: avoid; break-after: avoid-page; page-break-after: avoid; }
+    .sn-section-head + * { break-before: avoid-page; page-break-before: avoid; }
+    /* Heading + its first content stay on the same page as one unit; if they
+       do not fit, the whole group moves to the next page instead of stranding
+       the heading at the bottom (break-after/break-before alone is unreliable
+       in Safari for this). */
+    .sn-section-head-group { break-inside: avoid; page-break-inside: avoid; -webkit-column-break-inside: avoid; }
+    /* The OPTIONAL SECTIONS divider starts on a fresh page, taking the first
+       optional section (Proof) with it, instead of dangling mid-page. */
+    .sn-optional-divider { break-before: page; page-break-before: always; break-after: avoid-page; page-break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+<div id="legacyMathBanner">
+  <span class="banner-msg" data-i18n-html-en="Legacy plain-text math detected (<code>sqrt(...)</code>, <code>sumd</code>, <code>^(...)</code>, etc.) — this cannot be typeset. Load the LaTeX sample or import a new-format JSON.">检测到旧版纯文本数学(<code>sqrt(...)</code>、<code>sumd</code>、<code>^(...)</code> 等),这类公式无法排版。请载入 LaTeX 示例或导入新版 JSON。</span>
+  <button type="button" class="btn btn-primary" id="btnBannerLoadSample" data-i18n-en="Load Sample">载入示例</button>
+  <button type="button" class="btn btn-ghost" id="btnBannerDismiss" data-i18n-en="Got it">知道了</button>
+</div>
+<div id="app">
+
+  <div class="mobile-tabs">
+    <button type="button" class="is-active" data-tab="edit" data-i18n-en="Edit">编辑</button>
+    <button type="button" data-tab="preview" data-i18n-en="Preview">预览</button>
+  </div>
+
+  <aside id="editor">
+    <div class="editor-toolbar">
+      <div class="editor-brand" data-i18n-html-en="Solution Note <span>Generator</span> <span class=&quot;sn-version&quot; data-version></span>">解题笔记 <span>生成器</span> <span class="sn-version" data-version></span></div>
+      <div class="toolbar-buttons">
+        <button class="btn btn-secondary" id="btnNew" type="button" data-i18n-en="New">新建</button>
+        <button class="btn btn-ghost" id="btnLoadSample" type="button" data-i18n-en="Load Sample">载入示例</button>
+        <button class="btn btn-secondary" id="btnImport" type="button" data-i18n-en="Import JSON">导入 JSON</button>
+        <button class="btn btn-primary" id="btnExport" type="button" data-i18n-en="Export JSON">导出 JSON</button>
+        <button class="btn btn-secondary" id="btnExportHtml" type="button" data-i18n-en="Export HTML">导出 HTML</button>
+        <input type="file" id="fileImport" accept="application/json" hidden>
+      </div>
+      <div class="toolbar-buttons">
+        <button class="btn btn-ghost" id="btnLang" type="button" title="Switch language" data-i18n-en="中文">English</button>
+        <button class="btn btn-ghost" id="btnCopyInstructions" type="button" data-i18n-en="Copy AI Instructions">复制 AI 指令</button>
+      </div>
+    </div>
+
+    <div class="editor-body">
+
+      <details class="help">
+        <summary data-i18n-en="Format Guide">格式说明</summary>
+        <p class="hint" data-i18n-html-en="<code>**bold**</code> &middot; <code>*italic*</code> &middot; <code>`code`</code> &middot;
+          <code>[text](link)</code> &middot; inline math: <code>\(x_n^2\)</code> &middot; display math: <code>\[\sum_i a_i\]</code><br>
+          Math uses standard LaTeX, e.g. <code>\sqrt{2}</code>, <code>\mathbb{Z}[i]</code>, <code>\mid</code>, <code>\sum</code>.
+          Lists: lines starting with <code>- </code> or <code>1. </code>. Tables: lines of the form <code>| a | b |</code> with a
+          <code>|---|---|</code> separator row. Code blocks: a lone <code>```</code> line as fence.">
+          <code>**粗体**</code> &middot; <code>*斜体*</code> &middot; <code>`代码`</code> &middot;
+          <code>[文字](链接)</code> &middot; 行内数学:<code>\(x_n^2\)</code> &middot; 独立数学:<code>\[\sum_i a_i\]</code><br>
+          数学内容使用标准 LaTeX,例如 <code>\sqrt{2}</code>、<code>\mathbb{Z}[i]</code>、<code>\mid</code>、<code>\sum</code>。
+          列表:以 <code>- </code> 或 <code>1. </code> 开头的行。表格:<code>| a | b |</code> 形式的行,配一行
+          <code>|---|---|</code> 分隔符。代码块:单独一行 <code>```</code> 作为围栏。
+        </p>
+      </details>
+
+      <section class="editor-group">
+        <h3 class="editor-group-title" data-i18n-en="Metadata">元信息</h3>
+        <div class="field-row">
+          <div class="field"><label data-i18n-en="Number">编号</label><input class="input" data-bind="meta.noteNumber" placeholder="057"></div>
+          <div class="field"><label data-i18n-en="Status">状态</label>
+            <select class="input" data-bind="meta.status">
+              <option value="Solved" data-i18n-en="Solved">已解决</option>
+              <option value="Partial" data-i18n-en="Partial">部分解决</option>
+              <option value="Computational" data-i18n-en="Computational">计算验证</option>
+              <option value="Conjecture" data-i18n-en="Conjecture">猜想</option>
+              <option value="Counterexample" data-i18n-en="Counterexample">反例</option>
+              <option value="Improved Algorithm" data-i18n-en="Improved Algorithm">改进算法</option>
+            </select>
+          </div>
+        </div>
+        <div class="field"><label data-i18n-en="Title">标题</label><textarea class="input" rows="2" data-bind="meta.title" placeholder="结论本身,写成一句陌生人也能搜到的话" data-i18n-ph-en="The conclusion itself, phrased so a stranger can search for it"></textarea></div>
+        <div class="field"><label data-i18n-en="One-line Summary">一句话摘要</label><textarea class="input" rows="2" data-bind="meta.summary" placeholder="标题下方的斜体副标题" data-i18n-ph-en="Italic subtitle under the title"></textarea></div>
+        <div class="field-row">
+          <div class="field"><label data-i18n-en="Author">作者</label><input class="input" data-bind="meta.author"></div>
+          <div class="field"><label data-i18n-en="Date">日期</label><input class="input" data-bind="meta.date" placeholder="2026年8月28日" data-i18n-ph-en="August 28, 2026"></div>
+        </div>
+        <div class="field"><label data-i18n-en="Source">来源</label><textarea class="input" rows="2" data-bind="meta.source" placeholder="问题的来源" data-i18n-ph-en="Where the problem comes from"></textarea></div>
+      </section>
+
+      <section class="editor-group">
+        <div class="editor-group-title-row"><span class="num">01</span><h3 class="editor-group-title" data-i18n-en="Problem">问题</h3></div>
+        <div class="field"><textarea class="input" rows="6" data-bind="core.problem" placeholder="把问题讲清楚,让读者不必去翻原始讨论串。" data-i18n-ph-en="State the problem clearly so readers need not dig through the original thread."></textarea></div>
+      </section>
+
+      <section class="editor-group">
+        <div class="editor-group-title-row"><span class="num">02</span><h3 class="editor-group-title" data-i18n-en="Result">结果</h3></div>
+        <div class="field"><label data-i18n-en="Type">类型</label>
+          <select class="input" data-bind="core.result.type">
+            <option value="Theorem" data-i18n-en="Theorem">定理</option>
+            <option value="Main Result" data-i18n-en="Main Result">主要结果</option>
+            <option value="Construction" data-i18n-en="Construction">构造</option>
+            <option value="Counterexample" data-i18n-en="Counterexample">反例</option>
+            <option value="Computed Value" data-i18n-en="Computed Value">计算值</option>
+            <option value="Bound" data-i18n-en="Bound">界</option>
+            <option value="Formula" data-i18n-en="Formula">公式</option>
+            <option value="Conjecture" data-i18n-en="Conjecture">猜想</option>
+            <option value="Algorithmic Result" data-i18n-en="Algorithmic Result">算法结果</option>
+          </select>
+        </div>
+        <div class="field"><label data-i18n-en="Statement">陈述</label><textarea class="input" rows="4" data-bind="core.result.statement" placeholder="把结论单独摘出来" data-i18n-ph-en="The conclusion, isolated"></textarea></div>
+        <div class="field"><label data-i18n-en="In plain words">大白话讲</label><textarea class="input" rows="3" data-bind="core.result.explanation" placeholder="用一句大白话说明这意味着什么" data-i18n-ph-en="One plain sentence about what this means"></textarea></div>
+      </section>
+
+      <section class="editor-group">
+        <div class="editor-group-title-row"><span class="num">03</span><h3 class="editor-group-title" data-i18n-en="Why It Works">为什么成立</h3></div>
+        <div id="whyList"></div>
+        <button type="button" class="btn btn-secondary btn-block" id="addStepBtn" data-i18n-en="+ Add Step">+ 添加步骤</button>
+      </section>
+
+      <section class="editor-group">
+        <div class="editor-group-title-row"><span class="num">04</span><h3 class="editor-group-title" data-i18n-en="Evidence">证据</h3></div>
+        <p class="hint" data-i18n-en="What was actually verified, and to what degree. Mix paragraphs, code/output, tables, and stat cards.">实际验证了什么、验证到什么程度。可以混用段落、代码/输出、表格、统计卡片。</p>
+        <div id="blocks-core-evidence"></div>
+      </section>
+
+      <section class="editor-group">
+        <div class="editor-group-title-row"><span class="num">05</span><h3 class="editor-group-title" data-i18n-en="Reproduce">复现</h3></div>
+        <div class="field"><label data-i18n-en="Source Code">源代码</label><textarea class="input" rows="2" data-bind="core.reproduce.sourceCode"></textarea></div>
+        <div class="field"><label data-i18n-en="Data">数据</label><textarea class="input" rows="2" data-bind="core.reproduce.data"></textarea></div>
+        <div class="field"><label data-i18n-en="Verification Script">验证脚本</label><textarea class="input" rows="2" data-bind="core.reproduce.verificationScript"></textarea></div>
+        <div class="field"><label data-i18n-en="Certificate">证书</label><textarea class="input" rows="2" data-bind="core.reproduce.certificate"></textarea></div>
+        <div class="field"><label data-i18n-en="Discussion / Original Post">讨论 / 原始帖子</label><textarea class="input" rows="2" data-bind="core.reproduce.discussion"></textarea></div>
+      </section>
+
+      <section class="editor-group">
+        <h3 class="editor-group-title" data-i18n-en="Optional Sections (A–K)">可选章节(A&ndash;K)</h3>
+        <p class="hint" data-i18n-en="Hidden automatically when empty. Check to force-show; click &ldquo;Auto&rdquo; to hand control back.">内容为空时自动隐藏。勾选可强制显示,点&ldquo;自动&rdquo;可交还自动控制权。</p>
+        <div id="optionalList"></div>
+      </section>
+
+    </div>
+  </aside>
+
+  <main id="previewPane">
+    <doc-page margin="0.85in" size="a4" id="docPage">
+      <div slot="header" style="display:flex; align-items:baseline; gap:var(--space-3); padding-bottom:6pt; border-bottom:1px solid var(--color-divider); font-family:var(--font-heading); font-weight:600; font-size:8pt; letter-spacing:0.14em; text-transform:uppercase; color:color-mix(in srgb, var(--color-text) 50%, transparent)">
+        <span style="color:var(--color-accent)">Proofnote</span>
+        <span style="flex:1"></span>
+        <span>Solution Note</span>
+      </div>
+      <div slot="footer" style="display:flex; align-items:baseline; gap:var(--space-3); padding-top:6pt; border-top:1px solid var(--color-divider); font-family:var(--font-heading); font-size:8pt; letter-spacing:0.1em; text-transform:uppercase; color:color-mix(in srgb, var(--color-text) 45%, transparent)">
+        <span id="footerNoteNum" style="font-feature-settings:'tnum'">Note &mdash;</span>
+        <span style="flex:1"></span>
+        <span id="footerStatus">Solved</span>
+      </div>
+      <div id="noteRoot"></div>
+    </doc-page>
+  </main>
+
+</div>
+
+<div class="dialog-backdrop" id="importBackdrop" style="display:none">
+  <div class="dialog" role="dialog" aria-label="导入解题笔记" data-i18n-aria-en="Import Solution Note" style="width:min(560px, 100%)">
+    <div class="dialog-title" data-i18n-en="Import Solution Note">导入解题笔记</div>
+    <div id="importInputArea" style="display:flex; flex-direction:column; gap:8px">
+      <div style="display:flex; align-items:center; gap:10px">
+        <button type="button" class="btn btn-secondary" id="btnChooseFile" data-i18n-en="Choose File...">选择文件...</button>
+        <span style="font-size:12px; color:color-mix(in srgb, var(--color-text) 55%, transparent)" data-i18n-en="or paste JSON text below">或在下方粘贴 JSON 文本</span>
+      </div>
+      <textarea id="importPasteText" class="input" placeholder='粘贴 { "format": "solution-note", ... } 格式的 JSON 文本' data-i18n-ph-en='Paste JSON text in { "format": "solution-note", ... } format' style="min-height:160px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; resize:vertical"></textarea>
+      <button type="button" class="btn btn-primary" id="btnParsePaste" style="align-self:flex-start" data-i18n-en="Parse">解析文本</button>
+    </div>
+    <pre id="importSummary" style="display:none; margin:0; max-height:280px; overflow-y:auto; font-family:var(--font-body); font-size:12.5px; line-height:1.6; white-space:pre-wrap"></pre>
+    <p id="importWarnNote" style="display:none; margin:6px 0 0; font-size:11.5px; color:color-mix(in srgb, var(--color-text) 60%, transparent)" data-i18n-en="Importing will not modify these anomalies automatically; cancel and fix the file first if unsure.">继续导入不会自动修改这些异常值;有疑问可先取消,修好文件再导入。</p>
+    <div id="importModeChoice" style="display:none; flex-direction:column; gap:6px; margin-top:4px">
+      <label class="check-inline"><input type="radio" name="importMode" value="replace" checked> <span data-i18n-en="Replace current note">替换当前笔记</span></label>
+      <label class="check-inline"><input type="radio" name="importMode" value="merge"> <span data-i18n-en="Merge into current note (only overwrites fields present in the file)">合并进当前笔记(只覆盖文件中出现的字段)</span></label>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn btn-ghost" id="btnCopyImportError" style="display:none" data-i18n-en="Copy Error Details">复制错误详情</button>
+      <button type="button" class="btn btn-secondary" id="btnCancelImport" data-i18n-en="Cancel">取消</button>
+      <button type="button" class="btn btn-primary" id="btnConfirmImport" style="display:none" data-i18n-en="Import">导入</button>
+    </div>
+  </div>
+</div>
+
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- i18n ----------
+  // Single source of truth for the app version (badge, exports, …).
+  const APP_VERSION = "3.1.0-rc.1";
+  // UI language: "zh" (default) or "en". Persisted; toggling reloads the page
+  // (editor state is autosaved to localStorage, so nothing is lost).
+  const UI_LANG = (() => { try { return localStorage.getItem("sn-lang") === "en" ? "en" : "zh"; } catch (e) { return "zh"; } })();
+  // t(zh, en): Chinese is the canonical string; en is the English translation.
+  // Falls back to zh when no translation is supplied.
+  function t(zh, en) { return UI_LANG === "en" ? (en !== undefined ? en : zh) : zh; }
+  // Static HTML carries data-i18n-en (text), data-i18n-ph-en (placeholder) and
+  // data-i18n-html-en (innerHTML for rich fragments) attributes holding the
+  // English text; apply once at boot when the UI language is English.
+  function applyStaticI18n() {
+    if (UI_LANG !== "en") return;
+    document.querySelectorAll("[data-i18n-en]").forEach((el) => {
+      const v = el.getAttribute("data-i18n-en");
+      if (v !== null) el.textContent = v;
+    });
+    document.querySelectorAll("[data-i18n-ph-en]").forEach((el) => {
+      const v = el.getAttribute("data-i18n-ph-en");
+      if (v !== null) el.setAttribute("placeholder", v);
+    });
+    document.querySelectorAll("[data-i18n-html-en]").forEach((el) => {
+      const v = el.getAttribute("data-i18n-html-en");
+      if (v !== null) el.innerHTML = v;
+    });
+    document.querySelectorAll("[data-i18n-aria-en]").forEach((el) => {
+      const v = el.getAttribute("data-i18n-aria-en");
+      if (v !== null) el.setAttribute("aria-label", v);
+    });
+    document.documentElement.lang = UI_LANG;
+  }
+  function applyAppVersion() {
+    document.querySelectorAll("[data-version]").forEach((el) => { el.textContent = "v" + APP_VERSION; });
+  }
+
+  document.getElementById("btnLang").addEventListener("click", () => {
+    const next = UI_LANG === "zh" ? "en" : "zh";
+    try { localStorage.setItem("sn-lang", next); } catch (e) {}
+    location.reload();
+  });
+
+  // `title` renders into the generated document and stays in English (the
+  // document's own fixed chrome — Contents, section headings — is English
+  // regardless of UI language); `editorLabel` is only ever shown in the left
+  // editor panel and is the one that gets translated.
+  const OPTIONAL_SECTIONS = [
+    { key: "proof", letter: "A", title: "Proof", editorLabel: "证明", kind: "text" },
+    { key: "algorithm", letter: "B", title: "Algorithm", editorLabel: "算法", kind: "text" },
+    { key: "computationalResults", letter: "C", title: "Computational Results", editorLabel: "计算结果", kind: "text" },
+    { key: "performance", letter: "D", title: "Performance", editorLabel: "性能", kind: "text" },
+    { key: "examples", letter: "E", title: "Examples", editorLabel: "示例", kind: "text" },
+    { key: "verificationDetails", letter: "F", title: "Verification Details", editorLabel: "验证细节", kind: "text" },
+    { key: "limitations", letter: "G", title: "Limitations", editorLabel: "局限性", kind: "text" },
+    { key: "openQuestions", letter: "H", title: "Open Questions", editorLabel: "开放问题", kind: "text" },
+    { key: "notes", letter: "I", title: "Notes", editorLabel: "备注", kind: "text" },
+    { key: "references", letter: "J", title: "References", editorLabel: "参考文献", kind: "list" },
+    { key: "acknowledgements", letter: "K", title: "Acknowledgements", editorLabel: "致谢", kind: "text" }
+  ];
+
+  const BLOCK_TYPES = [
+    { type: "paragraph", label: "段落", labelEn: "Paragraph" },
+    { type: "bullets", label: "无序列表", labelEn: "Bullet List" },
+    { type: "steps", label: "编号步骤", labelEn: "Numbered Steps" },
+    { type: "code", label: "代码/输出", labelEn: "Code / Output" },
+    { type: "math", label: "独立公式", labelEn: "Display Math" },
+    { type: "table", label: "表格", labelEn: "Table" },
+    { type: "stats", label: "统计卡片", labelEn: "Stat Cards" },
+    { type: "keyvalue", label: "键值列表", labelEn: "Key–Value List" },
+    { type: "callout", label: "高亮框", labelEn: "Callout" }
+  ];
+
+  const KICKER = "font-size:7.5pt; letter-spacing:0.12em; text-transform:uppercase; color:color-mix(in srgb, var(--color-text) 50%, transparent); margin-bottom:3pt";
+
+  // ---------- data model ----------
+
+  function blockDefaults(type) {
+    switch (type) {
+      case "bullets": return { type, items: [""] };
+      case "steps": return { type, items: [""] };
+      case "code": case "math": return { type, text: "" };
+      case "table": return { type, text: "" };
+      case "stats": return { type, items: [{ kicker: "", value: "", body: "" }] };
+      case "keyvalue": return { type, items: [{ label: "", value: "" }] };
+      case "callout": return { type, kicker: "", text: "" };
+      default: return { type: "paragraph", text: "" };
+    }
+  }
+
+  const FORMAT_ID = "solution-note";
+  const FORMAT_VERSION = "1.0";
+  const DEFAULT_AUTHOR = "";
+  // The author name is a per-user local preference, never baked into the app:
+  // a fresh note starts empty, and whatever the user types into the Author
+  // field is remembered for the next blank note.
+  const AUTHOR_PREF_KEY = "solution-note-generator:author";
+  function authorPreference() {
+    try { return (localStorage.getItem(AUTHOR_PREF_KEY) || "").trim(); } catch (e) { return ""; }
+  }
+  function setAuthorPreference(name) {
+    try {
+      const v = String(name || "").trim();
+      if (v) localStorage.setItem(AUTHOR_PREF_KEY, v);
+      else localStorage.removeItem(AUTHOR_PREF_KEY);
+    } catch (e) {}
+  }
+
+  function blankNote() {
+    return {
+      format: FORMAT_ID,
+      version: FORMAT_VERSION,
+      meta: { noteNumber: "", title: "", summary: "", author: DEFAULT_AUTHOR, date: "", status: "Solved", source: "" },
+      core: {
+        problem: "",
+        result: { type: "Theorem", statement: "", explanation: "" },
+        whyItWorks: [{ title: "", body: "" }],
+        evidence: [],
+        reproduce: { sourceCode: "", data: "", verificationScript: "", certificate: "", discussion: "" }
+      },
+      optional: {
+        proof: [], algorithm: [], computationalResults: [], performance: [],
+        examples: [], verificationDetails: [], limitations: [], openQuestions: [],
+        notes: [], references: [""], acknowledgements: []
+      },
+      sections: Object.fromEntries(OPTIONAL_SECTIONS.map((s) => [s.key, null]))
+    };
+  }
+
+  // Imported/merged content (an AI's JSON, a hand-edited file, an older export)
+  // is never trusted to match the exact shape the renderer assumes. Every block
+  // and array-item field gets coerced to well-typed strings/arrays HERE, once,
+  // at the boundary — so renderBlockHtml, buildBlockFields, renderCoreSections
+  // etc. can keep assuming well-formed data instead of guarding every field.
+  function asStr(v) { return typeof v === "string" ? v : ""; }
+
+  function normalizeBlock(raw) {
+    const type = raw && typeof raw === "object" && BLOCK_TYPES.some((t) => t.type === raw.type) ? raw.type : "paragraph";
+    const b = blockDefaults(type);
+    if (!raw || typeof raw !== "object") return b;
+    switch (type) {
+      case "paragraph": case "code": case "math": case "table":
+        b.text = asStr(raw.text);
+        return b;
+      case "callout":
+        b.text = asStr(raw.text);
+        b.kicker = asStr(raw.kicker);
+        return b;
+      case "bullets": case "steps":
+        b.items = Array.isArray(raw.items) && raw.items.length ? raw.items.map(asStr) : [""];
+        return b;
+      case "stats":
+        b.items = Array.isArray(raw.items) && raw.items.length
+          ? raw.items.map((it) => ({ kicker: asStr(it && it.kicker), value: asStr(it && it.value), body: asStr(it && it.body) }))
+          : [{ kicker: "", value: "", body: "" }];
+        return b;
+      case "keyvalue":
+        b.items = Array.isArray(raw.items) && raw.items.length
+          ? raw.items.map((it) => ({ label: asStr(it && it.label), value: asStr(it && it.value) }))
+          : [{ label: "", value: "" }];
+        return b;
+      default:
+        return b;
+    }
+  }
+  function sanitizeBlocks(arr) { return Array.isArray(arr) ? arr.map(normalizeBlock) : []; }
+
+  // Splits a legacy "**Lead-in.** rest of the sentence" string (the pre-v0.2
+  // whyItWorks shape) into { title, body } for the current shape.
+  function splitLeadIn(text) {
+    const m = /^\*\*(.+?)\*\*\s*(.*)$/.exec(text.trim());
+    return m ? { title: m[1].trim(), body: m[2].trim() } : { title: "", body: text.trim() };
+  }
+
+  // Interchange format v1.0 tolerates either shape for long-text fields: a plain
+  // Markdown string (what an AI naturally produces) or a full block array (what
+  // the block editor produces) — both are legal input, and this is also how a
+  // pre-v0.2 export (plain strings throughout) keeps loading. Every block array
+  // and array-of-object field is also sanitized here so malformed/partial items
+  // (a stats card missing "kicker", a whyItWorks entry missing "body", a
+  // references entry that isn't a string) can never reach the renderer or the
+  // block editor — see normalizeBlock/sanitizeBlocks above.
+  function migrateLegacyShapes(rawParsed) {
+    const parsed = rawParsed ? JSON.parse(JSON.stringify(rawParsed)) : {};
+    if (parsed.optional && typeof parsed.optional === "object") {
+      ["proof", "algorithm", "computationalResults", "performance", "examples",
+       "verificationDetails", "limitations", "openQuestions", "notes", "acknowledgements"].forEach((k) => {
+        if (typeof parsed.optional[k] === "string") {
+          parsed.optional[k] = parsed.optional[k].trim() ? [{ type: "paragraph", text: parsed.optional[k] }] : [];
+        }
+        if (Array.isArray(parsed.optional[k])) {
+          parsed.optional[k] = sanitizeBlocks(parsed.optional[k]);
+        }
+      });
+      if (Array.isArray(parsed.optional.references)) {
+        parsed.optional.references = parsed.optional.references.map(asStr);
+      }
+    }
+    if (parsed.core && typeof parsed.core === "object") {
+      if (typeof parsed.core.evidence === "string") {
+        parsed.core.evidence = parsed.core.evidence.trim() ? [{ type: "paragraph", text: parsed.core.evidence }] : [];
+      }
+      if (Array.isArray(parsed.core.evidence)) {
+        parsed.core.evidence = sanitizeBlocks(parsed.core.evidence);
+      }
+      if (Array.isArray(parsed.core.whyItWorks)) {
+        parsed.core.whyItWorks = parsed.core.whyItWorks.map((it) => {
+          if (typeof it === "string") return splitLeadIn(it);
+          return { title: asStr(it && it.title), body: asStr(it && it.body) };
+        });
+      }
+    }
+    return parsed;
+  }
+
+  // Merges only the fields actually present in `src` onto `target`, recursing
+  // into known nested objects and replacing arrays wholesale (an explicit `[]`
+  // legitimately clears a list field — it is not treated as "field omitted").
+  // Unknown keys and wrong-shaped values are silently skipped rather than
+  // thrown — malformed or partial AI output degrades to "left as default"
+  // instead of crashing the import. A scalar field known to be a string only
+  // ever accepts a string from `src`, so a stray non-string value (a number
+  // where core.result.type should be, for instance) can't slip through and
+  // crash a later `.trim()`/`.toUpperCase()` call.
+  const UNSAFE_KEYS = ["__proto__", "prototype", "constructor"];
+
+  // Recursively remove prototype-pollution carriers from untrusted input.
+  // Solution Note schema never needs these keys.
+  function stripUnsafeKeys(v) {
+    if (Array.isArray(v)) { v.forEach(stripUnsafeKeys); return v; }
+    if (v && typeof v === "object") {
+      UNSAFE_KEYS.forEach((k) => { if (k in v) delete v[k]; });
+      Object.values(v).forEach(stripUnsafeKeys);
+    }
+    return v;
+  }
+
+  function deepMergeKnown(target, src) {
+    if (!src || typeof src !== "object" || Array.isArray(src)) return target;
+    for (const k of Object.keys(target)) {
+      if (UNSAFE_KEYS.includes(k)) continue;
+      if (src[k] === undefined) continue;
+      if (Array.isArray(target[k])) {
+        target[k] = Array.isArray(src[k]) ? src[k] : target[k];
+      } else if (target[k] !== null && typeof target[k] === "object") {
+        deepMergeKnown(target[k], src[k]);
+      } else if (typeof target[k] === "string") {
+        target[k] = typeof src[k] === "string" ? src[k] : target[k];
+      } else {
+        target[k] = src[k];
+      }
+    }
+    return target;
+  }
+
+  function ensureDefaultAuthor(note) {
+    if (note && note.meta && (!note.meta.author || !note.meta.author.trim())) {
+      note.meta.author = authorPreference();
+    }
+    return note;
+  }
+
+  // Replace mode: fresh note, only fields present in the file are non-default.
+  function normalizeNote(rawParsed) {
+    const parsed = rawParsed && typeof rawParsed === "object" ? Object.assign({}, rawParsed) : {};
+    // Editor-only display state (forced/auto section visibility) is carried in
+    // `ui.sections` in the interchange file, never as a top-level field. Older
+    // files may still have top-level `sections` — accept both.
+    if (parsed.ui && typeof parsed.ui === "object" && parsed.ui.sections && typeof parsed.ui.sections === "object") {
+      parsed.sections = Object.assign({}, parsed.sections, parsed.ui.sections);
+    }
+    return ensureDefaultAuthor(deepMergeKnown(blankNote(), migrateLegacyShapes(stripUnsafeKeys(parsed))));
+  }
+
+  // Merge mode: fields present in the file overwrite the live note; everything
+  // else (including manual edits already in progress) is left untouched.
+  function mergeNoteInto(existingState, rawParsed) {
+    const parsed = rawParsed && typeof rawParsed === "object" ? Object.assign({}, rawParsed) : {};
+    if (parsed.ui && typeof parsed.ui === "object" && parsed.ui.sections && typeof parsed.ui.sections === "object") {
+      parsed.sections = Object.assign({}, parsed.sections, parsed.ui.sections);
+    }
+    return ensureDefaultAuthor(deepMergeKnown(existingState, migrateLegacyShapes(stripUnsafeKeys(parsed))));
+  }
+
+  const STORAGE_KEY = "solution-note-generator:v1";
+
+  function loadFromStorage() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? normalizeNote(JSON.parse(raw)) : null;
+    } catch (e) { return null; }
+  }
+
+  let saveTimer = null;
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+    }, 300);
+  }
+
+  let state = loadFromStorage() || blankNote();
+
+  // Built-in LaTeX sample note (the Wolfram-section Gaussian integer note),
+  // injected at build time. Users who never imported the new JSON can get a
+  // fully typeset example with one click instead of staring at legacy ASCII math.
+  const SAMPLE_NOTE = {"format":"solution-note","version":"1.0","meta":{"noteNumber":"","title":"The Least Wolfram-Section Perfect Gaussian Integer","summary":"For the divisor-sum \\(S(z)\\) obtained by choosing, from each Gaussian divisor associate class, the representative \\(a+bi\\) with \\(a>0\\) and \\(b\\ge 0\\) and summing these representatives, a computer-assisted proof shows that the least nonzero solution of \\(S(z)=2z\\) is \\(430089+665198i\\). Its norm is \\(627464927125\\), and it is the unique normalized solution on that norm shell.","author":"Jason Dong","date":"2026-08-28","status":"Solved","source":"Current project derivation and exact verification artifacts"},"core":{"problem":"Let \\(Q=\\{a+bi\\in\\mathbb{Z}[i]:a>0,\\ b\\ge 0\\}\\). For each nonzero Gaussian integer \\(z\\), let \\(D(z)\\) contain the unique representative in \\(Q\\) from every associate class of Gaussian divisors of \\(z\\), following the Wolfram/Mathematica Gaussian Divisors convention, and define\n\n\\[\nS(z)=\\sum_{d\\in D(z)} d.\n\\]\n\nDetermine the least nonzero \\(z\\) satisfying \\(S(z)=2z\\), ordered first by norm \\(N(z)=a^2+b^2\\).","result":{"type":"Theorem","statement":"Every nonzero Gaussian integer \\(z\\) satisfying \\(S(z)=2z\\) has \\(N(z)\\ge 627464927125\\). Equality holds for exactly one normalized Gaussian integer, \\(z=430089+665198i\\). Hence \\(430089+665198i\\) is the least solution both by norm and by absolute value.","explanation":"The proof combines structural restrictions on possible Gaussian prime factors with an exhaustive exact search over the remaining finite factorization space. The search for \\(N(z)<627464927125\\) returns no solutions. A separate exact check of all \\(32\\) normalized Gaussian divisor-allocation classes having norm exactly \\(627464927125\\) finds exactly one solution, namely \\(430089+665198i\\)."},"whyItWorks":[{"title":"Ramified and inert primes are eliminated","body":"A solution cannot be divisible by \\(1+i\\). For a rational prime \\(p\\equiv 3\\pmod 4\\) occurring with exponent \\(e\\), the identity \\(S(p^e w)=(1+p+\\cdots+p^e)S(w)\\) forces \\(e\\) to be even and imposes strong rational divisibility on \\(w\\). Below the target norm these conditions reduce the inert-prime possibilities to three small exceptional skeletons, all of which can be eliminated."},{"title":"The divisor count is bounded","body":"If \\(S(z)=2z\\) and \\(R=|z|\\), pairing complementary proper divisors gives the bound \\(\\tau(z)-2<\\sqrt{2}\\,N(z)^{1/4}\\). Below the target norm this yields \\(\\tau(z)\\le 1260\\), providing a finite cutoff on factorization patterns."},{"title":"Exponent-one primes can be closed finitely","body":"For a fixed cofactor \\(w\\) and a new exponent-one Gaussian prime \\(q\\), \\(S(qw)\\) is linear in \\(q\\) on each angular chamber determined by the first-quadrant normalization. Consequently each chamber gives at most one possible closing prime \\(q\\). When two exponent-one primes remain, the smaller one is bounded by the norm and the larger is again recovered by the closing-prime equation."},{"title":"All remaining factorizations are exhaustively enumerated","body":"After the structural reductions, every candidate below the target norm is represented as a powerful split-prime part together with a squarefree exponent-one split-prime part. The cases with zero, one, two, or at least three exponent-one factors are enumerated exhaustively using exact Gaussian integer arithmetic."}],"evidence":[{"type":"paragraph","text":"The target has \\(N(430089+665198i)=627464927125=5^3\\cdot 29\\cdot 1733\\cdot 99881\\) and Gaussian factorization\n\n\\[\n-(1+2i)^3(5+2i)(38+17i)(316+5i).\n\\]\n\nReconstructing all \\(32\\) divisor representatives gives \\(S(z)=860178+1330396i=2z\\). The strict exhaustive search below this norm records zero solutions. The inclusive search recovers the target. A separate check of all \\(32\\) normalized Gaussian classes on the exact target norm shell finds the target as the unique solution."}],"reproduce":{"sourceCode":"minimal_gaussian_search_integer.cpp","data":"integer_err.txt and integer_incl_err.txt contain the strict and inclusive exhaustive-search logs.","verificationScript":"inert_branch_certificate.py; same_norm_shell_certificate.py","certificate":"The inert-prime certificate checks all possible even inert-prime exponent pairs below the target bound and reduces them to three exceptional cases, which are then eliminated. The norm-shell certificate enumerates all \\(32\\) normalized Gaussian factor-allocation classes of norm \\(627464927125\\) and verifies that exactly one satisfies \\(S(z)=2z\\).","discussion":"For the minimality check, run the main program with the strict bound \\(N(z)<627464927125\\); it must report zero solutions. Run the inclusive version to confirm that \\(430089+665198i\\) is recovered at the boundary. Independently run the inert-branch and same-norm-shell certificates."}},"optional":{"proof":[{"type":"paragraph","text":"Let \\(B=627464927125\\). First, \\(1+i\\) cannot divide a solution:\n\n\\[\n1+i\\nmid z.\n\\]\n\nFor \\(\\nu_{1+i}(z)=1\\) or \\(2\\), grouping divisors into layers \\(d\\) and \\(\\nu((1+i)d)\\) gives a vector identity whose right side has a negative coordinate while the left side is a sum of first-quadrant vectors. For exponent at least \\(3\\), the modulus-abundance inequality\n\n\\[\n2<A(z)<1+\\sqrt{2}\n\\]\n\nis contradicted by the contribution of \\((1+i)^3\\) alone. Next consider an inert Gaussian prime \\(p\\equiv 3\\pmod 4\\) with \\(p^e\\parallel z\\). Writing \\(z=p^e w\\) gives \\((1+p+\\cdots+p^e)S(w)=2p^e w\\). Odd \\(e\\) is impossible because \\(4\\) divides the geometric sum and would force \\(1+i\\) to divide \\(w\\). For even \\(e\\), the odd integer \\(\\Sigma_e(p)=1+p+\\cdots+p^e\\) divides both coordinates of \\(w\\). Factoring \\(\\Sigma_e(p)\\) therefore forces corresponding Gaussian prime factors into \\(w\\). Exhausting all \\(p\\) and even \\(e\\) with \\(p^{2e}<B\\) leaves only \\((p,e)\\in\\{(3,2),(3,4),(7,2)\\}\\). The latter two recursively force \\(11^2\\) or \\(19^2\\) and already exceed \\(B\\). The case \\((3,2)\\) forces both Gaussian primes above \\(13\\). From \\(13S(w)=18w\\) one obtains \\(A(w)\\le 1+\\frac{5\\sqrt{2}}{13}\\), whereas the two primes above \\(13\\) force \\(A(w)\\ge(1+\\frac{1}{\\sqrt{13}})^2\\), and the latter quantity is larger, giving a contradiction. Thus every prime factor of a smaller solution is a nonreal split Gaussian prime. A complementary-divisor pairing then yields \\(\\tau(z)-2<\\sqrt{2}\\,N(z)^{1/4}\\), hence\n\n\\[\n\\tau(z)\\le1260\n\\]\n\nbelow \\(B\\). The remaining split-prime factorizations are decomposed into a powerful part and the exponent-one squarefree part. Powerful candidates are finite. For exponent-one extensions, the first-quadrant normalization is constant on finitely many angular chambers; on each chamber \\(S(qw)=S(w)+qC\\) and the equation \\(S(qw)=2\\nu(qw)\\) determines at most one \\(q\\). For two or more exponent-one factors, retain the two largest, enumerate the smaller of these using the norm bound, and recover the largest from the same closing equation. This produces a finite exhaustive search. Exact computation finds no solution below \\(B\\)."}],"algorithm":[{"type":"paragraph","text":"Generate all canonical nonreal split Gaussian prime classes \\(\\pi=a+bi\\) with \\(N(\\pi)\\le\\lfloor\\sqrt{B}\\rfloor\\). Enumerate all powerful products \\(h\\) with exponents at least \\(2\\) satisfying the norm and \\(\\tau\\) bounds. Enumerate the squarefree exponent-one residual factors separately. For zero exponent-one factors, test \\(S(h)=2h\\) directly. For one exponent-one factor, enumerate normalization chambers and solve the resulting exact linear equation for the closing prime. For at least two exponent-one factors, order the exponent-one primes, retain the two largest \\(q<r\\), enumerate \\(q\\) under \\(N(w)N(q)^2<B\\), and determine \\(r\\) from the closing-prime equation. All Gaussian arithmetic and chamber comparisons are exact integers."}],"computationalResults":[{"type":"paragraph","text":"The split-prime search used \\(63248\\) canonical split Gaussian prime classes up to norm \\(792126\\). It generated \\(365343\\) powerful records. The exhaustive branch counts were: \\(365343\\) powerful candidates for the zero-exponent-one branch; \\(163215\\) powerful cores for the one-exponent-one branch; \\(72883\\) precores and \\(681714\\) \\(q\\)-states for the two-exponent-one branch; and, for at least three exponent-one factors, \\(659814\\) raw core combinations, \\(558292\\) valid cores, and \\(28259949\\) \\(q\\)-states. The strict search \\(N(z)<B\\) found zero solutions. The inclusive search recovered the boundary solution."}],"performance":[],"examples":[{"type":"paragraph","text":"For \\(z=430089+665198i\\), the Gaussian factorization is \\(-(1+2i)^3(5+2i)(38+17i)(316+5i)\\). Its \\(32\\) normalized divisor representatives sum to \\(860178+1330396i\\). A useful closing decomposition is \\(w=1394+2083i\\) and \\(q=316+5i\\), with \\(S(w)=2779+4153i\\) and\n\n\\[\nq=\\frac{S(w)}{2w-S(w)}=\\frac{2779+4153i}{9+13i}=316+5i.\n\\]"}],"verificationDetails":[{"type":"paragraph","text":"The main search was rerun without relying on floating-point abundance pruning: the decisive search uses integer norm bounds, the proven divisor-count bound, exact Gaussian arithmetic, exact chamber comparisons by cross multiplication, and deterministic \\(64\\)-bit primality testing. An additional undefined-behavior sanitizer run was used as an implementation check. The exact target norm shell has \\((3+1)\\cdot 2^3=32\\) normalized Gaussian factor-allocation classes, all of which were checked independently."}],"limitations":[{"type":"paragraph","text":"The minimality theorem is currently computer-assisted rather than formally verified in a proof assistant. The exhaustive search has one principal implementation, supplemented by smaller independent certificate scripts; a completely independent second implementation would strengthen publication-level verification. The theorem concerns the Wolfram first-quadrant representative section and is not invariant under changing the associate-representative convention."}],"openQuestions":[{"type":"paragraph","text":"Classify all solutions of \\(S(z)=2z\\) beyond the least solution. Determine whether infinitely many solutions exist. Characterize cores \\(w\\) for which the closing quantity\n\n\\[\n\\frac{S(w)}{2w-S(w)},\n\\]\n\nor its chamber-corrected analogue, is a Gaussian prime. Seek a non-computational proof of minimality or a formally verified version of the finite search."}],"notes":[{"type":"paragraph","text":"This divisor-sum is distinct from the multiplicative Spira-type Gaussian divisor sum. The equation \\(S(z)=2z\\) depends essentially on the chosen representative section and should not be identified with classical perfect Gaussian integer definitions."}],"references":["Wolfram Language documentation: Divisors, GaussianIntegers option, https://reference.wolfram.com/language/ref/Divisors.html","Wolfram Language documentation: DivisorSigma, GaussianIntegers option, https://reference.wolfram.com/language/ref/DivisorSigma.html"],"acknowledgements":[]},"sections":{"proof":null,"algorithm":null,"computationalResults":null,"performance":null,"examples":null,"verificationDetails":null,"limitations":null,"openQuestions":null,"notes":null,"references":null,"acknowledgements":null}};
+
+  // ---------- legacy plain-text math detection ----------
+
+  // Legacy ASCII math only counts when it appears OUTSIDE TeX delimiters:
+  // `p^e` inside \(p^e\) is proper LaTeX and must not trigger the warning.
+  const LEGACY_MATH_RE = /\bsqrt\(|sumd\b|\^\(|\|\|z\b|\^e\b|floor\(sqrt/;
+
+  function stripTexSpans(v) {
+    return String(v)
+      .replace(/\\\([\s\S]*?\\\)/g, " ")
+      .replace(/\\\[[\s\S]*?\\\]/g, " ")
+      .replace(/\$\$[\s\S]*?\$\$/g, " ");
+  }
+
+  function scanLegacyMath(v) {
+    if (typeof v === "string") return LEGACY_MATH_RE.test(stripTexSpans(v));
+    if (Array.isArray(v)) return v.some(scanLegacyMath);
+    if (v && typeof v === "object") return Object.values(v).some(scanLegacyMath);
+    return false;
+  }
+
+  function loadSampleNote() {
+    if (!SAMPLE_NOTE) return false;
+    state = normalizeNote(SAMPLE_NOTE);
+    refreshEverything();
+    return true;
+  }
+
+  document.getElementById("btnLoadSample").addEventListener("click", () => {
+    if (!loadSampleNote()) { alert(t("示例数据未内置,请改用「导入 JSON」。", "Sample data is not built in — use “Import JSON” instead.")); return; }
+    document.getElementById("legacyMathBanner").classList.remove("is-open");
+  });
+  document.getElementById("btnBannerLoadSample").addEventListener("click", () => {
+    loadSampleNote();
+    document.getElementById("legacyMathBanner").classList.remove("is-open");
+  });
+  document.getElementById("btnBannerDismiss").addEventListener("click", () => {
+    document.getElementById("legacyMathBanner").classList.remove("is-open");
+  });
+  if (scanLegacyMath(state)) {
+    document.getElementById("legacyMathBanner").classList.add("is-open");
+  }
+
+  // ---------- path helpers ----------
+
+  function getPath(o, p) { return p.split(".").reduce((a, k) => (a == null ? a : a[k]), o); }
+  function setPath(o, p, v) {
+    const ks = p.split(".");
+    let a = o;
+    for (let i = 0; i < ks.length - 1; i++) a = a[ks[i]];
+    a[ks[ks.length - 1]] = v;
+  }
+
+  // ---------- tiny markdown subset ----------
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  // Only allow schemes that cannot execute code. Everything else (javascript:,
+  // data:, vbscript:, ...) collapses to a harmless "#" so a crafted
+  // [x](javascript:...) markdown link can never become a live URL.
+  function safeHref(url) {
+    const s = String(url).trim();
+    if (/^(https?:|mailto:)/i.test(s)) return s;
+    return "#";
+  }
+
+  function renderMathTex(tex, displayMode) {
+    const source = String(tex || "").trim();
+    if (!source) return "";
+    if (!window.katex || typeof window.katex.renderToString !== "function") {
+      return `<span class="math-error" title="${t("KaTeX 未载入", "KaTeX not loaded")}">${escapeHtml(source)}</span>`;
+    }
+    try {
+      return window.katex.renderToString(source, {
+        displayMode: Boolean(displayMode),
+        throwOnError: true,
+        strict: "warn",
+        trust: false,
+        output: "htmlAndMathml"
+      });
+    } catch (err) {
+      return `<span class="math-error" title="${escapeHtml(err.message || t("LaTeX 语法错误", "LaTeX syntax error"))}">${escapeHtml(source)}</span>`;
+    }
+  }
+
+  function inlineMd(text) {
+    if (!text) return "";
+    const math = [];
+    // Protect BOTH math forms before any Markdown runs, so `_`, `^` and `\sum`
+    // inside TeX are never eaten by the lightweight sub/sup/emphasis rules.
+    // Display math first (its body may contain \(...\)): rendered in display
+    // mode even mid-paragraph, which is what a \[...\] block means.
+    const tokenized = String(text)
+      .replace(/\\\[([\s\S]+?)\\\]/g, (_, tex) => {
+        const token = `\uE000${math.length}\uE001`;
+        math.push(renderMathTex(tex, true));
+        return token;
+      })
+      // Inline math + a single trailing punctuation mark travel together as one
+      // unbreakable unit, so "(316+5i)." never splits across a line break.
+      .replace(/\\\(([\s\S]+?)\\\)([.,;:!?])?/g, (_, tex, punct) => {
+        const token = `\uE000${math.length}\uE001`;
+        const html = renderMathTex(tex, false);
+        math.push(punct ? `<span style="white-space:nowrap">${html}${escapeHtml(punct)}</span>` : html);
+        return token;
+      });
+    let s = escapeHtml(tokenized);
+    s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+    s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => `<a href="${safeHref(url)}">${label}</a>`);
+    // Legacy compatibility for pre-LaTeX notes. New content should use \(...\).
+    s = s.replace(/_\{([^}]*)\}/g, "<sub>$1</sub>");
+    s = s.replace(/\^\{([^}]*)\}/g, "<sup>$1</sup>");
+    return s.replace(/\uE000(\d+)\uE001/g, (_, index) => math[Number(index)] || "");
+  }
+
+  function parseTableRow(line) {
+    return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  }
+
+  function renderTable(lines) {
+    if (!lines.length) return "";
+    const header = parseTableRow(lines[0]);
+    let rows = lines.slice(1);
+    let aligns = header.map(() => "left");
+    if (rows[0] && /^[\s|:-]+$/.test(rows[0])) {
+      aligns = parseTableRow(rows[0]).map((c) => {
+        const l = c.startsWith(":"), r = c.endsWith(":");
+        return l && r ? "center" : r ? "right" : "left";
+      });
+      rows = rows.slice(1);
+    }
+    const thead = "<thead><tr>" + header.map((h, i) => `<th style="text-align:${aligns[i] || "left"}">${inlineMd(h)}</th>`).join("") + "</tr></thead>";
+    const tbody = "<tbody>" + rows.map((r) => "<tr>" + parseTableRow(r).map((c, i) => `<td style="text-align:${aligns[i] || "left"}">${inlineMd(c)}</td>`).join("") + "</tr>").join("") + "</tbody>";
+    return `<div class="mdlite-table-wrap"><table class="table">${thead}${tbody}</table></div>`;
+  }
+
+  function isDisplayMathStart(line) {
+    const trimmed = String(line || "").trim();
+    return trimmed.startsWith("\\[") || trimmed.startsWith("$$");
+  }
+
+  function readDisplayMath(lines, start) {
+    const trimmed = lines[start].trim();
+    const open = trimmed.startsWith("\\[") ? "\\[" : "$$";
+    const close = open === "\\[" ? "\\]" : "$$";
+    let first = trimmed.slice(open.length);
+    if (first.endsWith(close)) {
+      return { text: first.slice(0, -close.length).trim(), next: start + 1 };
+    }
+    const content = [first];
+    let i = start + 1;
+    while (i < lines.length) {
+      const current = lines[i];
+      const end = current.indexOf(close);
+      if (end !== -1) {
+        content.push(current.slice(0, end));
+        return { text: content.join("\n").trim(), next: i + 1 };
+      }
+      content.push(current);
+      i++;
+    }
+    return { text: content.join("\n").trim(), next: i };
+  }
+
+  function isTableLine(line) {
+    return /^\s*\|.*\|\s*$/.test(String(line || ""));
+  }
+
+  // splits raw markdown text into structural blocks (shared by mdToHtml and Smart Paste)
+  function textToContentBlocks(raw) {
+    if (!raw || !raw.trim()) return [];
+    const lines = raw.replace(/\r\n/g, "\n").split("\n");
+    const blocks = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) { i++; continue; }
+
+      if (isDisplayMathStart(line)) {
+        const math = readDisplayMath(lines, i);
+        blocks.push({ type: "math", text: math.text });
+        i = math.next;
+        continue;
+      }
+      if (line.trim().startsWith("```")) {
+        i++;
+        const code = [];
+        while (i < lines.length && !lines[i].trim().startsWith("```")) { code.push(lines[i]); i++; }
+        i++;
+        blocks.push({ type: "code", text: code.join("\n") });
+        continue;
+      }
+      if (isTableLine(line)) {
+        const tbl = [];
+        while (i < lines.length && isTableLine(lines[i]) && lines[i].trim()) { tbl.push(lines[i]); i++; }
+        blocks.push({ type: "table", text: tbl.join("\n") });
+        continue;
+      }
+      if (/^(-|\*)\s+/.test(line.trim())) {
+        const items = [];
+        while (i < lines.length && /^(-|\*)\s+/.test(lines[i].trim())) { items.push(lines[i].trim().replace(/^(-|\*)\s+/, "")); i++; }
+        blocks.push({ type: "bullets", items });
+        continue;
+      }
+      if (/^\d+\.\s+/.test(line.trim())) {
+        const items = [];
+        while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) { items.push(lines[i].trim().replace(/^\d+\.\s+/, "")); i++; }
+        blocks.push({ type: "steps", items });
+        continue;
+      }
+      const para = [];
+      while (i < lines.length && lines[i].trim() && !lines[i].trim().startsWith("```") && !isDisplayMathStart(lines[i]) && !isTableLine(lines[i]) &&
+             !/^(-|\*)\s+/.test(lines[i].trim()) && !/^\d+\.\s+/.test(lines[i].trim())) {
+        para.push(lines[i]); i++;
+      }
+      blocks.push({ type: "paragraph", text: para.join(" ") });
+    }
+    return blocks;
+  }
+
+  function mdToHtml(raw) {
+    const blocks = textToContentBlocks(raw);
+    if (!blocks.length) return "";
+    return `<div class="mdlite">${blocks.map(renderBlockHtml).join("\n")}</div>`;
+  }
+
+  function emptyHint(msg) {
+    return `<p style="margin:0; font-style:italic; font-size:10pt; color:color-mix(in srgb, var(--color-text) 40%, transparent)">${escapeHtml(msg)}</p>`;
+  }
+
+  function sectionHead(num, title, kind) {
+    const tabular = /^\d+$/.test(num);
+    return `
+    <div class="sn-section-head" style="display:flex; align-items:baseline; gap:10pt; padding-bottom:6pt; border-bottom:1px solid var(--color-divider); margin-bottom:10pt">
+      <span style="font-family:var(--font-heading); font-weight:600; font-size:9pt; letter-spacing:0.12em; ${tabular ? "font-feature-settings:'tnum'; " : ""}color:var(--color-accent)">${num}</span>
+      <h2 style="margin:0; ${kind === "optional" ? "flex:1; " : ""}font-family:var(--font-heading); font-weight:400; font-size:${kind === "optional" ? "18" : "20"}pt; letter-spacing:-0.015em">${escapeHtml(title)}</h2>
+    </div>`;
+  }
+
+  function renderParagraphText(text) {
+    const parsed = textToContentBlocks(text);
+    return parsed.map((child) => child.type === "paragraph"
+      ? `<p>${inlineMd(child.text)}</p>`
+      : renderBlockHtml(child)).filter(Boolean).join("\n");
+  }
+
+  // ---------- reusable content blocks (rendering) ----------
+
+  function renderBlockHtml(block) {
+    switch (block.type) {
+      case "paragraph":
+        return block.text && block.text.trim() ? renderParagraphText(block.text) : "";
+      case "code":
+        return block.text && block.text.trim() ? `<pre class="mdlite-code">${escapeHtml(block.text)}</pre>` : "";
+      case "math":
+        return block.text && block.text.trim() ? renderMathTex(block.text, true) : "";
+      case "table":
+        return block.text && block.text.trim()
+          ? renderTable(block.text.replace(/\r\n/g, "\n").split("\n").filter((l) => l.trim()))
+          : "";
+      case "bullets": {
+        const items = (block.items || []).filter((v) => v.trim());
+        return items.length ? `<ul class="mdlite-ul">${items.map((it) => "<li>" + inlineMd(it) + "</li>").join("")}</ul>` : "";
+      }
+      case "steps": {
+        const items = (block.items || []).filter((v) => v.trim());
+        if (!items.length) return "";
+        return `<ol style="margin:0 0 10pt; padding:0; list-style:none; display:flex; flex-direction:column; gap:9pt">${items.map((it, idx) => `
+          <li style="display:flex; gap:10pt; break-inside:avoid">
+            <span style="flex:none; width:18pt; font-family:var(--font-heading); font-weight:600; font-size:10pt; font-feature-settings:'tnum'; color:var(--color-accent); padding-top:2pt">${idx + 1}.</span>
+            <span>${inlineMd(it)}</span>
+          </li>`).join("")}</ol>`;
+      }
+      case "stats": {
+        const items = (block.items || []).filter((it) => (it.kicker || "").trim() || (it.value || "").trim() || (it.body || "").trim());
+        if (!items.length) return "";
+        return `<div style="display:grid; grid-template-columns:repeat(${Math.min(items.length, 3)}, minmax(0,1fr)); gap:10pt; margin:0 0 10pt">${items.map((it) => `
+          <div class="card" style="break-inside:avoid"><div class="card-kicker">${escapeHtml(it.kicker || "")}</div><div class="card-title" style="font-feature-settings:'tnum'">${inlineMd(it.value || "")}</div><p class="card-body">${inlineMd(it.body || "")}</p></div>`).join("")}</div>`;
+      }
+      case "keyvalue": {
+        const items = (block.items || []).filter((it) => (it.label || "").trim() || (it.value || "").trim());
+        if (!items.length) return "";
+        return `<dl style="display:grid; grid-template-columns:112pt minmax(0,1fr); gap:6pt var(--space-4); margin:0 0 10pt; font-size:10.5pt">${items.map((it) => `<dt style="${KICKER}; padding-top:3pt">${escapeHtml(it.label || "")}</dt><dd style="margin:0">${inlineMd(it.value || "")}</dd>`).join("")}</dl>`;
+      }
+      case "callout": {
+        const text = block.text || "", kicker = block.kicker || "";
+        if (!text.trim() && !kicker.trim()) return "";
+        return `<div style="break-inside:avoid; border:1px solid var(--color-accent-300); background:var(--color-accent-100); border-radius:var(--radius-md); padding:14pt; margin:0 0 10pt">
+          ${kicker.trim() ? `<div style="font-family:var(--font-heading); font-weight:600; font-size:8.5pt; letter-spacing:0.14em; text-transform:uppercase; color:var(--color-accent-800); margin-bottom:7pt">${escapeHtml(kicker)}</div>` : ""}
+          <div class="accent-prose">${mdToHtml(text)}</div>
+        </div>`;
+      }
+      default: return "";
+    }
+  }
+
+  function renderBlocks(blocks) {
+    return (blocks || []).map(renderBlockHtml).filter(Boolean).join("\n");
+  }
+
+  function isBlockEmpty(b) {
+    switch (b.type) {
+      case "paragraph": case "code": case "math": case "table": return !b.text || !b.text.trim();
+      case "callout": return (!b.text || !b.text.trim()) && (!b.kicker || !b.kicker.trim());
+      case "bullets": case "steps": return !b.items || b.items.every((v) => !v.trim());
+      case "stats": return !b.items || b.items.every((it) => !it.kicker.trim() && !it.value.trim() && !it.body.trim());
+      case "keyvalue": return !b.items || b.items.every((it) => !it.label.trim() && !it.value.trim());
+      default: return true;
+    }
+  }
+  function blocksEmpty(blocks) { return !blocks || blocks.length === 0 || blocks.every(isBlockEmpty); }
+
+  // ---------- visibility ----------
+
+  function isSectionEmpty(sec) {
+    return sec.kind === "list"
+      ? state.optional[sec.key].every((v) => !v.trim())
+      : blocksEmpty(state.optional[sec.key]);
+  }
+  function isSectionVisible(sec) {
+    const forced = state.sections[sec.key];
+    if (forced === true) return true;
+    if (forced === false) return false;
+    return !isSectionEmpty(sec);
+  }
+
+  // ---------- preview rendering ----------
+
+  function renderToc(visibleOptional) {
+    const core = [["01", "Problem"], ["02", "Result"], ["03", "Why It Works"], ["04", "Evidence"], ["05", "Reproduce"]];
+    const all = core.map(([n, t]) => ({ n, t, tabular: true }))
+      .concat(visibleOptional.map((s) => ({ n: s.letter, t: s.title, tabular: false })));
+    const cells = all.map((it) => `
+      <div style="display:flex; gap:9pt"><span style="color:var(--color-accent); ${it.tabular ? "font-feature-settings:'tnum'; " : ""}width:16pt; flex:none">${it.n}</span>${escapeHtml(it.t)}</div>`).join("");
+    return `
+    <nav style="break-inside:avoid; margin-bottom:26pt">
+      <div style="font-family:var(--font-heading); font-weight:600; font-size:8.5pt; letter-spacing:0.14em; text-transform:uppercase; color:color-mix(in srgb, var(--color-text) 55%, transparent); padding-bottom:6pt; border-bottom:1px solid var(--color-divider); margin-bottom:9pt">Contents</div>
+      <div style="display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:4pt var(--space-6); font-size:10pt">${cells}</div>
+    </nav>`;
+  }
+
+  function renderHeader() {
+    const m = state.meta;
+    return `
+    <header style="margin-bottom:21pt; margin-top:22pt">
+      <h1 style="margin:0 0 10pt; font-family:var(--font-heading); font-weight:400; font-size:30pt; line-height:1.12; letter-spacing:-0.02em; text-wrap:pretty">${inlineMd(m.title) || "Untitled note"}</h1>
+      ${m.summary.trim() ? `<p style="margin:0 0 18pt; font-family:var(--font-heading); font-size:14.5pt; line-height:1.42; font-style:italic; color:color-mix(in srgb, var(--color-text) 72%, transparent); text-wrap:pretty">${inlineMd(m.summary)}</p>` : ""}
+      <div style="height:1px; background:var(--color-divider)"></div>
+      <dl style="display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10pt var(--space-4); margin:10pt 0 0">
+        <div><dt style="${KICKER}">Author</dt><dd style="margin:0; font-size:10.5pt">${inlineMd(m.author && m.author.trim() ? m.author : authorPreference())}</dd></div>
+        <div><dt style="${KICKER}">Date</dt><dd style="margin:0; font-size:10.5pt; font-feature-settings:'tnum'">${inlineMd(m.date) || "&mdash;"}</dd></div>
+        <div><dt style="${KICKER}">Status</dt><dd style="margin:0; font-family:var(--font-heading); font-weight:600; font-size:10.5pt; letter-spacing:0.05em; text-transform:uppercase; color:var(--color-accent-700)">${escapeHtml(m.status)}</dd></div>
+      </dl>
+      ${m.source.trim() ? `<dl style="margin:9pt 0 0"><dt style="${KICKER}">Source</dt><dd style="margin:0; font-size:10.5pt">${inlineMd(m.source)}</dd></dl>` : ""}
+    </header>`;
+  }
+
+  function sectionHeadGroup(head, firstHtml, restHtml) {
+    return `<div class="sn-section-head-group">${head}${firstHtml || ""}</div>${restHtml || ""}`;
+  }
+
+  function renderCoreSections() {
+    const r = state.core.result;
+    const steps = state.core.whyItWorks.filter((s) => s.title.trim() || s.body.trim());
+    // Step title sits on its own line (block), with the explanation below it —
+    // the title never runs into the body text.
+    const stepsHtml = steps.map((step, idx) => `
+      <li style="display:flex; gap:10pt; break-inside:avoid">
+        <span style="flex:none; width:18pt; font-family:var(--font-heading); font-weight:600; font-size:10pt; font-feature-settings:'tnum'; color:var(--color-accent); padding-top:2pt">${idx + 1}.</span>
+        <div style="flex:1; min-width:0">${step.title.trim() ? `<strong style="display:block; font-family:var(--font-heading); font-weight:600; font-size:11.5pt; margin-bottom:1pt">${inlineMd(step.title)}</strong>` : ""}${mdToHtml(step.body)}</div>
+      </li>`).join("");
+
+    const rows = [
+      ["Source code", state.core.reproduce.sourceCode],
+      ["Data", state.core.reproduce.data],
+      ["Verification script", state.core.reproduce.verificationScript],
+      ["Certificate", state.core.reproduce.certificate],
+      ["Discussion", state.core.reproduce.discussion]
+    ].filter(([, v]) => v.trim());
+
+    const problemHtmls = textToContentBlocks(state.core.problem).map(renderBlockHtml).filter(Boolean);
+    const resultBox = `
+      <div style="break-inside:avoid; border:1px solid var(--color-accent-300); background:var(--color-accent-100); border-radius:var(--radius-md); padding:14pt">
+        <div style="font-family:var(--font-heading); font-weight:600; font-size:8.5pt; letter-spacing:0.14em; text-transform:uppercase; color:var(--color-accent-800); margin-bottom:7pt">${escapeHtml((r.type || "Theorem").toUpperCase())}</div>
+        <div class="accent-prose">${mdToHtml(r.statement) || emptyHint("State the claim.")}</div>
+      </div>`;
+    const resultRest = r.explanation.trim() ? `<p style="margin:12pt 0 0"><strong style="font-family:var(--font-heading)">In plain terms.</strong> ${inlineMd(r.explanation)}</p>` : "";
+    const stepsList = steps.length ? `<ol style="margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:11pt">${stepsHtml}</ol>` : emptyHint("The mechanism in a handful of steps.");
+    const evidenceHtmls = (state.core.evidence || []).map(renderBlockHtml).filter(Boolean);
+    // Short fields keep the two-column label layout; long fields (certificate,
+    // discussion, ...) become a full-width block under their own label.
+    const reproduceList = rows.length
+      ? `<dl style="margin:0; font-size:10.5pt">${rows.map(([label, val]) => {
+          const fullWidth = val.length > 140;
+          return fullWidth
+            ? `<div style="margin:0 0 10pt"><dt style="${KICKER}">${escapeHtml(label)}</dt><dd style="margin:3pt 0 0">${inlineMd(val)}</dd></div>`
+            : `<div style="display:grid; grid-template-columns:112pt minmax(0,1fr); gap:6pt var(--space-4); align-items:baseline; margin:0 0 5pt"><dt style="${KICKER}">${escapeHtml(label)}</dt><dd style="margin:0">${inlineMd(val)}</dd></div>`;
+        }).join("")}</dl>`
+      : emptyHint("Everything a reader needs to run the check themselves.");
+
+    return `
+    <section class="sn-section" style="margin-bottom:21pt">
+      ${sectionHeadGroup(
+        sectionHead("01", "Problem", "core"),
+        problemHtmls[0] || emptyHint("State the problem so a reader never has to open the original thread."),
+        problemHtmls.slice(1).join("\n")
+      )}
+    </section>
+
+    <section class="sn-section" style="margin-bottom:21pt">
+      ${sectionHeadGroup(sectionHead("02", "Result", "core"), resultBox, resultRest)}
+    </section>
+
+    <section class="sn-section" style="margin-bottom:21pt">
+      ${sectionHeadGroup(sectionHead("03", "Why It Works", "core"), stepsList, "")}
+    </section>
+
+    <section class="sn-section" style="margin-bottom:21pt">
+      ${sectionHeadGroup(
+        sectionHead("04", "Evidence", "core"),
+        evidenceHtmls[0] || emptyHint("What was actually checked, and how far."),
+        evidenceHtmls.slice(1).join("\n")
+      )}
+    </section>
+
+    <section class="sn-section" style="margin-bottom:21pt">
+      ${sectionHeadGroup(sectionHead("05", "Reproduce", "core"), reproduceList, "")}
+    </section>`;
+  }
+
+  function renderOptionalSections(visible) {
+    if (!visible.length) return "";
+    const body = visible.map((sec) => {
+      if (sec.key === "references") {
+        const items = state.optional.references.filter((r) => r.trim());
+        const refList = `<ol style="margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6pt; font-size:10.5pt">
+            ${items.map((ref, idx) => `<li style="display:flex; gap:10pt"><span style="flex:none; width:14pt; font-feature-settings:'tnum'; color:color-mix(in srgb, var(--color-text) 45%, transparent)">${idx + 1}</span><span>${inlineMd(ref)}</span></li>`).join("")}
+          </ol>`;
+        return `
+        <section class="sn-section" style="margin-bottom:21pt">
+          ${sectionHeadGroup(sectionHead(sec.letter, sec.title, "optional"), refList, "")}
+        </section>`;
+      }
+      const htmls = (state.optional[sec.key] || []).map(renderBlockHtml).filter(Boolean);
+      return `
+      <section class="sn-section" style="margin-bottom:21pt">
+        ${sectionHeadGroup(sectionHead(sec.letter, sec.title, "optional"), htmls[0] || "", htmls.slice(1).join("\n"))}
+      </section>`;
+    }).join("");
+
+    return `
+    <div>
+      <div class="sn-optional-divider" style="break-inside:avoid; display:flex; align-items:center; gap:10pt; margin:30pt 0 22pt">
+        <span style="flex:1; height:1px; background:var(--color-divider)"></span>
+        <span style="font-family:var(--font-heading); font-weight:600; font-size:8.5pt; letter-spacing:0.18em; text-transform:uppercase; color:color-mix(in srgb, var(--color-text) 45%, transparent)">Optional sections</span>
+        <span style="flex:1; height:1px; background:var(--color-divider)"></span>
+      </div>
+      ${body}
+    </div>`;
+  }
+
+  function renderPreview() {
+    const visible = OPTIONAL_SECTIONS.filter(isSectionVisible);
+    document.getElementById("noteRoot").innerHTML = `
+    <div class="sn-document" style="font-family:var(--font-body); font-size:12pt; line-height:1.6; color:var(--color-text)">
+      ${renderHeader()}
+      ${renderCoreSections()}
+      ${renderOptionalSections(visible)}
+    </div>`;
+    document.getElementById("footerNoteNum").textContent = "Note " + (state.meta.noteNumber || "—");
+    document.getElementById("footerStatus").textContent = state.meta.status;
+  }
+
+  // ---------- form: simple bound fields ----------
+
+  function initBoundFields(root) {
+    root.querySelectorAll("[data-bind]").forEach((el) => {
+      el.value = getPath(state, el.dataset.bind) ?? "";
+      const onChange = () => { setPath(state, el.dataset.bind, el.value); renderPreview(); scheduleSave(); };
+      el.addEventListener("input", onChange);
+      el.addEventListener("change", onChange);
+      if (el.dataset.bind === "meta.author") {
+        el.addEventListener("blur", () => {
+          setAuthorPreference(el.value);
+          if (!el.value.trim()) {
+            state.meta.author = authorPreference();
+            el.value = state.meta.author;
+            renderPreview();
+            scheduleSave();
+          }
+        });
+      }
+    });
+  }
+  function syncBoundFields(root) {
+    root.querySelectorAll("[data-bind]").forEach((el) => { el.value = getPath(state, el.dataset.bind) ?? ""; });
+  }
+
+  function mkIconBtn(label, title, onClick) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "block-icon-btn"; b.textContent = label; b.title = title;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  // ---------- form: why-it-works dynamic list (title + body, reorderable) ----------
+
+  function renderWhyList() {
+    const container = document.getElementById("whyList");
+    container.innerHTML = "";
+    state.core.whyItWorks.forEach((step, idx) => {
+      const card = document.createElement("div");
+      card.className = "block-card";
+
+      const head = document.createElement("div");
+      head.className = "block-card-head";
+      const label = document.createElement("span");
+      label.className = "block-type-label"; label.textContent = t("步骤 " + (idx + 1), "Step " + (idx + 1));
+      head.appendChild(label);
+      const spacer = document.createElement("span"); spacer.style.flex = "1"; head.appendChild(spacer);
+      head.appendChild(mkIconBtn("↑", t("上移", "Move up"), () => {
+        if (idx === 0) return;
+        const a = state.core.whyItWorks; [a[idx - 1], a[idx]] = [a[idx], a[idx - 1]];
+        renderWhyList(); renderPreview(); scheduleSave();
+      }));
+      head.appendChild(mkIconBtn("↓", t("下移", "Move down"), () => {
+        const a = state.core.whyItWorks;
+        if (idx === a.length - 1) return;
+        [a[idx + 1], a[idx]] = [a[idx], a[idx + 1]];
+        renderWhyList(); renderPreview(); scheduleSave();
+      }));
+      head.appendChild(mkIconBtn("×", t("删除该步骤", "Delete this step"), () => {
+        if (state.core.whyItWorks.length <= 1) return;
+        state.core.whyItWorks.splice(idx, 1);
+        renderWhyList(); renderPreview(); scheduleSave();
+      }));
+      card.appendChild(head);
+
+      const titleInput = document.createElement("input");
+      titleInput.className = "input"; titleInput.value = step.title;
+      titleInput.placeholder = t("简短引导语(可选),例如“宏字母编码。”", "Short lead-in (optional), e.g. “macro-letter encoding.”");
+      titleInput.addEventListener("input", () => { step.title = titleInput.value; renderPreview(); scheduleSave(); });
+
+      const bodyTa = document.createElement("textarea");
+      bodyTa.className = "input"; bodyTa.rows = 2; bodyTa.value = step.body;
+      bodyTa.placeholder = t("这一步的具体内容", "What this step actually does");
+      bodyTa.addEventListener("input", () => { step.body = bodyTa.value; renderPreview(); scheduleSave(); });
+
+      card.appendChild(titleInput);
+      card.appendChild(bodyTa);
+      container.appendChild(card);
+    });
+  }
+
+  document.getElementById("addStepBtn").addEventListener("click", () => {
+    state.core.whyItWorks.push({ title: "", body: "" });
+    renderWhyList(); renderPreview(); scheduleSave();
+  });
+
+  // ---------- form: reusable content-block editor ----------
+
+  function blockEditorId(path) { return "blocks-" + path.replace(/\./g, "-"); }
+
+  function onBlocksChanged(path) {
+    const parts = path.split(".");
+    if (parts[0] === "optional") refreshOptionalRow(parts[1]);
+    renderPreview(); scheduleSave();
+  }
+
+  function rerenderBlockEditorFor(path) {
+    const el = document.getElementById(blockEditorId(path));
+    if (el) buildBlockEditor(el, path);
+  }
+
+  function buildBlockFields(path, block) {
+    const wrap = document.createElement("div");
+    const notify = () => onBlocksChanged(path);
+
+    if (block.type === "paragraph" || block.type === "code" || block.type === "math") {
+      const ta = document.createElement("textarea");
+      ta.className = "input"; ta.rows = block.type === "code" ? 4 : block.type === "math" ? 2 : 3;
+      ta.value = block.text || "";
+      ta.placeholder = block.type === "code"
+        ? t("原始文本/输出内容,会原样显示在代码块里", "Raw text/output; shown verbatim inside a code block")
+        : block.type === "math"
+          ? t("标准 LaTeX,例如 \\sum_{d \\in D(z)} d = 2z", "Standard LaTeX, e.g. \\sum_{d \\in D(z)} d = 2z")
+          : t("Markdown 段落;行内数学用 \\( ... \\)", "Markdown paragraph; inline math with \\( ... \\)");
+      if (block.type === "code" || block.type === "math") ta.style.fontFamily = "ui-monospace, Menlo, Consolas, monospace";
+      ta.addEventListener("input", () => { block.text = ta.value; notify(); });
+      wrap.appendChild(ta);
+    } else if (block.type === "table") {
+      const ta = document.createElement("textarea");
+      ta.className = "input"; ta.rows = 4; ta.value = block.text || "";
+      ta.placeholder = "| Column | Column |\n|---|---:|\n| a | b |";
+      ta.addEventListener("input", () => { block.text = ta.value; notify(); });
+      wrap.appendChild(ta);
+    } else if (block.type === "callout") {
+      const kickerInput = document.createElement("input");
+      kickerInput.className = "input"; kickerInput.placeholder = t("小标签(例如:注意)", "Small label (e.g. note)"); kickerInput.value = block.kicker || "";
+      kickerInput.addEventListener("input", () => { block.kicker = kickerInput.value; notify(); });
+      const ta = document.createElement("textarea");
+      ta.className = "input"; ta.rows = 3; ta.value = block.text || "";
+      ta.addEventListener("input", () => { block.text = ta.value; notify(); });
+      wrap.appendChild(kickerInput); wrap.appendChild(ta);
+    } else if (block.type === "bullets" || block.type === "steps") {
+      if (!Array.isArray(block.items)) block.items = [];
+      block.items.forEach((val, i) => {
+        const row = document.createElement("div");
+        row.className = "dyn-row";
+        const ta = document.createElement("textarea");
+        ta.className = "input"; ta.rows = 1; ta.value = val;
+        ta.addEventListener("input", () => { block.items[i] = ta.value; notify(); });
+        const rm = mkIconBtn("×", t("删除该项", "Remove item"), () => {
+          if (block.items.length <= 1) return;
+          block.items.splice(i, 1); rerenderBlockEditorFor(path); notify();
+        });
+        row.appendChild(ta); row.appendChild(rm);
+        wrap.appendChild(row);
+      });
+      const addBtn = document.createElement("button");
+      addBtn.type = "button"; addBtn.className = "btn btn-secondary"; addBtn.textContent = t("+ 添加项", "+ Add Item");
+      addBtn.addEventListener("click", () => { block.items.push(""); rerenderBlockEditorFor(path); notify(); });
+      wrap.appendChild(addBtn);
+    } else if (block.type === "stats") {
+      if (!Array.isArray(block.items)) block.items = [];
+      block.items.forEach((it, i) => {
+        const row = document.createElement("div");
+        row.className = "stat-item-row";
+        const kickerI = document.createElement("input"); kickerI.className = "input"; kickerI.placeholder = t("小标签", "Label"); kickerI.value = it.kicker || "";
+        const valueI = document.createElement("input"); valueI.className = "input"; valueI.placeholder = t("数值", "Value"); valueI.value = it.value || "";
+        const bodyI = document.createElement("textarea"); bodyI.className = "input"; bodyI.rows = 2; bodyI.placeholder = t("说明", "Note"); bodyI.value = it.body || "";
+        kickerI.addEventListener("input", () => { it.kicker = kickerI.value; notify(); });
+        valueI.addEventListener("input", () => { it.value = valueI.value; notify(); });
+        bodyI.addEventListener("input", () => { it.body = bodyI.value; notify(); });
+        const rm = mkIconBtn("×", t("删除卡片", "Delete card"), () => { block.items.splice(i, 1); rerenderBlockEditorFor(path); notify(); });
+        row.appendChild(kickerI); row.appendChild(valueI); row.appendChild(bodyI); row.appendChild(rm);
+        wrap.appendChild(row);
+      });
+      const addBtn = document.createElement("button");
+      addBtn.type = "button"; addBtn.className = "btn btn-secondary"; addBtn.textContent = t("+ 添加卡片", "+ Add Card");
+      addBtn.addEventListener("click", () => { block.items.push({ kicker: "", value: "", body: "" }); rerenderBlockEditorFor(path); notify(); });
+      wrap.appendChild(addBtn);
+    } else if (block.type === "keyvalue") {
+      if (!Array.isArray(block.items)) block.items = [];
+      block.items.forEach((it, i) => {
+        const row = document.createElement("div");
+        row.className = "kv-item-row";
+        const labelI = document.createElement("input"); labelI.className = "input"; labelI.placeholder = t("标签", "Label"); labelI.value = it.label || "";
+        const valueI = document.createElement("input"); valueI.className = "input"; valueI.placeholder = t("值", "Value"); valueI.value = it.value || "";
+        labelI.addEventListener("input", () => { it.label = labelI.value; notify(); });
+        valueI.addEventListener("input", () => { it.value = valueI.value; notify(); });
+        const rm = mkIconBtn("×", t("删除该行", "Delete row"), () => { block.items.splice(i, 1); rerenderBlockEditorFor(path); notify(); });
+        row.appendChild(labelI); row.appendChild(valueI); row.appendChild(rm);
+        wrap.appendChild(row);
+      });
+      const addBtn = document.createElement("button");
+      addBtn.type = "button"; addBtn.className = "btn btn-secondary"; addBtn.textContent = t("+ 添加行", "+ Add Row");
+      addBtn.addEventListener("click", () => { block.items.push({ label: "", value: "" }); rerenderBlockEditorFor(path); notify(); });
+      wrap.appendChild(addBtn);
+    }
+    return wrap;
+  }
+
+  function renderBlockEditorRow(path, idx, block) {
+    const arr = getPath(state, path);
+    const card = document.createElement("div");
+    card.className = "block-card";
+    const head = document.createElement("div");
+    head.className = "block-card-head";
+    const typeLabel = document.createElement("span");
+    typeLabel.className = "block-type-label";
+    const bt = BLOCK_TYPES.find((t) => t.type === block.type) || {};
+    typeLabel.textContent = bt.labelEn ? t(bt.label, bt.labelEn) : block.type;
+    head.appendChild(typeLabel);
+    const spacer = document.createElement("span"); spacer.style.flex = "1"; head.appendChild(spacer);
+    head.appendChild(mkIconBtn("↑", t("上移", "Move up"), () => {
+      if (idx === 0) return;
+      [arr[idx - 1], arr[idx]] = [arr[idx], arr[idx - 1]];
+      rerenderBlockEditorFor(path); onBlocksChanged(path);
+    }));
+    head.appendChild(mkIconBtn("↓", t("下移", "Move down"), () => {
+      if (idx === arr.length - 1) return;
+      [arr[idx + 1], arr[idx]] = [arr[idx], arr[idx + 1]];
+      rerenderBlockEditorFor(path); onBlocksChanged(path);
+    }));
+    head.appendChild(mkIconBtn("×", t("删除该块", "Delete block"), () => {
+      arr.splice(idx, 1);
+      rerenderBlockEditorFor(path); onBlocksChanged(path);
+    }));
+    card.appendChild(head);
+    const body = document.createElement("div");
+    body.className = "block-card-body";
+    body.appendChild(buildBlockFields(path, block));
+    card.appendChild(body);
+    return card;
+  }
+
+  function buildBlockEditor(containerEl, path) {
+    containerEl.innerHTML = "";
+    const blocks = getPath(state, path);
+    blocks.forEach((block, idx) => containerEl.appendChild(renderBlockEditorRow(path, idx, block)));
+
+    const addRow = document.createElement("div");
+    addRow.className = "block-add-row";
+    const sel = document.createElement("select");
+    sel.className = "input";
+    BLOCK_TYPES.forEach((bt) => {
+      const opt = document.createElement("option");
+      opt.value = bt.type; opt.textContent = bt.labelEn ? t(bt.label, bt.labelEn) : bt.label;
+      sel.appendChild(opt);
+    });
+    const addBtn = document.createElement("button");
+    addBtn.type = "button"; addBtn.className = "btn btn-secondary"; addBtn.textContent = t("+ 添加内容块", "+ Add Content Block");
+    addBtn.addEventListener("click", () => {
+      getPath(state, path).push(blockDefaults(sel.value));
+      buildBlockEditor(containerEl, path);
+      onBlocksChanged(path);
+    });
+    addRow.appendChild(sel); addRow.appendChild(addBtn);
+    containerEl.appendChild(addRow);
+  }
+
+  // ---------- form: optional sections ----------
+
+  function isForced(key) { return state.sections[key]; }
+
+  function refreshOptionalRow(key) {
+    const sec = OPTIONAL_SECTIONS.find((s) => s.key === key);
+    const row = document.querySelector('.opt-row[data-section="' + key + '"]');
+    if (!row) return;
+    row.querySelector('input[type="checkbox"]').checked = isSectionVisible(sec);
+    const autoBtn = row.querySelector(".opt-auto-btn");
+    autoBtn.classList.toggle("is-forced", isForced(key) !== null);
+    row.classList.toggle("is-empty", isSectionEmpty(sec) && isForced(key) === null);
+  }
+
+  function renderListField(key) {
+    const wrap = document.getElementById("list-" + key);
+    wrap.innerHTML = "";
+    state.optional[key].forEach((val, idx) => {
+      const row = document.createElement("div");
+      row.className = "dyn-row";
+      const ta = document.createElement("textarea");
+      ta.className = "input"; ta.rows = 2; ta.value = val;
+      ta.addEventListener("input", () => {
+        state.optional[key][idx] = ta.value;
+        refreshOptionalRow(key); renderPreview(); scheduleSave();
+      });
+      const rm = document.createElement("button");
+      rm.type = "button"; rm.className = "btn btn-secondary btn-icon-sm"; rm.textContent = "×";
+      rm.addEventListener("click", () => {
+        if (state.optional[key].length <= 1) return;
+        state.optional[key].splice(idx, 1);
+        renderListField(key); refreshOptionalRow(key); renderPreview(); scheduleSave();
+      });
+      row.appendChild(ta); row.appendChild(rm);
+      wrap.appendChild(row);
+    });
+  }
+
+  function buildOptionalSectionsForm() {
+    const container = document.getElementById("optionalList");
+    container.innerHTML = "";
+    OPTIONAL_SECTIONS.forEach((sec) => {
+      const row = document.createElement("div");
+      row.className = "opt-row";
+      row.dataset.section = sec.key;
+
+      const head = document.createElement("div");
+      head.className = "opt-head";
+      const label = document.createElement("label");
+      label.className = "opt-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.addEventListener("change", () => {
+        state.sections[sec.key] = cb.checked;
+        refreshOptionalRow(sec.key); renderPreview(); scheduleSave();
+      });
+      const letterSpan = document.createElement("span");
+      letterSpan.className = "opt-letter"; letterSpan.textContent = sec.letter;
+      const titleSpan = document.createElement("span");
+      titleSpan.className = "opt-title"; titleSpan.textContent = t(sec.editorLabel, sec.title);
+      label.appendChild(cb); label.appendChild(letterSpan); label.appendChild(titleSpan);
+      head.appendChild(label);
+
+      const autoBtn = document.createElement("button");
+      autoBtn.type = "button"; autoBtn.className = "opt-auto-btn"; autoBtn.textContent = t("自动", "Auto");
+      autoBtn.title = t("恢复自动(为空时隐藏)", "Restore auto (hidden when empty)");
+      autoBtn.addEventListener("click", () => {
+        state.sections[sec.key] = null;
+        refreshOptionalRow(sec.key); renderPreview(); scheduleSave();
+      });
+      head.appendChild(autoBtn);
+      row.appendChild(head);
+
+      if (sec.kind === "text") {
+        const blocksWrap = document.createElement("div");
+        blocksWrap.id = blockEditorId("optional." + sec.key);
+        row.appendChild(blocksWrap);
+      } else {
+        const listWrap = document.createElement("div");
+        listWrap.className = "dyn-list"; listWrap.id = "list-" + sec.key;
+        row.appendChild(listWrap);
+        const addBtn = document.createElement("button");
+        addBtn.type = "button"; addBtn.className = "btn btn-secondary btn-block"; addBtn.textContent = t("+ 添加参考文献", "+ Add Reference");
+        addBtn.addEventListener("click", () => {
+          state.optional[sec.key].push("");
+          renderListField(sec.key); refreshOptionalRow(sec.key); renderPreview(); scheduleSave();
+        });
+        row.appendChild(addBtn);
+      }
+      container.appendChild(row);
+    });
+
+    OPTIONAL_SECTIONS.forEach((sec) => {
+      if (sec.kind === "list") renderListField(sec.key);
+      else buildBlockEditor(document.getElementById(blockEditorId("optional." + sec.key)), "optional." + sec.key);
+    });
+    OPTIONAL_SECTIONS.forEach((sec) => refreshOptionalRow(sec.key));
+  }
+
+  // ---------- toolbar: New / Import / Export / Print ----------
+
+  function slugify(s) {
+    return (s || "solution-note").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "solution-note";
+  }
+  function download(filename, text, mime) {
+    const blob = new Blob([text], { type: mime || "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function refreshEverything() {
+    syncBoundFields(document);
+    renderWhyList();
+    buildBlockEditor(document.getElementById(blockEditorId("core.evidence")), "core.evidence");
+    buildOptionalSectionsForm();
+    renderPreview();
+    scheduleSave();
+  }
+
+  document.getElementById("btnExport").addEventListener("click", () => {
+    ensureDefaultAuthor(state);
+    syncBoundFields(document);
+    state.format = FORMAT_ID;
+    state.version = FORMAT_VERSION;
+    // Canonical interchange format: no top-level `sections` (editor display
+    // state). Only when the user forced/hid any section do we attach it under
+    // `ui.sections`, an optional UI-extension field.
+    const out = Object.assign({}, state);
+    delete out.sections;
+    if (Object.values(state.sections || {}).some((v) => v !== null)) {
+      out.ui = { sections: Object.assign({}, state.sections) };
+    }
+    download(slugify(state.meta.title) + ".solution-note.json", JSON.stringify(out, null, 2));
+  });
+
+  document.getElementById("btnExportHtml").addEventListener("click", () => {
+    download(slugify(state.meta.title) + ".html", buildStandaloneHtml(), "text/html");
+  });
+
+  // ---------- import validation (Solution Note Interchange Format v1.0) ----------
+  //
+  // Pipeline, in order (validating the RAW input before anything sanitizes it
+  // is the whole point — sanitizing first would make a wrong-typed field like
+  // `"kicker": 123` look like a normal empty string by the time it's checked):
+  //   1. Parse JSON                         (fatal on failure)
+  //   2. validateRaw() walks the ORIGINAL parsed object field-by-field,
+  //      collecting fatal errors (unrecoverable) and warnings (recoverable —
+  //      the field will be dropped/defaulted, but the import proceeds)
+  //   3. Report shown to the user — nothing is silent
+  //   4. migrateLegacyShapes() clones + coerces/defaults every field this
+  //      pass already flagged as wrong-shaped
+  //   5. deepMergeKnown() — Replace (fresh blankNote() as target) or Merge
+  //      (live state as target)
+  //   6. renderPreview()
+
+  const KNOWN_TOP_KEYS = ["format", "version", "meta", "core", "optional", "sections", "ui"];
+  const KNOWN_META_KEYS = ["noteNumber", "title", "summary", "author", "date", "status", "source"];
+  const KNOWN_OPTIONAL_KEYS = OPTIONAL_SECTIONS.map((s) => s.key);
+  const STATUS_OPTIONS = ["Solved", "Partial", "Computational", "Conjecture", "Counterexample", "Improved Algorithm"];
+  const RESULT_TYPES = ["Theorem", "Main Result", "Construction", "Counterexample", "Computed Value", "Bound", "Formula", "Conjecture", "Algorithmic Result"];
+
+  function describeType(v) {
+    if (v === null) return "null";
+    if (Array.isArray(v)) return t("数组", "array");
+    const zh = { string: "字符串", number: "数字", boolean: "布尔值", object: "对象", undefined: "undefined", function: "函数" };
+    const en = { string: "string", number: "number", boolean: "boolean", object: "object", undefined: "undefined", function: "function" };
+    const k = typeof v;
+    return t(zh[k] || k, en[k] || k);
+  }
+
+  function countLeafFields(v) {
+    if (v == null) return 0;
+    if (typeof v === "string") return v.trim() ? 1 : 0;
+    if (Array.isArray(v)) return v.reduce((n, it) => n + countLeafFields(it), 0);
+    if (typeof v === "object") return Object.values(v).reduce((n, it) => n + countLeafFields(it), 0);
+    return 1;
+  }
+
+  // Recurses into one block array, flagging every field that migrateLegacyShapes
+  // (via normalizeBlock) is about to coerce or drop — same shape rules, but
+  // reporting instead of silently fixing.
+  function validateBlockArray(basePath, arr, warn) {
+    arr.forEach((raw, i) => {
+      const p = `${basePath}[${i}]`;
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        warn(p, t(`期望是一个内容块对象;实际是${describeType(raw)}。已忽略(按空段落处理)。`, `Expected a content-block object; got ${describeType(raw)}. Ignored (treated as an empty paragraph).`));
+        return;
+      }
+      const knownType = BLOCK_TYPES.some((t) => t.type === raw.type);
+      if (!knownType) warn(`${p}.type`, t(`无法识别的内容块类型 "${raw.type}";按段落处理。`, `Unrecognized content-block type "${raw.type}"; treated as a paragraph.`));
+      const type = knownType ? raw.type : "paragraph";
+      const expectItemString = (obj, key, itemPath) => {
+        if (obj[key] === undefined) warn(itemPath, t("缺失;按空文本处理。", "Missing; treated as empty text."));
+        else if (typeof obj[key] !== "string") warn(itemPath, t(`期望是字符串;实际是${describeType(obj[key])}。按空文本处理。`, `Expected a string; got ${describeType(obj[key])}. Treated as empty text.`));
+      };
+      switch (type) {
+        case "paragraph": case "code": case "math": case "table":
+          if (raw.text !== undefined && typeof raw.text !== "string") warn(`${p}.text`, t(`期望是字符串;实际是${describeType(raw.text)}。已忽略。`, `Expected a string; got ${describeType(raw.text)}. Ignored.`));
+          break;
+        case "callout":
+          if (raw.text !== undefined && typeof raw.text !== "string") warn(`${p}.text`, t(`期望是字符串;实际是${describeType(raw.text)}。已忽略。`, `Expected a string; got ${describeType(raw.text)}. Ignored.`));
+          if (raw.kicker !== undefined && typeof raw.kicker !== "string") warn(`${p}.kicker`, t(`期望是字符串;实际是${describeType(raw.kicker)}。已忽略。`, `Expected a string; got ${describeType(raw.kicker)}. Ignored.`));
+          break;
+        case "bullets": case "steps":
+          if (raw.items === undefined) warn(`${p}.items`, t("缺失;按空处理。", "Missing; treated as empty."));
+          else if (!Array.isArray(raw.items)) warn(`${p}.items`, t(`期望是数组;实际是${describeType(raw.items)}。已忽略。`, `Expected an array; got ${describeType(raw.items)}. Ignored.`));
+          else raw.items.forEach((v, j) => { if (typeof v !== "string") warn(`${p}.items[${j}]`, t(`期望是字符串;实际是${describeType(v)}。已忽略。`, `Expected a string; got ${describeType(v)}. Ignored.`)); });
+          break;
+        case "stats":
+          if (raw.items === undefined) warn(`${p}.items`, t("缺失;按空处理。", "Missing; treated as empty."));
+          else if (!Array.isArray(raw.items)) warn(`${p}.items`, t(`期望是数组;实际是${describeType(raw.items)}。已忽略。`, `Expected an array; got ${describeType(raw.items)}. Ignored.`));
+          else raw.items.forEach((it, j) => {
+            if (typeof it !== "object" || it === null || Array.isArray(it)) { warn(`${p}.items[${j}]`, t(`期望是对象;实际是${describeType(it)}。已忽略。`, `Expected an object; got ${describeType(it)}. Ignored.`)); return; }
+            ["kicker", "value", "body"].forEach((k) => expectItemString(it, k, `${p}.items[${j}].${k}`));
+          });
+          break;
+        case "keyvalue":
+          if (raw.items === undefined) warn(`${p}.items`, t("缺失;按空处理。", "Missing; treated as empty."));
+          else if (!Array.isArray(raw.items)) warn(`${p}.items`, t(`期望是数组;实际是${describeType(raw.items)}。已忽略。`, `Expected an array; got ${describeType(raw.items)}. Ignored.`));
+          else raw.items.forEach((it, j) => {
+            if (typeof it !== "object" || it === null || Array.isArray(it)) { warn(`${p}.items[${j}]`, t(`期望是对象;实际是${describeType(it)}。已忽略。`, `Expected an object; got ${describeType(it)}. Ignored.`)); return; }
+            ["label", "value"].forEach((k) => expectItemString(it, k, `${p}.items[${j}].${k}`));
+          });
+          break;
+      }
+    });
+  }
+
+  // Walks the RAW (pre-migration) parsed JSON. Never throws: worst case is a
+  // long warning list, not a crash — every mismatch is reported, not one is
+  // silently dropped. Imported content is only ever placed into text/attribute
+  // values via escapeHtml, so nothing here can inject executable HTML or
+  // script regardless of what a model puts in a field.
+  function validateRaw(parsed) {
+    const warnings = [];
+    const errors = [];
+    const warn = (path, message) => warnings.push({ path, message });
+    const fatal = (path, message) => errors.push({ path, message });
+
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      fatal("", t(`顶层必须是一个 JSON 对象;实际是${describeType(parsed)}。`, `Top level must be a JSON object; got ${describeType(parsed)}.`));
+      return { errors, warnings, fieldCount: 0 };
+    }
+
+    if (parsed.format !== undefined && parsed.format !== FORMAT_ID) {
+      fatal("format", t(`期望是 "${FORMAT_ID}";实际是 "${parsed.format}"。这看起来不是解题笔记文件。`, `Expected "${FORMAT_ID}"; got "${parsed.format}". This does not look like a Solution Note file.`));
+    } else if (parsed.format === undefined) {
+      warn("format", t("缺失;姑且当作解题笔记文件处理。", "Missing; treated as a Solution Note file."));
+    }
+    if (parsed.version !== undefined) {
+      const major = String(parsed.version).split(".")[0];
+      const currentMajor = FORMAT_VERSION.split(".")[0];
+      if (major !== currentMajor) {
+        fatal("version", t(`不支持的版本 "${parsed.version}" —— 本工具支持的主版本号是 ${currentMajor}.x。`, `Unsupported version "${parsed.version}" — this tool supports major version ${currentMajor}.x.`));
+      } else if (String(parsed.version) !== FORMAT_VERSION) {
+        warn("version", t(`文件版本 "${parsed.version}" 与本工具的 "${FORMAT_VERSION}" 不同;字段按名称尽力匹配。`, `File version "${parsed.version}" differs from this tool's "${FORMAT_VERSION}"; fields are matched by name.`));
+      }
+    } else {
+      warn("version", t("缺失;姑且当作兼容版本处理。", "Missing; treated as a compatible version."));
+    }
+
+    // Fatal errors mean this isn't safely recognizable as a Solution Note file
+    // at all — stop before walking fields that may not even mean what we think.
+    if (errors.length) return { errors, warnings, fieldCount: 0 };
+
+    Object.keys(parsed).filter((k) => !KNOWN_TOP_KEYS.includes(k)).forEach((k) => warn(k, t("未知字段;已忽略。", "Unknown field; ignored.")));
+
+    const expectString = (path, v) => { if (v !== undefined && typeof v !== "string") warn(path, t(`期望是字符串;实际是${describeType(v)}。已忽略。`, `Expected a string; got ${describeType(v)}. Ignored.`)); };
+    const expectEnum = (path, v, options) => {
+      if (v === undefined) return;
+      if (typeof v !== "string") { warn(path, t(`期望是字符串;实际是${describeType(v)}。已忽略。`, `Expected a string; got ${describeType(v)}. Ignored.`)); return; }
+      if (!options.includes(v)) warn(path, t(`"${v}" 不在 Solution Note v1.0 允许的取值中;已按原样保留。允许值:${options.join(", ")}。`, `"${v}" is not an allowed value in Solution Note v1.0; kept as-is. Allowed: ${options.join(", ")}.`));
+    };
+
+    if (parsed.meta !== undefined) {
+      if (typeof parsed.meta !== "object" || parsed.meta === null || Array.isArray(parsed.meta)) {
+        warn("meta", t(`期望是一个对象;实际是${describeType(parsed.meta)}。已忽略。`, `Expected an object; got ${describeType(parsed.meta)}. Ignored.`));
+      } else {
+        Object.keys(parsed.meta).filter((k) => !KNOWN_META_KEYS.includes(k)).forEach((k) => warn(`meta.${k}`, t("未知字段;已忽略。", "Unknown field; ignored.")));
+        ["noteNumber", "title", "summary", "author", "date", "source"].forEach((k) => expectString(`meta.${k}`, parsed.meta[k]));
+        expectEnum("meta.status", parsed.meta.status, STATUS_OPTIONS);
+      }
+    }
+
+    if (parsed.core !== undefined) {
+      if (typeof parsed.core !== "object" || parsed.core === null || Array.isArray(parsed.core)) {
+        warn("core", t(`期望是一个对象;实际是${describeType(parsed.core)}。已忽略。`, `Expected an object; got ${describeType(parsed.core)}. Ignored.`));
+      } else {
+        const c = parsed.core;
+        expectString("core.problem", c.problem);
+        if (c.result !== undefined) {
+          if (typeof c.result !== "object" || c.result === null || Array.isArray(c.result)) {
+            warn("core.result", t(`期望是一个对象;实际是${describeType(c.result)}。已忽略。`, `Expected an object; got ${describeType(c.result)}. Ignored.`));
+          } else {
+            expectEnum("core.result.type", c.result.type, RESULT_TYPES);
+            expectString("core.result.statement", c.result.statement);
+            expectString("core.result.explanation", c.result.explanation);
+          }
+        }
+        if (c.whyItWorks !== undefined) {
+          if (!Array.isArray(c.whyItWorks)) {
+            warn("core.whyItWorks", t(`期望是数组;实际是${describeType(c.whyItWorks)}。已忽略。`, `Expected an array; got ${describeType(c.whyItWorks)}. Ignored.`));
+          } else {
+            c.whyItWorks.forEach((it, i) => {
+              if (typeof it === "string") return;
+              const p = `core.whyItWorks[${i}]`;
+              if (typeof it !== "object" || it === null || Array.isArray(it)) { warn(p, t(`期望是字符串或 {title, body};实际是${describeType(it)}。已忽略。`, `Expected a string or {title, body}; got ${describeType(it)}. Ignored.`)); return; }
+              expectString(`${p}.title`, it.title);
+              expectString(`${p}.body`, it.body);
+            });
+          }
+        }
+        if (c.evidence !== undefined && typeof c.evidence !== "string") {
+          if (!Array.isArray(c.evidence)) warn("core.evidence", t(`期望是字符串或内容块数组;实际是${describeType(c.evidence)}。已忽略。`, `Expected a string or content-block array; got ${describeType(c.evidence)}. Ignored.`));
+          else validateBlockArray("core.evidence", c.evidence, warn);
+        }
+        if (c.reproduce !== undefined) {
+          if (typeof c.reproduce !== "object" || c.reproduce === null || Array.isArray(c.reproduce)) {
+            warn("core.reproduce", t(`期望是一个对象;实际是${describeType(c.reproduce)}。已忽略。`, `Expected an object; got ${describeType(c.reproduce)}. Ignored.`));
+          } else {
+            ["sourceCode", "data", "verificationScript", "certificate", "discussion"].forEach((k) => expectString(`core.reproduce.${k}`, c.reproduce[k]));
+          }
+        }
+      }
+    }
+
+    if (parsed.optional !== undefined) {
+      if (typeof parsed.optional !== "object" || parsed.optional === null || Array.isArray(parsed.optional)) {
+        warn("optional", t(`期望是一个对象;实际是${describeType(parsed.optional)}。已忽略。`, `Expected an object; got ${describeType(parsed.optional)}. Ignored.`));
+      } else {
+        const o = parsed.optional;
+        Object.keys(o).filter((k) => !KNOWN_OPTIONAL_KEYS.includes(k)).forEach((k) => warn(`optional.${k}`, t("未知字段;已忽略。", "Unknown field; ignored.")));
+        KNOWN_OPTIONAL_KEYS.filter((k) => k !== "references").forEach((k) => {
+          const v = o[k];
+          if (v === undefined || typeof v === "string") return;
+          if (!Array.isArray(v)) warn(`optional.${k}`, t(`期望是字符串或内容块数组;实际是${describeType(v)}。已忽略。`, `Expected a string or content-block array; got ${describeType(v)}. Ignored.`));
+          else validateBlockArray(`optional.${k}`, v, warn);
+        });
+        if (o.references !== undefined) {
+          if (!Array.isArray(o.references)) warn("optional.references", t(`期望是数组;实际是${describeType(o.references)}。已忽略。`, `Expected an array; got ${describeType(o.references)}. Ignored.`));
+          else o.references.forEach((r, i) => expectString(`optional.references[${i}]`, r));
+        }
+      }
+    }
+
+    // Section visibility is editor UI state: current files carry it under
+    // `ui.sections`, legacy files as a top-level `sections`. Both accept only
+    // an object whose values are true / false / null.
+    const checkSections = (path, secs) => {
+      if (typeof secs !== "object" || secs === null || Array.isArray(secs)) {
+        warn(path, t(`期望是一个对象;实际是${describeType(secs)}。已忽略。`, `Expected an object; got ${describeType(secs)}. Ignored.`));
+        return;
+      }
+      Object.keys(secs).forEach((k) => {
+        const p = path + "." + k;
+        if (!OPTIONAL_SECTIONS.some((s) => s.key === k)) { warn(p, t("未知字段;已忽略。", "Unknown field; ignored.")); return; }
+        if (secs[k] !== null && typeof secs[k] !== "boolean") {
+          warn(p, t(`期望是 true / false / null;实际是${describeType(secs[k])}。已忽略。`, `Expected true / false / null; got ${describeType(secs[k])}. Ignored.`));
+        }
+      });
+    };
+    if (parsed.sections !== undefined) checkSections("sections", parsed.sections);
+    if (parsed.ui !== undefined) {
+      if (typeof parsed.ui !== "object" || parsed.ui === null || Array.isArray(parsed.ui)) {
+        warn("ui", t(`期望是一个对象;实际是${describeType(parsed.ui)}。已忽略。`, `Expected an object; got ${describeType(parsed.ui)}. Ignored.`));
+      } else if (parsed.ui.sections !== undefined) {
+        checkSections("ui.sections", parsed.ui.sections);
+      }
+    }
+
+    const fieldCount = countLeafFields(parsed.meta) + countLeafFields(parsed.core) + countLeafFields(parsed.optional);
+    return { errors, warnings, fieldCount };
+  }
+
+  // Counts how many optional sections would actually be non-empty in the
+  // incoming FILE itself (independent of Replace vs Merge), for the report.
+  function countIncomingSections(sanitized) {
+    if (!sanitized.optional) return 0;
+    return OPTIONAL_SECTIONS.filter((sec) => {
+      const v = sanitized.optional[sec.key];
+      if (v === undefined) return false;
+      return sec.kind === "list" ? (Array.isArray(v) && v.some((r) => (r || "").trim())) : !blocksEmpty(v);
+    }).length;
+  }
+
+  function formatImportReport(report) {
+    const lines = [];
+    if (report.fatal) {
+      lines.push(t("✗ 导入失败", "✗ Import failed"));
+      lines.push("");
+      report.errors.forEach((e) => {
+        lines.push(t("错误代码: ", "Error code: ") + (e.code || "SCHEMA_VALIDATION"));
+        if (e.line) lines.push(t("位置: 第 ", "At: line ") + e.line + t(",第 ", ", column ") + e.column + (e.path ? " (" + e.path + ")" : ""));
+        lines.push(t("问题: ", "Problem: ") + e.message);
+        if (e.snippet) lines.push(t("附近: ", "Near: ") + e.snippet);
+        if (e.likelyCause) lines.push(t("可能原因: ", "Likely cause: ") + e.likelyCause);
+        if (e.suggestion) lines.push(t("建议: ", "Suggestion: ") + e.suggestion);
+        lines.push("");
+      });
+      return lines.join("\n").replace(/\n+$/, "");
+    }
+    lines.push(report.warnings.length ? t("⚠ 已导入,但有警告", "⚠ Imported, but with warnings") : t("✓ 有效的解题笔记文件", "✓ Valid Solution Note file"));
+    lines.push("");
+    lines.push(t("文件中共发现约 " + report.fieldCount + " 个有内容的字段。", "About " + report.fieldCount + " non-empty fields found in the file."));
+    lines.push(t("将启用 " + report.sectionCount + " 个可选章节。", report.sectionCount + " optional section(s) will be enabled."));
+    if (report.warnings.length) {
+      lines.push("");
+      lines.push(t("警告(" + report.warnings.length + " 条)", "Warnings (" + report.warnings.length + ")"));
+      report.warnings.forEach((w) => { lines.push("⚠ " + (w.path || "(root)")); lines.push("  " + w.message); });
+    }
+    return lines.join("\n");
+  }
+
+  let pendingImportRaw = null;
+
+  function setImportDialogMode(fatal) {
+    document.getElementById("importModeChoice").style.display = fatal ? "none" : "";
+    document.getElementById("btnConfirmImport").style.display = fatal ? "none" : "";
+  }
+
+  // ---- import double-check: friendly syntax errors + content preflight ----
+
+  // ---- structured JSON diagnostics ----
+  //
+  // Browsers report JSON.parse failures differently (Chrome: "Bad escaped
+  // character in JSON at position N"; Safari: "JSON Parse error: Invalid
+  // escape character"; Firefox: line/column wording). Instead of regexing
+  // those messages, we scan the raw text ourselves and return a structured
+  // error: { stage, code, line, column, offset, length, path, snippet,
+  // likelyCause, suggestion }.
+
+  function jsonLineCol(text, offset) {
+    const before = text.slice(0, offset);
+    const line = (before.match(/\n/g) || []).length + 1;
+    return { line, column: offset - before.lastIndexOf("\n") };
+  }
+
+  function jsonSnippet(text, offset, length) {
+    const s = Math.max(0, offset - 18);
+    const e = Math.min(text.length, offset + (length || 1) + 18);
+    return (s > 0 ? "..." : "") + text.slice(s, e).replace(/\n/g, "\\n") + (e < text.length ? "..." : "");
+  }
+
+  // Domain diagnosis for a bad escape character: is this a LaTeX delimiter,
+  // a TeX spacing command, a TeX command, or just a stray backslash?
+  function latexDiagnosis(raw) {
+    if (!raw) return { likelyCause: null, suggestion: null };
+    if (/[()\[\]]/.test(raw)) {
+      return {
+        likelyCause: "LATEX_BACKSLASH_NOT_ENCODED",
+        suggestion: t("LaTeX 反斜杠必须写成 \\u005C。这里应写 \\u005C" + raw + ",而不是 \\" + raw + "。",
+          "LaTeX backslashes must be written as \\u005C. Here you should write \\u005C" + raw + ", not \\" + raw + ".")
+      };
+    }
+    if (/[,;:!]/.test(raw)) {
+      return {
+        likelyCause: "LATEX_SPACING_COMMAND",
+        suggestion: t("检测到裸 TeX 间距命令 \\" + raw + "。JSON 源码中的反斜杠不能这样直接出现。通常可直接删除该间距;若确实需要保留,请写成 \\u005C" + raw + "。",
+          "Detected a bare TeX spacing command \\" + raw + ". Backslashes cannot appear literally in JSON source. Usually you can just drop the spacing; if you truly need it, write \\u005C" + raw + ".")
+      };
+    }
+    if (/[a-z]/i.test(raw)) {
+      return {
+        likelyCause: "LATEX_BACKSLASH_NOT_ENCODED",
+        suggestion: t("检测到疑似 LaTeX 命令: \\" + raw + "。反斜杠必须写成 \\u005C,建议 \\u005C" + raw + "。若这是代码字段(如正则 \\\\d+),则按 JSON 规则转义:一个反斜杠写成 \\\\。",
+          "Detected what looks like a LaTeX command: \\" + raw + ". Backslashes must be written as \\u005C; use \\u005C" + raw + ". If this is a code field (e.g. regex \\\\d+), escape per JSON rules: one backslash becomes \\\\.")
+      };
+    }
+    return {
+      likelyCause: "CODE_INVALID_JSON_ESCAPE",
+      suggestion: t("代码/文本里的反斜杠需按 JSON 规则转义:一个反斜杠写成 \\\\。", "Backslashes in code/text must be JSON-escaped: one backslash becomes \\\\.")
+    };
+  }
+
+  function scanJsonError(text) {
+    const n = text.length;
+    let i = 0;
+    const mkErr = (code, offset, length, raw) => {
+      const { line, column } = jsonLineCol(text, offset);
+      let likelyCause = null;
+      let suggestion = null;
+      if (code === "JSON_INVALID_ESCAPE") {
+        const diag = latexDiagnosis(raw);
+        likelyCause = diag.likelyCause;
+        suggestion = diag.suggestion;
+      } else if (code === "JSON_SINGLE_QUOTE") {
+        suggestion = t("JSON 字符串必须用双引号,不能使用单引号。", "JSON strings must use double quotes, not single quotes.");
+      } else if (code === "JSON_TRAILING_COMMA") {
+        suggestion = t("对象/数组末尾的逗号应删除。", "Remove the trailing comma at the end of the object/array.");
+      } else if (code === "JSON_UNTERMINATED_STRING") {
+        suggestion = t('字符串缺少结尾的 "。', 'The string is missing its closing ".');
+      } else if (code === "JSON_UNESCAPED_NEWLINE") {
+        suggestion = t("字符串内的换行必须写成 \\n。", "Newlines inside strings must be written as \\n.");
+      } else if (code === "JSON_INVALID_UNICODE_ESCAPE") {
+        suggestion = t("JSON Unicode 转义必须恰好包含四个十六进制字符,例如 \\u005C。", "JSON Unicode escapes must contain exactly four hex digits, e.g. \\u005C.");
+      } else if (code === "JSON_EXPECTED_COLON") {
+        suggestion = t('属性名后应有 ":"。例如 "title": "Hello"。', 'A ":" is expected after the property name, e.g. "title": "Hello".');
+      } else if (code === "JSON_EXPECTED_COMMA") {
+        suggestion = t('两个值之间应有 ","。', 'A "," is expected between two values.');
+      } else if (code === "JSON_INVALID_NUMBER") {
+        suggestion = t("数字格式无效(如 01、1.2.3、1e)。", "Invalid number format (e.g. 01, 1.2.3, 1e).");
+      } else if (code === "JSON_EXTRA_CONTENT") {
+        suggestion = t("JSON 解析完成后仍有内容;请检查是否有多余的括号、逗号或第二份 JSON。", "Content remains after the JSON ended; check for extra braces, commas, or a second JSON document.");
+      } else if (code === "JSON_UNEXPECTED_EOF") {
+        suggestion = t("JSON 未结束,对象/数组缺少闭合的 } 或 ]。", "JSON is unfinished; the object/array is missing a closing } or ].");
+      }
+      const messages = {
+        JSON_INVALID_ESCAPE: t("发现非法 JSON 转义序列: \\" + (raw || "?"), "Invalid JSON escape sequence: \\" + (raw || "?")),
+        JSON_INVALID_UNICODE_ESCAPE: t("非法的 Unicode 转义: \\u 后必须有四个十六进制字符。", "Invalid Unicode escape: \\u must be followed by four hex characters."),
+        JSON_UNTERMINATED_STRING: t('字符串未闭合(缺少结尾的 ")。', 'Unterminated string (missing closing ").'),
+        JSON_UNESCAPED_NEWLINE: t("字符串内包含未转义的换行,应写成 \\n。", "Unescaped newline inside a string; write it as \\n."),
+        JSON_SINGLE_QUOTE: t("使用了单引号;JSON 字符串必须用双引号。", "Single quotes used; JSON strings must use double quotes."),
+        JSON_TRAILING_COMMA: t("对象/数组末尾多了逗号,应删除。", "Trailing comma at the end of an object/array; remove it."),
+        JSON_EXPECTED_COLON: t('属性名后缺少 ":"。', 'Missing ":" after the property name.'),
+        JSON_EXPECTED_COMMA: t('缺少 ","。', 'Missing ",".'),
+        JSON_UNEXPECTED_TOKEN: t("意外的字符或标记。", "Unexpected character or token."),
+        JSON_INVALID_NUMBER: t("无效的数字格式。", "Invalid number format."),
+        JSON_EXTRA_CONTENT: t("JSON 之后还有多余内容。", "Extra content after the JSON."),
+        JSON_UNEXPECTED_EOF: t("JSON 意外结束(缺少闭合符号)。", "JSON ended unexpectedly (missing closing symbol).")
+      };
+      return {
+        stage: "json",
+        code: code,
+        message: messages[code] || t("JSON 语法错误", "JSON syntax error"),
+        line: line,
+        column: column,
+        offset: offset,
+        length: length,
+        path: null,
+        snippet: jsonSnippet(text, offset, length),
+        likelyCause: likelyCause,
+        suggestion: suggestion
+      };
+    };
+
+    const ws = () => { while (i < n && /\s/.test(text[i])) i++; };
+
+    const parseString = () => {
+      // i points at the opening "
+      let j = i + 1;
+      while (j < n) {
+        const c = text[j];
+        if (c === "\\") {
+          const next = text[j + 1];
+          if (next === undefined) return mkErr("JSON_UNTERMINATED_STRING", i, 1, null);
+          if (next === "\n") return mkErr("JSON_UNESCAPED_NEWLINE", j, 2, null);
+          if ('"\\/bfnrt'.indexOf(next) !== -1) { j += 2; continue; }
+          if (next === "u") {
+            const hex = text.slice(j + 2, j + 6);
+            if (!/^[0-9a-fA-F]{4}$/.test(hex)) return mkErr("JSON_INVALID_UNICODE_ESCAPE", j, 2, "u");
+            j += 6;
+            continue;
+          }
+          const cmd = text.slice(j + 1).match(/^[A-Za-z]+/);
+          const rawEsc = cmd ? cmd[0] : next;
+          return mkErr("JSON_INVALID_ESCAPE", j, 1 + rawEsc.length, rawEsc);
+        }
+        if (c === '"') { j++; break; }
+        if (c === "\n") return mkErr("JSON_UNESCAPED_NEWLINE", j, 1, null);
+        j++;
+      }
+      if (text[j - 1] !== '"') return mkErr("JSON_UNTERMINATED_STRING", i, 1, null);
+      i = j;
+      return null;
+    };
+
+    const parseNumber = () => {
+      let j = i;
+      if (text[j] === "-") j++;
+      if (text[j] === "0") j++;
+      else if (/[1-9]/.test(text[j] || "")) { while (j < n && /[0-9]/.test(text[j])) j++; }
+      else return mkErr("JSON_INVALID_NUMBER", i, 1, null);
+      if (text[j] === ".") {
+        j++;
+        if (!/[0-9]/.test(text[j] || "")) return mkErr("JSON_INVALID_NUMBER", i, 1, null);
+        while (j < n && /[0-9]/.test(text[j])) j++;
+      }
+      if (text[j] === "e" || text[j] === "E") {
+        j++;
+        if (text[j] === "+" || text[j] === "-") j++;
+        if (!/[0-9]/.test(text[j] || "")) return mkErr("JSON_INVALID_NUMBER", i, 1, null);
+        while (j < n && /[0-9]/.test(text[j])) j++;
+      }
+      if (j < n && /[0-9a-zA-Z_.]/.test(text[j])) return mkErr("JSON_INVALID_NUMBER", i, 1, null);
+      i = j;
+      return null;
+    };
+
+    const parseValue = () => {
+      ws();
+      if (i >= n) return mkErr("JSON_UNEXPECTED_EOF", n - 1, 1, null);
+      const ch = text[i];
+      if (ch === "{") { stack.push({ kind: "obj", step: 0, open: "{" }); i++; return null; }
+      if (ch === "[") { stack.push({ kind: "arr", step: 0, open: "[" }); i++; return null; }
+      if (ch === '"') return parseString();
+      if (ch === "-" || /[0-9]/.test(ch)) return parseNumber();
+      if (text.startsWith("true", i)) { i += 4; return null; }
+      if (text.startsWith("false", i)) { i += 5; return null; }
+      if (text.startsWith("null", i)) { i += 4; return null; }
+      if (ch === "'") return mkErr("JSON_SINGLE_QUOTE", i, 1, "'");
+      return mkErr("JSON_UNEXPECTED_TOKEN", i, 1, null);
+    };
+
+    const checkTrailingComma = () => {
+      let m = i;
+      while (m < n && /\s/.test(text[m])) m++;
+      if (text[m] === "}" || text[m] === "]") return mkErr("JSON_TRAILING_COMMA", i - 1, 1, ",");
+      return null;
+    };
+
+    const stack = [];
+    // Top-level value first
+    let err = parseValue();
+    if (err) return err;
+    for (;;) {
+      ws();
+      if (i >= n) {
+        return stack.length ? mkErr("JSON_UNEXPECTED_EOF", n - 1, 1, null) : null;
+      }
+      const ch = text[i];
+      const top = stack[stack.length - 1];
+      if (!top) {
+        // Extra content after the top-level value
+        return mkErr("JSON_EXTRA_CONTENT", i, 1, null);
+      }
+      if (top.kind === "obj") {
+        if (top.step === 0) {
+          if (ch === "}") { stack.pop(); i++; continue; }
+          if (ch === '"') {
+            err = parseString();
+            if (err) return err;
+            top.step = 1;
+            continue;
+          }
+          if (ch === ",") return mkErr("JSON_UNEXPECTED_TOKEN", i, 1, null);
+          if (ch === "'") return mkErr("JSON_SINGLE_QUOTE", i, 1, "'");
+          return mkErr("JSON_UNEXPECTED_TOKEN", i, 1, null);
+        }
+        if (top.step === 1) {
+          if (ch === ":") { i++; top.step = 2; continue; }
+          return mkErr("JSON_EXPECTED_COLON", i, 1, null);
+        }
+        if (top.step === 2) {
+          err = parseValue();
+          if (err) return err;
+          top.step = 3;
+          continue;
+        }
+        if (top.step === 3) {
+          if (ch === ",") { i++; err = checkTrailingComma(); if (err) return err; top.step = 0; continue; }
+          if (ch === "}") { stack.pop(); i++; continue; }
+          return mkErr("JSON_EXPECTED_COMMA", i, 1, null);
+        }
+      } else {
+        if (top.step === 0) {
+          if (ch === "]") { stack.pop(); i++; continue; }
+          err = parseValue();
+          if (err) return err;
+          top.step = 1;
+          continue;
+        }
+        if (top.step === 1) {
+          if (ch === ",") { i++; err = checkTrailingComma(); if (err) return err; top.step = 0; continue; }
+          if (ch === "]") { stack.pop(); i++; continue; }
+          return mkErr("JSON_EXPECTED_COMMA", i, 1, null);
+        }
+      }
+    }
+  }
+
+  function diagnoseJsonError(text, err) {
+    const found = scanJsonError(text);
+    if (found) { found.nativeMessage = err.message; return found; }
+    // Fallback: no scanner hit (deep nesting, weird tokens, ...) — use the
+    // engine's message with a best-effort location.
+    const m = /position (\d+)/.exec(err.message);
+    let loc = "";
+    let near = "";
+    if (m) {
+      const pos = parseInt(m[1], 10);
+      const { line, column } = jsonLineCol(text, pos);
+      loc = t(" (第 " + line + " 行,第 " + column + " 列)", " (line " + line + ", column " + column + ")");
+      near = jsonSnippet(text, pos, 2);
+    }
+    return {
+      stage: "json",
+      code: "JSON_UNKNOWN",
+      message: err.message,
+      line: null,
+      column: null,
+      offset: null,
+      length: null,
+      path: null,
+      snippet: near || null,
+      likelyCause: null,
+      suggestion: t("常见原因:反斜杠未转义、字符串内双引号未转义、字符串内出现未转义的换行、多余的逗号。", "Common causes: unescaped backslash, unescaped double quote inside a string, an unescaped newline inside a string, or a stray comma."),
+      nativeMessage: err.message
+    };
+  }
+
+  // Content-level preflight on the PARSED object: catches problems that are
+  // valid JSON but render wrong — a display-math opener that lost its
+  // backslash (bare "[" line), or control characters smuggled in by \b / \f.
+  function contentPreflight(parsed) {
+    const warnings = [];
+    const scan = (obj, path) => {
+      if (typeof obj === "string") {
+        const lines = obj.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          const t = lines[i].trim();
+          if (t.startsWith("[") && !t.startsWith("\\[")) {
+            warnings.push({ path: path, message: t("疑似独立公式开始符缺少反斜杠(该字段第 " + (i + 1) + " 行):应写 \\\\[ 而不是 [。", "Display-math opener is missing its backslash (line " + (i + 1) + " of this field): write \\\\[ instead of [.") });
+          }
+        }
+        if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(obj)) {
+          warnings.push({ path: path, message: t("包含控制字符(如退格),可能来自 \\\\b / \\\\f 这类误转义。请把 LaTeX 命令的反斜杠写成双反斜杠。", "Contains control characters (e.g. backspace), likely from mis-escapes like \\\\b / \\\\f. Write LaTeX command backslashes as double backslashes.") });
+        }
+      } else if (Array.isArray(obj)) {
+        obj.forEach((v, i) => scan(v, path + "[" + i + "]"));
+      } else if (obj && typeof obj === "object") {
+        Object.keys(obj).forEach((k) => scan(obj[k], path ? path + "." + k : k));
+      }
+    };
+    scan(parsed, "");
+    return warnings;
+  }
+
+  // Shared checker for both entry points (file picker and pasted text): parse
+  // JSON, then run it through validateRaw() BEFORE any sanitizing, exactly
+  // like the file-import path always has — pasting text must not skip the check.
+  function processImportedText(text) {
+    document.getElementById("importSummary").style.display = "";
+    let parsed;
+    try { parsed = JSON.parse(text); }
+    catch (err) {
+      pendingImportRaw = null;
+      const diag = diagnoseJsonError(text, err);
+      window.__lastImportNative = diag.nativeMessage || null;
+      document.getElementById("importSummary").textContent = formatImportReport({ fatal: true, errors: [diag] });
+      document.getElementById("btnCopyImportError").style.display = "";
+      setImportDialogMode(true);
+      return;
+    }
+    const validation = validateRaw(parsed);
+    if (validation.errors.length) {
+      pendingImportRaw = null;
+      document.getElementById("importSummary").textContent = formatImportReport({ fatal: true, errors: validation.errors });
+      setImportDialogMode(true);
+      return;
+    }
+    const preflight = contentPreflight(parsed);
+    const sanitized = migrateLegacyShapes(parsed);
+    pendingImportRaw = parsed;
+    document.getElementById("importSummary").textContent = formatImportReport({
+      fatal: false, warnings: validation.warnings.concat(preflight), fieldCount: validation.fieldCount,
+      sectionCount: countIncomingSections(sanitized)
+    });
+    setImportDialogMode(false);
+    document.getElementById("btnCopyImportError").style.display = "none";
+    document.getElementById("importWarnNote").style.display = validation.warnings.length ? "" : "none";
+    document.querySelector('input[name="importMode"][value="replace"]').checked = true;
+  }
+
+  function openImportDialog() {
+    pendingImportRaw = null;
+    document.getElementById("importPasteText").value = "";
+    document.getElementById("importSummary").style.display = "none";
+    document.getElementById("importSummary").textContent = "";
+    document.getElementById("btnCopyImportError").style.display = "none";
+    document.getElementById("importWarnNote").style.display = "none";
+    setImportDialogMode(true);
+    document.getElementById("importBackdrop").style.display = "";
+  }
+
+  document.getElementById("btnImport").addEventListener("click", openImportDialog);
+  document.getElementById("btnChooseFile").addEventListener("click", () => document.getElementById("fileImport").click());
+  document.getElementById("fileImport").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      document.getElementById("importPasteText").value = reader.result;
+      processImportedText(reader.result);
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  });
+  document.getElementById("btnCopyImportError").addEventListener("click", () => {
+    let text = document.getElementById("importSummary").textContent;
+    if (window.__lastImportNative) text += "\n\n" + t("[调试信息] ", "[debug] ") + window.__lastImportNative;
+    const btn = document.getElementById("btnCopyImportError");
+    const done = () => { btn.textContent = t("已复制", "Copied!"); setTimeout(() => { btn.textContent = t("复制错误详情", "Copy Error Details"); }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {});
+    }
+  });
+
+  document.getElementById("btnParsePaste").addEventListener("click", () => {
+    const text = document.getElementById("importPasteText").value.trim();
+    if (!text) return;
+    processImportedText(text);
+  });
+  document.getElementById("btnCancelImport").addEventListener("click", () => {
+    pendingImportRaw = null;
+    document.getElementById("importBackdrop").style.display = "none";
+  });
+  document.getElementById("importBackdrop").addEventListener("click", (e) => {
+    if (e.target.id === "importBackdrop") { pendingImportRaw = null; e.currentTarget.style.display = "none"; }
+  });
+  document.getElementById("btnConfirmImport").addEventListener("click", () => {
+    if (!pendingImportRaw) return;
+    const mode = document.querySelector('input[name="importMode"]:checked').value;
+    // Replace always starts from a fresh blankNote() (never the live state) —
+    // a bad/dropped field in the import resets to the default, it never keeps
+    // whatever the previous note happened to have in that field.
+    state = mode === "merge" ? mergeNoteInto(state, pendingImportRaw) : normalizeNote(pendingImportRaw);
+    pendingImportRaw = null;
+    document.getElementById("importBackdrop").style.display = "none";
+    refreshEverything();
+  });
+
+  // ---------- AI instructions ----------
+
+  const AI_INSTRUCTIONS = String.raw`You are preparing a structured "Solution Note" for a mathematics or computer science result.
+
+Your job is to summarize the result accurately from the available project context and return it in the Solution Note JSON format below.
+
+SOURCE GROUNDING
+
+Use only information that is relevant to the current project.
+
+Prefer information in this order:
+1. Explicit project artifacts, files, computations, proofs, and verification material supplied by the user.
+2. Relevant facts established in the current project conversation.
+3. General mathematical or computer-science knowledge only when it is needed to explain an already-supported result.
+
+If sources conflict, prefer the more explicit and more recent project artifact and do not silently reconcile incompatible claims.
+
+Do not invent mathematical claims, proofs, references, computations, verification results, dates, sources, or project history.
+
+CLARIFICATION GATE
+
+Before generating the note, determine whether any missing or ambiguous information would materially affect the correctness of the main problem, result, status, evidence, or verification claim.
+
+- If such information is missing, ask only the necessary clarification question(s).
+- In that case, do NOT output JSON yet.
+- Do not ask about optional details that can simply be omitted.
+- Do not ask the user to repeat information already present in the supplied context.
+
+If the available information is sufficient, output the JSON immediately.
+
+OUTPUT CONTRACT
+
+When producing a Solution Note:
+
+- Return ONLY one valid JSON object.
+- Do not use Markdown code fences.
+- Do not write commentary before or after the JSON.
+- The output must be accepted by JSON.parse without modification.
+- Use "format": "solution-note".
+- Use "version": "1.0".
+- Use "author" only if the author's name is known from the supplied context; otherwise omit it or leave it empty.
+
+FULL NOTE VS PARTIAL UPDATE
+
+Default to FULL NOTE mode.
+
+Use PARTIAL UPDATE mode only when the user explicitly asks to modify an existing Solution Note.
+
+For a partial update:
+- omitted field = leave the existing value unchanged
+- "" = clear a text field
+- [] = clear a list
+
+Do not interpret ordinary missing information as a request for a partial update.
+
+SCHEMA
+
+{
+  "format": "solution-note",
+  "version": "1.0",
+  "meta": {
+    "title": "",
+    "summary": "",
+    "author": "",
+    "date": "",
+    "status": "",
+    "source": ""
+  },
+  "core": {
+    "problem": "",
+    "result": {
+      "type": "",
+      "statement": "",
+      "explanation": ""
+    },
+    "whyItWorks": [
+      {
+        "title": "",
+        "body": ""
+      }
+    ],
+    "evidence": "",
+    "reproduce": {
+      "sourceCode": "",
+      "data": "",
+      "verificationScript": "",
+      "certificate": "",
+      "discussion": ""
+    }
+  },
+  "optional": {
+    "proof": "",
+    "algorithm": "",
+    "computationalResults": "",
+    "performance": "",
+    "examples": "",
+    "verificationDetails": "",
+    "limitations": "",
+    "openQuestions": "",
+    "notes": "",
+    "references": [
+      ""
+    ],
+    "acknowledgements": ""
+  }
+}
+
+ENUM VALUES
+
+For meta.status, use exactly ONE of:
+- "Solved"
+- "Partial"
+- "Computational"
+- "Conjecture"
+- "Counterexample"
+- "Improved Algorithm"
+
+For core.result.type, use exactly ONE of:
+- "Theorem"
+- "Main Result"
+- "Construction"
+- "Counterexample"
+- "Computed Value"
+- "Bound"
+- "Formula"
+- "Conjecture"
+- "Algorithmic Result"
+
+Choose the most accurate value. Never output the entire list as the value.
+
+FIELD RULES
+
+- Keep prose concise, clear, and academic.
+- "summary" should normally be one short paragraph.
+- "problem" should define the problem sufficiently for a mathematically literate reader to understand the result.
+- "result.statement" should state the principal result precisely.
+- "result.explanation" should explain its meaning without repeating the full proof.
+- "whyItWorks" should contain a short high-level overview of the main mechanisms, normally 2–5 items when supported.
+- Put substantial proofs in "optional.proof".
+- Put implementation/search procedures in "optional.algorithm".
+- Put numerical search outputs in "optional.computationalResults".
+- Put implementation assurance and independent checks in "optional.verificationDetails".
+- Put caveats in "optional.limitations".
+- Put genuine unresolved directions in "optional.openQuestions".
+- Put bibliographic material only in "optional.references".
+- Do not fabricate references merely to make the note look complete.
+
+If an optional field is unsupported or unnecessary, omit it.
+
+If the entire "reproduce" section is inapplicable, such as for a purely theoretical proof with no computational artifacts, omit "reproduce" rather than inventing content.
+
+Likewise, do not use placeholder values such as "N/A", "None", "-", or [""] merely to fill the schema.
+
+MATHEMATICS AND JSON ENCODING
+
+Every mathematical expression in prose fields must use LaTeX.
+
+IMPORTANT: Never write a literal LaTeX backslash directly in the JSON source.
+
+Instead, encode EVERY LaTeX backslash using the JSON Unicode escape:
+
+\u005C
+
+This rule applies to:
+- math delimiters
+- TeX commands
+- display-math delimiters
+- all other LaTeX backslashes
+
+INLINE MATH
+
+Correct final JSON source:
+
+"body": "For \u005C(n \u005Cge 1\u005C), we have \u005C(F_n>0\u005C)."
+
+After JSON parsing, this becomes:
+
+For \(n \ge 1\), we have \(F_n>0\).
+
+DISPLAY MATH
+
+Correct final JSON source:
+
+"statement": "We obtain\n\u005C[\nF_{2k}=F_k\u005Cleft(2F_{k+1}-F_k\u005Cright).\n\u005C]"
+
+After JSON parsing, this becomes LaTeX display math with \[ and \].
+
+TEX COMMANDS
+
+Write:
+
+\u005Csqrt{2}
+\u005Csum_i
+\u005Cfrac{a}{b}
+\u005Cmathbb{Z}
+\u005Cle
+\u005Cge
+\u005Cin
+\u005Cequiv
+\u005Ctau
+\u005Cnu
+\u005Cmid
+\u005Cnmid
+\u005Ccdot
+\u005Clfloor
+\u005Crfloor
+
+Never write these using a literal backslash in the final JSON source.
+
+For example:
+
+Correct:
+"body": "\u005C(x \u005Cle \u005Csqrt{2}\u005C)"
+
+Incorrect:
+"body": "\(x \le \sqrt{2}\)"
+
+Also do NOT use doubled literal LaTeX backslashes such as \\sqrt in generated prose. Use \u005Csqrt instead.
+
+LATEX SIMPLICITY RULE
+
+Prefer simple semantic LaTeX and avoid unnecessary typographic spacing commands.
+
+Do NOT use raw TeX spacing sequences such as:
+
+\,
+\;
+\!
+\:
+\quad
+\qquad
+
+In particular, never write a literal backslash followed by punctuation in JSON source.
+
+If mathematical spacing is not semantically necessary, omit the spacing command entirely.
+
+For example, prefer:
+
+"\u005Cgcd\u005Cleft(b,a\u005Cbmod b\u005Cright)"
+
+instead of adding manual TeX spacing between the comma and the next expression.
+
+
+CODE AND SCRIPT FIELDS
+
+The \u005C rule above applies ONLY to LaTeX in prose fields.
+
+Do not alter literal source code, filenames, scripts, logs, or raw data.
+
+For code stored inside a JSON string:
+- Encode actual line breaks as \n.
+- Escape literal double quotes as \".
+- Escape every literal backslash required by the source code according to JSON rules, so one backslash in the intended code string appears as \\ in the JSON source.
+- Otherwise preserve the code exactly.
+- Do not apply the \u005C LaTeX convention to code.
+
+Intended code:
+pattern = r"\d+"
+
+Correct JSON source:
+"sourceCode": "pattern = r\"\\d+\""
+
+Example:
+"verificationScript": "print(\"verification passed\")\n"
+
+FINAL VALIDATION
+
+Before answering, silently verify:
+
+1. JSON.parse accepts the entire response without modification.
+2. No LaTeX expression in prose contains a literal backslash in the JSON source.
+3. Every LaTeX backslash is represented by exactly \u005C.
+4. Inline math uses \u005C( and \u005C).
+5. Display math uses \u005C[ and \u005C].
+6. Code fields contain ordinary code and are not LaTeX-escaped.
+7. There are no Markdown code fences or comments outside the JSON.
+8. Outside code/script/raw-data fields, the JSON source must contain NO literal backslash characters except as the first character of a valid JSON escape. All LaTeX backslashes must occur only as \u005C.
+9. In prose fields, after ignoring the valid JSON escapes \n, \" and \u005C, there must be no other backslash sequence anywhere.
+10. In code/script/raw-data fields, every literal backslash must be validly JSON-escaped.
+
+Return only the final JSON object.`;
+
+  document.getElementById("btnCopyInstructions").addEventListener("click", async () => {
+    const btn = document.getElementById("btnCopyInstructions");
+    const original = btn.textContent;
+    try {
+      await navigator.clipboard.writeText(AI_INSTRUCTIONS);
+      btn.textContent = t("已复制!", "Copied!");
+    } catch (e) {
+      window.prompt(t("自动复制失败 —— 请手动复制以下文本:", "Auto-copy failed — please copy the text below manually:"), AI_INSTRUCTIONS);
+      btn.textContent = original;
+      return;
+    }
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  });
+  document.getElementById("btnNew").addEventListener("click", () => {
+    if (!confirm(t("新建一份空白笔记?这会替换当前编辑器里的内容。", "Start a blank note? This replaces the current editor content."))) return;
+    state = blankNote();
+    refreshEverything();
+  });
+  // ---------- responsive: mobile Edit/Preview tabs (< 700px) ----------
+
+  document.querySelectorAll(".mobile-tabs button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".mobile-tabs button").forEach((b) => b.classList.remove("is-active"));
+      btn.classList.add("is-active");
+      document.getElementById("app").classList.toggle("show-preview", btn.dataset.tab === "preview");
+    });
+  });
+
+  // ---------- standalone HTML export (fully self-contained, no external files) ----------
+
+    function b64ToUtf8(b64) {
+    const bin = atob(b64);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+
+  // ------------------------------------------------------------------
+  // HTML-first standalone export: one flowing "endless academic sheet"
+  // (760px column, responsive, collapsible Technical details, copy
+  // buttons, clickable references). Print/PDF goes through @media print
+  // rules — no doc-page, no JS pagination engine.
+  // ------------------------------------------------------------------
+  function buildStandaloneHtml() {
+    ensureDefaultAuthor(state);
+    const katexCss = window.SOLUTION_NOTE_KATEX_EMBED && window.SOLUTION_NOTE_KATEX_EMBED.css
+      ? b64ToUtf8(window.SOLUTION_NOTE_KATEX_EMBED.css).replace(/<\/(style)/gi, "<\\/$1")
+      : "";
+    // Vendored Cormorant Garamond + Lora as data URIs → fully self-contained
+    // offline; falls back to Georgia/serif only if the embed is missing.
+    const fontsCss = window.SOLUTION_NOTE_FONTS_EMBED && window.SOLUTION_NOTE_FONTS_EMBED.css
+      ? b64ToUtf8(window.SOLUTION_NOTE_FONTS_EMBED.css).replace(/<\/(style)/gi, "<\\/$1")
+      : "@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap');";
+    const title = escapeHtml((state.meta.title || "Solution Note").replace(/\*/g, ""));
+    const esc = escapeHtml;
+    const escAttr = (v) => String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const inline = (t) => inlineMd(t);
+    const body = (t) => mdToHtml(t) || "";
+    const section = (num, name, innerHtml) =>
+      `<section class="section">\n<h2 class="section-title"><span class="num">${esc(num)}</span>${esc(name)}</h2>\n${innerHtml}\n</section>`;
+
+    // ----- header -----
+    const status = (state.meta.status || "Solved").toUpperCase();
+    const author = (state.meta.author && state.meta.author.trim()) ? state.meta.author : authorPreference();
+    const authorDate = [author, state.meta.date.trim()].filter(Boolean).join(" · ");
+    const headHtml = `
+    <header class="note-head">
+      <h1 class="note-title">${inline(state.meta.title) || "Untitled note"}</h1>
+      ${state.meta.summary.trim() ? `<p class="note-summary">${inline(state.meta.summary)}</p>` : ""}
+      <div class="meta-row">
+        <span class="badge badge-status">${esc(status)}</span>
+        ${authorDate ? `<span class="who">${esc(authorDate)}</span>` : ""}
+      </div>
+    </header>`;
+
+    // ----- core sections -----
+    const problemHtmls = textToContentBlocks(state.core.problem).map(renderBlockHtml).filter(Boolean);
+    const problemHtml = section("01", "Problem",
+      problemHtmls.join("\n") || emptyHint("State the problem so a reader never has to open the original thread."));
+
+    const r = state.core.result;
+    const resultHtml = section("02", "Result", `
+      <div class="theorem-box">
+        <div class="kicker">${esc((r.type || "Theorem").toUpperCase())}</div>
+        <div class="accent-prose">${body(r.statement) || emptyHint("State the claim.")}</div>
+      </div>
+      ${r.explanation.trim() ? `<p class="plain-terms"><strong>In plain terms.</strong> ${inline(r.explanation)}</p>` : ""}`);
+
+    const steps = state.core.whyItWorks.filter((s) => s.title.trim() || s.body.trim());
+    const stepsHtml = steps.length ? `<ol class="steps">${steps.map((s, i) => `
+      <li>
+        <span class="n">${i + 1}.</span>
+        <div class="step-body">
+          ${s.title.trim() ? `<h3>${inline(s.title)}</h3>` : ""}
+          ${body(s.body)}
+        </div>
+      </li>`).join("")}</ol>` : emptyHint("The mechanism in a handful of steps.");
+    const whyHtml = section("03", "Why It Works", stepsHtml);
+
+    const evidenceHtmls = (state.core.evidence || []).map(renderBlockHtml).filter(Boolean);
+    const evidenceHtml = section("04", "Evidence",
+      evidenceHtmls.join("\n") || emptyHint("What was actually checked, and how far."));
+
+    // ----- reproduce (file rows with copy button / URL links) -----
+    const reproduceRows = [
+      ["Source code", state.core.reproduce.sourceCode],
+      ["Data", state.core.reproduce.data],
+      ["Verification script", state.core.reproduce.verificationScript],
+      ["Certificate", state.core.reproduce.certificate],
+      ["Discussion", state.core.reproduce.discussion]
+    ].filter(([, v]) => v.trim());
+
+    const fileRow = (label, val) => {
+      const text = val.trim();
+      const isUrl = /^https?:\/\//.test(text);
+      const fileName = text.split("/").pop() || text;
+      return `<div class="file-row">
+        <span class="file-label">${esc(label)}</span>
+        <code class="file-name">${isUrl ? `<a href="${escAttr(safeHref(text))}" target="_blank" rel="noopener">${esc(fileName)}</a>` : esc(text)}</code>
+        <button type="button" class="copy-btn" data-copy="${escAttr(text)}">Copy</button>
+      </div>`;
+    };
+    const reproduceHtml = section("05", "Reproduce",
+      reproduceRows.length ? `<div class="reproduce">${reproduceRows.map(([l, v]) => fileRow(l, v)).join("")}</div>`
+        : emptyHint("Everything a reader needs to run the check themselves."));
+
+    // ----- technical details (collapsible) -----
+    const DETAIL_KEYS = ["proof", "algorithm", "computationalResults", "verificationDetails"];
+    const detailHtml = DETAIL_KEYS.map((key) => {
+      const sec = OPTIONAL_SECTIONS.find((s) => s.key === key);
+      const htmls = (state.optional[key] || []).map(renderBlockHtml).filter(Boolean);
+      if (!htmls.length) return "";
+      return `<details class="technical">
+        <summary><span class="num">${esc(sec.letter)}</span>${esc(sec.title)}</summary>
+        <div class="details-body">${htmls.join("\n")}</div>
+      </details>`;
+    }).filter(Boolean).join("\n");
+    const detailsSection = detailHtml ? `<section class="section">
+      <h2 class="section-title">Technical details</h2>
+      ${detailHtml}
+    </section>` : "";
+
+    // ----- remaining optional sections (flowing) -----
+    const linkify = (htmlStr) => htmlStr.replace(/(https?:\/\/[^\s<"']+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+    const restHtml = OPTIONAL_SECTIONS
+      .filter((s) => !DETAIL_KEYS.includes(s.key) && isSectionVisible(s))
+      .map((sec) => {
+        if (sec.key === "references") {
+          const items = state.optional.references.filter((x) => x.trim());
+          const listHtml = items.map((ref, i) => `<li class="ref"><span class="ref-n">${i + 1}.</span><span>${linkify(inline(ref))}</span></li>`).join("");
+          return `<section class="section"><h2 class="section-title"><span class="num">${esc(sec.letter)}</span>${esc(sec.title)}</h2><ol class="refs">${listHtml}</ol></section>`;
+        }
+        const htmls = (state.optional[sec.key] || []).map(renderBlockHtml).filter(Boolean);
+        if (!htmls.length) return "";
+        return `<section class="section"><h2 class="section-title"><span class="num">${esc(sec.letter)}</span>${esc(sec.title)}</h2>${htmls.join("\n")}</section>`;
+      }).join("\n");
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<style>${katexCss}</style>
+<style>
+${fontsCss}
+:root{
+  --color-bg:#f3f2f2; --color-surface:#eae9e9; --color-text:#201f1d;
+  --color-accent:#b68235; --color-divider:color-mix(in srgb,#201f1d 16%,transparent);
+  --color-accent-100:#fff3e4; --color-accent-300:#facb8d; --color-accent-800:#5a3b0a; --color-accent-900:#3a270d;
+  --font-heading:"Cormorant Garamond",Georgia,serif; --font-body:"Lora",Georgia,serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);font-size:17px;line-height:1.68;-webkit-font-smoothing:antialiased}
+a{color:var(--color-accent-800);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--color-accent-300) 60%,transparent)}
+a:hover{color:var(--color-accent);border-bottom-color:var(--color-accent)}
+.note{max-width:760px;margin:0 auto;padding:56px 28px 96px}
+.note-head{margin-bottom:44px}
+.note-title{font-family:var(--font-heading);font-weight:400;font-size:42px;line-height:1.12;letter-spacing:-0.02em;margin:0 0 12px}
+.note-summary{font-family:var(--font-heading);font-style:italic;font-weight:400;font-size:20px;line-height:1.42;color:color-mix(in srgb,var(--color-text) 72%,transparent);margin:0 0 24px}
+.meta-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;border-bottom:1px solid var(--color-divider);padding-bottom:16px}
+.badge{font-family:var(--font-heading);font-weight:600;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-800);background:var(--color-accent-100);border:1px solid var(--color-accent-300);border-radius:3px;padding:3px 9px}
+.who{font-size:13.5px;color:color-mix(in srgb,var(--color-text) 62%,transparent)}
+.section{margin-bottom:48px}
+.section-title{display:flex;align-items:baseline;gap:12px;font-family:var(--font-heading);font-weight:400;font-size:28px;letter-spacing:-0.01em;border-bottom:1px solid var(--color-divider);padding-bottom:9px;margin:0 0 18px}
+.section-title .num{font-weight:600;font-size:12.5px;letter-spacing:.1em;color:var(--color-accent);font-feature-settings:"tnum"}
+.theorem-box{border:1px solid var(--color-accent-300);background:var(--color-accent-100);border-radius:4px;padding:20px 22px}
+.theorem-box .kicker{font-family:var(--font-heading);font-weight:600;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-accent-800);margin:0 0 10px}
+.plain-terms{margin:16px 0 0}
+.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:22px}
+.steps li{display:flex;gap:14px}
+.steps .n{flex:none;width:26px;font-family:var(--font-heading);font-weight:600;font-size:16px;color:var(--color-accent);font-feature-settings:"tnum"}
+.step-body h3{font-family:var(--font-heading);font-weight:600;font-size:18px;margin:0 0 4px}
+.step-body p{margin:0}
+.accent-prose p,.accent-prose ul,.accent-prose ol{color:var(--color-accent-900);margin:0 0 10px}
+.accent-prose>:last-child{margin-bottom:0}
+.reproduce{display:flex;flex-direction:column;gap:10px}
+.file-row{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--color-divider);border-radius:4px;padding:11px 14px}
+.file-label{flex:none;width:150px;font-family:var(--font-heading);font-weight:600;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text) 50%,transparent)}
+.file-name{flex:1;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;word-break:break-all}
+.copy-btn{flex:none;font-family:var(--font-heading);font-size:11.5px;letter-spacing:.08em;color:var(--color-accent-800);background:var(--color-accent-100);border:1px solid var(--color-accent-300);border-radius:3px;padding:4px 10px;cursor:pointer}
+.copy-btn:hover{background:var(--color-accent-300)}
+details.technical{border:1px solid var(--color-divider);border-radius:4px;background:#fff;margin-bottom:12px;overflow:hidden}
+details.technical summary{display:flex;align-items:baseline;gap:12px;padding:14px 18px;cursor:pointer;list-style:none;font-family:var(--font-heading);font-weight:600;font-size:18px;user-select:none}
+details.technical summary::-webkit-details-marker{display:none}
+details.technical summary::before{content:"▶";font-size:9px;color:var(--color-accent);transition:transform .15s}
+details.technical[open] summary::before{transform:rotate(90deg)}
+details.technical .details-body{padding:2px 20px 20px;border-top:1px solid var(--color-divider)}
+.refs{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px;font-size:15px}
+.refs .ref{display:flex;gap:10px}
+.refs .ref-n{flex:none;width:20px;font-feature-settings:"tnum";color:color-mix(in srgb,var(--color-text) 45%,transparent);font-size:13px}
+.mdlite p{margin:0 0 14px}
+.mdlite>:last-child{margin-bottom:0}
+.mdlite-ul{margin:0 0 14px;padding-left:22px}
+.mdlite-ol{margin:0 0 14px;padding-left:22px}
+pre{background:#fff;border:1px solid var(--color-divider);border-radius:4px;padding:13px 15px;overflow-x:auto;font-size:13px;line-height:1.6}
+table{border-collapse:collapse;width:100%;margin:0 0 14px;font-size:14.5px}
+th,td{border:1px solid var(--color-divider);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--color-surface);font-family:var(--font-heading);font-weight:600}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;background:var(--color-surface);border-radius:3px;padding:1px 5px}
+pre code{background:none;padding:0}
+.katex{font-size:1.05em}
+.katex-display{margin:14px 0 16px;overflow-x:auto;overflow-y:hidden}
+@media (max-width:600px){
+  .note{padding:32px 18px 72px}
+  .note-title{font-size:32px}
+  .note-summary{font-size:17px}
+  .section-title{font-size:23px}
+  .file-label{width:100%}
+  .file-row{flex-wrap:wrap;align-items:flex-start}
+  .file-name{flex:1 1 100%}
+  .copy-btn{align-self:flex-start}
+}
+@page{size:A4;margin:0}
+@media print{
+  body{background:#fff}
+  .note{max-width:none;padding:16mm 15mm}
+  .section{break-inside:auto;margin-bottom:24px}
+  .section-title{break-after:avoid-page;page-break-after:avoid}
+  .section-title+*{break-before:avoid-page;page-break-before:avoid}
+  .theorem-box,.file-row,pre,details.technical,.steps li{break-inside:avoid;page-break-inside:avoid}
+  details.technical{display:block;border:1px solid var(--color-divider)}
+  details.technical summary{cursor:default}
+  details.technical .details-body{border-top:none;padding-top:0}
+  .katex-display{overflow:visible;break-inside:avoid}
+  a{border-bottom:none}
+}
+</style>
+</head>
+<body>
+<main class="note">
+${headHtml}
+${problemHtml}
+${resultHtml}
+${whyHtml}
+${evidenceHtml}
+${reproduceHtml}
+${detailsSection}
+${restHtml}
+</main>
+<script>
+(function(){
+  function fallbackCopy(text, done){
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); done(); } catch(e) {}
+    document.body.removeChild(ta);
+  }
+  document.querySelectorAll(".copy-btn").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      var text = btn.getAttribute("data-copy") || "";
+      var done = function(){ btn.textContent = "Copied!"; setTimeout(function(){ btn.textContent = "Copy"; }, 1600); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done)["catch"](function(){ fallbackCopy(text, done); });
+      } else {
+        fallbackCopy(text, done);
+      }
+    });
+  });
+  var opened = [];
+  window.addEventListener("beforeprint", function(){
+    opened = Array.prototype.map.call(document.querySelectorAll("details.technical"), function(d){ var o = d.open; d.open = true; return o; });
+  });
+  window.addEventListener("afterprint", function(){
+    document.querySelectorAll("details.technical").forEach(function(d, i){ d.open = opened[i] !== false; });
+  });
+})();
+<\/script>
+</body>
+</html>`;
+  }
+
+// ---------- boot ----------
+
+  applyStaticI18n();
+  applyAppVersion();
+  initBoundFields(document);
+  renderWhyList();
+  buildBlockEditor(document.getElementById(blockEditorId("core.evidence")), "core.evidence");
+  buildOptionalSectionsForm();
+  renderPreview();
+  // Regression-test hook: stable surface for tests/regression.html.
+  window.__snTest = {
+    scanJsonError: scanJsonError,
+    diagnoseJsonError: diagnoseJsonError,
+    contentPreflight: contentPreflight,
+    validateRaw: validateRaw,
+    normalizeNote: normalizeNote,
+    mergeNoteInto: mergeNoteInto,
+    inlineMd: inlineMd,
+    stripUnsafeKeys: stripUnsafeKeys,
+    renderMathTex: renderMathTex
+  };
+
+})();
+</script>
+</body>
+</html>
