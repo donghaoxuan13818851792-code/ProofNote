@@ -1,13 +1,45 @@
 # Proofnote
 
-**Structured math, without the JSON pain.**
+### Structured math, without the JSON pain.
 
-Proofnote is an editor, validator and renderer for the **Solution Note** format —
-a portable, validated record of a mathematical or computer-science result. It
-turns results into beautifully rendered, offline, standalone HTML notes that
-survive being pasted into forums, Discord, or a GitHub issue.
+**Proofnote** is an AI-friendly format, validator, editor, and renderer for
+mathematical and computer-science results.
 
-`AI-friendly` · `LaTeX-safe` · `Diagnosable` · `Offline` · `Standalone HTML`
+Write structured Solution Note JSON, catch broken LaTeX and malformed input
+with precise diagnostics, and export beautiful standalone HTML — entirely offline.
+
+**AI-friendly · LaTeX-safe · Structured · Diagnosable · Portable**
+
+[Try Proofnote](index.html?sample) · [View the format](docs/ai-authoring.md) · [Examples](examples/)
+
+<p align="center">
+  <img src="docs/assets/proofnote-hero.png" width="900" alt="Proofnote — the Gaussian integer showcase note, rendered">
+</p>
+
+## It tells you where, why, and how to fix it
+
+```
+✗ Import failed
+
+JSON_INVALID_ESCAPE
+Line 6, Column 42
+
+Found:
+\sqrt
+
+Likely cause:
+LATEX_BACKSLASH_NOT_ENCODED
+
+Suggested:
+\u005Csqrt
+```
+
+Proofnote doesn't just tell you your JSON is broken. It tells you **where, why,
+and how to fix it**.
+
+<p align="center">
+  <img src="docs/assets/error-diagnostics.png" width="700" alt="Proofnote import diagnostics">
+</p>
 
 ## Quick start
 
@@ -47,17 +79,9 @@ rendering. See [`docs/ai-authoring.md`](docs/ai-authoring.md).
 
 ## Diagnostics
 
-JSON errors are reported with structure, not jargon:
-
-```
-JSON_INVALID_ESCAPE
-Line 6, Column 42
-
-Found: \sqrt
-Suggested: \u005Csqrt
-```
-
-See [`docs/diagnostics.md`](docs/diagnostics.md) for the full error taxonomy.
+JSON errors are reported with structure, not jargon. See
+[`docs/diagnostics.md`](docs/diagnostics.md) for the full error taxonomy, and
+[`docs/escaping.md`](docs/escaping.md) for the security model.
 
 ## Repository layout
 

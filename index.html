@@ -2794,6 +2794,9 @@ ${restHtml}
 
   applyStaticI18n();
   applyAppVersion();
+  // Deep link: index.html?sample opens straight into the showcase note
+  // (used by the "Try Proofnote" link and the README hero screenshot).
+  if (/[?&]sample\b/.test(location.search)) loadSampleNote();
   initBoundFields(document);
   renderWhyList();
   buildBlockEditor(document.getElementById(blockEditorId("core.evidence")), "core.evidence");
