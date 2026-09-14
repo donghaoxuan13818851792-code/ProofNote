@@ -1,16 +1,18 @@
 # Proofnote
 
-### Structured math, without the JSON pain.
+### Structured documents, without the JSON pain.
 
-**Proofnote** is an AI-friendly format, validator, editor, and renderer for
-mathematical and computer-science results.
+**Proofnote** is an AI-friendly, structured document editor and renderer.
+Its original Solution Note workflow remains available as a built-in template
+and a fully compatible import/export format.
 
-Write structured Solution Note JSON, catch broken LaTeX and malformed input
-with precise diagnostics, and export beautiful standalone HTML — entirely offline.
+Build a document from designed blocks, catch broken LaTeX and malformed input
+with precise diagnostics, save reusable templates, and export beautiful
+standalone HTML — entirely offline.
 
 **AI-friendly · LaTeX-safe · Structured · Diagnosable · Portable**
 
-[Try Proofnote](https://donghaoxuan13818851792-code.github.io/ProofNote/?sample) · [AI authoring guide](docs/ai-authoring.md) · [Format schema](schema/solution-note-1.0.schema.json) · [Examples](examples/)
+[Try Proofnote](https://donghaoxuan13818851792-code.github.io/ProofNote/?sample) · [Document format](docs/document-format.md) · [Document AI guide](docs/ai-document-authoring.md) · [Solution Note AI guide](docs/ai-authoring.md) · [Schemas](schema/) · [Examples](examples/)
 
 <p align="center">
   <img src="docs/assets/proofnote-hero.png" width="850" alt="Proofnote — the Gaussian integer showcase note, rendered">
@@ -55,10 +57,18 @@ npm test
 
 ## What it does
 
+- **Structured block documents** — compose title, headings, body text,
+  equations, code, tables, images, quotes, dividers, page breaks, callouts,
+  semantic mathematics blocks, lists, key–value lists, and stat cards.
+- **Designed presets, not fiddly formatting** — choose a semantic block or
+  heading level; Proofnote controls the typography, spacing, and print rules.
+- **Built-in and personal templates** — start blank or from Proof Note,
+  Research Note, Lab Report, and Essay / Report; save personal templates on
+  the device and exchange them as JSON.
 - **Dual-language UI** — Chinese and English, switchable in the toolbar.
-- **JSON import/export** — paste an AI-produced note or a hand-edited file; get
-  tiered diagnostics (JSON syntax → schema → content → render), never a silent
-  failure.
+- **JSON import/export** — `proofnote-document` is the default format;
+  Solution Note 1.0 remains validated, automatically migrated, and explicitly
+  exportable for compatibility.
 - **LaTeX-safe by construction** — every math expression is real KaTeX; the AI
   authoring profile requires `\u005C` JSON-encoded backslashes, and the
   validator catches raw backslashes with actionable suggestions.
@@ -68,14 +78,17 @@ npm test
   of markdown links, KaTeX `trust: false`, prototype-pollution guards, and a
   strict block whitelist for imported content.
 
-## Format
+## Formats
 
-Proofnote speaks one canonical format — **Solution Note Format 1.0** — defined
-in [`schema/solution-note-1.0.schema.json`](schema/solution-note-1.0.schema.json).
+The general-purpose **Proofnote Document Format 1.0** is defined in
+[`schema/proofnote-document-1.0.schema.json`](schema/proofnote-document-1.0.schema.json).
+It is the default format for new documents and AI integrations. Read the
+[format guide](docs/document-format.md) for block, preset, template, migration,
+and offline-image rules.
 
-A separate, simplified **AI Authoring Profile** describes the compact JSON an
-LLM should emit; Proofnote normalizes it into the canonical form before
-rendering. See [`docs/ai-authoring.md`](docs/ai-authoring.md).
+**Solution Note Format 1.0** remains a separately versioned compatibility
+format, defined in [`schema/solution-note-1.0.schema.json`](schema/solution-note-1.0.schema.json).
+Its simplified AI authoring profile is documented in [`docs/ai-authoring.md`](docs/ai-authoring.md).
 
 ## Diagnostics
 
@@ -88,9 +101,12 @@ JSON errors are reported with structure, not jargon. See
 ```
 proofnote/
 ├── index.html              ← app entry point; runs fully offline from the clone
-├── src/doc-page.js         ← preview page shell
+├── src/document-model.js   ← Document Format + Solution Note migration adapter
+├── src/document-store.js   ← IndexedDB-first local document/template storage
+├── src/document-editor.*   ← generic block editor and document preview
+├── src/doc-page.js         ← print-aware preview page shell
 ├── vendor/                 ← vendored dependencies (KaTeX, fonts, design system)
-├── schema/                 ← Solution Note Format 1.0 JSON Schema
+├── schema/                 ← Document and Solution Note JSON Schemas
 ├── docs/                   ← format, AI authoring, escaping, diagnostics
 ├── examples/               ← sample notes (incl. the Gaussian integer showcase)
 └── tests/                  ← regression + i18n suites (npm test)

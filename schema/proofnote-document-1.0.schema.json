@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://donghaoxuan13818851792-code.github.io/ProofNote/schema/proofnote-document-1.0.schema.json",
+  "title": "Proofnote Document Format 1.0",
+  "description": "The extensible, portable block-document format used by Proofnote. Typography is selected through constrained presets rather than arbitrary style values.",
+  "type": "object",
+  "required": ["format", "version", "metadata", "blocks"],
+  "properties": {
+    "format": { "const": "proofnote-document" },
+    "version": { "const": "1.0" },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "templateName": { "type": "string" },
+        "documentType": { "type": "string", "description": "Optional template-controlled running-header label." },
+        "noteNumber": { "type": "string" },
+        "author": { "type": "string" },
+        "date": { "type": "string" },
+        "status": { "type": "string" },
+        "source": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/block" }
+    },
+    "compatibility": { "type": "object", "description": "Optional migration metadata; not required by new documents." }
+  },
+  "definitions": {
+    "block": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "id": { "type": "string", "description": "Stable editor identifier. Proofnote generates one when importing AI-authored JSON." },
+        "type": { "enum": ["title", "subtitle", "heading", "paragraph", "equation", "code", "table", "image", "quote", "divider", "page-break", "callout", "semantic", "list", "key-value", "stats"] },
+        "preset": { "type": "string", "description": "A Proofnote-controlled typography or component preset. Proofnote derives it when omitted." },
+        "content": { "type": "string" },
+        "level": { "enum": [1, 2, 3] },
+        "kind": { "type": "string" },
+        "title": { "type": "string" },
+        "label": { "type": "string" },
+        "summary": { "type": "string" },
+        "appearance": { "enum": ["editorial", "card"], "description": "An optional template-controlled semantic presentation. Omit to inherit the template default." },
+        "language": { "type": "string" },
+        "columns": { "type": "array", "items": { "type": "string" } },
+        "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
+        "src": { "type": "string" },
+        "alt": { "type": "string" },
+        "caption": { "type": "string" },
+        "citation": { "type": "string" },
+        "ordered": { "type": "boolean" },
+        "items": { "type": "array" }
+      }
+    }
+  }
+}

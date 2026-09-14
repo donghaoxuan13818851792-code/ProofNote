@@ -4,14 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Proofnote</title>
-<link rel="stylesheet" href="vendor/design-system/classical-4ad24e2c-bede-4e17-ac91-edf84195d97f/styles.css">
+<link rel="stylesheet" href="vendor/design-system/classical-4ad24e2c-bede-4e17-ac91-edf84195d97f/styles.css?v=offline-fonts-1">
 <link rel="stylesheet" href="vendor/katex/katex.min.css">
 <script src="vendor/design-system/classical-4ad24e2c-bede-4e17-ac91-edf84195d97f/_ds_bundle.js"></script>
 <script src="vendor/katex/katex.min.js"></script>
 <script src="vendor/katex/embed.js"></script>
 <script src="vendor/katex/fonts-embed.js"></script>
-<style>doc-page:not(:defined){visibility:hidden}</style>
-<script src="./src/doc-page.js"></script>
+<style>doc-page:not(:defined){visibility:hidden}#app{display:none}</style>
+<script src="./src/doc-page.js?v=workspace-20260914-10"></script>
+<link rel="stylesheet" href="./src/document-editor.css?v=workspace-20260914-18">
 <style>
   html, body { height: 100%; }
   body { margin: 0; overflow: hidden; }
@@ -2548,7 +2549,7 @@ Return only the final JSON object.`;
     // offline; falls back to Georgia/serif only if the embed is missing.
     const fontsCss = window.SOLUTION_NOTE_FONTS_EMBED && window.SOLUTION_NOTE_FONTS_EMBED.css
       ? b64ToUtf8(window.SOLUTION_NOTE_FONTS_EMBED.css).replace(/<\/(style)/gi, "<\\/$1")
-      : "@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap');";
+      : ":root{--font-heading:\"Cormorant Garamond\",\"Songti SC\",STSong,serif;--font-body:\"Lora\",\"Songti SC\",STSong,serif;}";
     const title = escapeHtml((state.meta.title || "Solution Note").replace(/\*/g, ""));
     const esc = escapeHtml;
     const escAttr = (v) => String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -2824,5 +2825,8 @@ ${restHtml}
 
 })();
 </script>
+<script src="./src/document-model.js"></script>
+<script src="./src/document-store.js"></script>
+<script src="./src/document-editor.js?v=workspace-20260914-17"></script>
 </body>
 </html>

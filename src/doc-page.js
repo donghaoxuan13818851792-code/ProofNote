@@ -178,14 +178,13 @@
     :host {
       position: relative;
       display: block;
-      /* When the viewport is narrower than the page, grow to wrap the
-       * sheet (plus this padding) instead of staying viewport-width, so
-       * the desk background and right margin reach the sheet's far edge
-       * in the horizontal scroll. */
-      min-width: max-content;
+      /* The authored sheet remains a physical page by default. The editor
+       * may opt into a responsive screen sheet below; print deliberately
+       * keeps the physical dimensions. */
+      min-width: var(--doc-page-host-min-width, max-content);
       min-height: 100vh;
-      background: #f5f5f4;
-      padding: 48px 24px;
+      background: var(--doc-page-stage, #f5f5f4);
+      padding: var(--doc-page-stage-padding, 48px 24px);
       box-sizing: border-box;
       font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
       --doc-page-w: 8.5in;
@@ -197,13 +196,18 @@
       --doc-ftr-pad: 0px;
     }
     .sheet {
-      width: var(--doc-page-w);
+      width: var(--doc-page-screen-w, var(--doc-page-w));
       margin: 0 auto;
+      /* The editor may set this to fit a physical sheet into a narrower
+       * workspace rail. CSS zoom, unlike a transform, participates in normal
+       * layout, so text, page height, scrolling and hit targets all scale
+       * together. It is intentionally screen-only: print stays true size. */
+      zoom: var(--doc-page-screen-scale, 1);
       background: #fff;
-      box-shadow: 0 2px 10px rgba(20, 20, 19, 0.12);
-      border-radius: 7px;
+      box-shadow: var(--doc-page-sheet-shadow, 0 2px 10px rgba(20, 20, 19, 0.12));
+      border-radius: var(--doc-page-sheet-radius, 7px);
       box-sizing: border-box;
-      padding: var(--doc-page-margin);
+      padding: var(--doc-page-screen-margin, var(--doc-page-margin));
     }
     .frame { width: 100%; border-collapse: collapse; }
     /* Scaled-fit mode (content-width/content-height): the inner .fit box
@@ -231,8 +235,8 @@
       overflow: hidden;
       box-sizing: border-box;
       background: #fff;
-      border-radius: 7px;
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+      border-radius: var(--doc-page-sheet-radius, 7px);
+      box-shadow: var(--doc-page-sheet-shadow, 0 2px 10px rgba(0, 0, 0, 0.25));
       print-color-adjust: exact;
       -webkit-print-color-adjust: exact;
       break-inside: avoid;
@@ -302,7 +306,7 @@
     @media print {
       :host { background: none; padding: 0; min-width: 0; min-height: 0; }
       .sheet {
-        width: auto; margin: 0; box-shadow: none; border-radius: 0;
+        width: auto; margin: 0; zoom: 1; box-shadow: none; border-radius: 0;
         padding: 0 var(--doc-page-margin);
       }
       /* The thead/tfoot spacers repeat on every page, so they carry the

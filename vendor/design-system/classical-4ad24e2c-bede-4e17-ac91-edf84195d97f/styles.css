@@ -1,5 +1,7 @@
 /* Classical — design-system tokens and component classes. This file is the source of truth for the system's look; retune it here and see readme.md. */
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&family=Lora:wght@400;600&display=swap');
+/* Keep the design system genuinely offline. The bundled subset covers the
+   Latin display faces; the document editor adds thoughtful local CJK fallbacks. */
+@import url('../../fonts/fonts.css');
 
 :root {
   --color-bg: #f3f2f2;
@@ -252,4 +254,3 @@ textarea.input { min-height: 90px; resize: vertical; }
 }
 .dialog-body { font-size: 14px; opacity: 0.85; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
-
