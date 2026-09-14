@@ -22,6 +22,11 @@
     result: { zh: "结果", en: "Result" },
     verification: { zh: "验证", en: "Verify" }
   };
+  // The Proof Note masthead is one editor surface: title, subtitle, and its
+  // optional metadata row keep their editorial rhythm while selecting as one
+  // coherent document block.
+  const PROOF_METADATA_SELECTION = "__proofnote_header__";
+  const PROOF_METADATA_FIELDS = ["author", "date", "status"];
   let state = null;
   let templates = [];
   let saveTimer = null;
@@ -36,12 +41,11 @@
   let undoTimer = null;
   let confirmActionHandler = null;
   let insertionIndex = null;
-  // Keep the reader-facing navigator at the user's established width. The
-  // sidebar remains resizable, but it is a proper navigation surface rather
-  // than the deliberately compact outline rail used in the interim design.
-  const SIDEBAR_WIDTH_KEY = "proofnote-document:sidebar-width";
+  // The navigator opens at its widest useful reading width on every reload.
+  // Dragging is session-only so a temporary adjustment never becomes a
+  // surprising long-term workspace preference.
   const OUTLINE_COLLAPSE_KEY = "proofnote-document:outline-collapsed:v1";
-  const SIDEBAR_DEFAULT_WIDTH = 232;
+  const SIDEBAR_DEFAULT_WIDTH = 360;
   const SIDEBAR_MIN_WIDTH = 180;
   const SIDEBAR_MAX_WIDTH = 360;
   const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
@@ -152,7 +156,6 @@
     app.innerHTML = `
       <header class="pn-workspace-toolbar">
         <div class="pn-wordmark"><strong>Proofnote</strong></div>
-        <label class="pn-document-name-field"><span class="pn-visually-hidden">${tr("文档名称", "Document name")}</span><input id="pnDocumentName" type="text" spellcheck="false"></label>
         <p id="pnStatus" class="pn-status" role="status"></p>
         <div class="pn-toolbar-menu">
           <button class="pn-toolbar-actions" id="pnActionsToggle" type="button" aria-expanded="false" aria-controls="pnActionMenu" aria-label="${tr("文档操作", "Document actions")}" title="${tr("文档操作", "Document actions")}">•••</button>
@@ -166,6 +169,7 @@
             <button class="pn-action-menu-item" id="pnCopyAi" type="button" role="menuitem">${tr("复制 AI 格式说明", "Copy AI format")}</button>
             <div class="pn-action-menu-rule" aria-hidden="true"></div>
             <div class="pn-action-menu-label">${tr("文档信息", "Document info")}</div>
+            <button class="pn-action-menu-item" id="pnEditMetadata" type="button" role="menuitem">${tr("编辑文档元数据", "Edit document metadata")}</button>
             <p class="pn-action-menu-note">Proofnote Document Format 1.0</p>
           </div>
         </div>
@@ -211,7 +215,7 @@
         <aside class="pn-detail" id="pnDetail" aria-label="${tr("检查器", "Inspector")}" aria-hidden="true" hidden>
           <div class="pn-detail-content">
             <section class="pn-inspector-section">
-              <div class="pn-inspector-topline"><div class="pn-utility-title">${tr("内容块", "Block")}</div><button class="pn-close-inspector" id="pnCloseInspector" type="button" aria-label="${tr("关闭检查器", "Close inspector")}" title="${tr("关闭检查器", "Close inspector")}">×</button></div>
+              <div class="pn-inspector-topline"><div class="pn-utility-title" id="pnInspectorTopLabel">${tr("内容块", "Block")}</div><button class="pn-close-inspector" id="pnCloseInspector" type="button" aria-label="${tr("关闭检查器", "Close inspector")}" title="${tr("关闭检查器", "Close inspector")}">×</button></div>
               <div id="pnInspector"></div>
             </section>
           </div>
@@ -238,8 +242,8 @@
       <div class="pn-undo-toast" id="pnUndoToast" role="status" hidden><span id="pnUndoCopy"></span><button class="pn-undo-button" id="pnUndoButton" type="button">${tr("撤销", "Undo")}</button></div>`;
     document.body.appendChild(app);
     els = {
-      app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), name: app.querySelector("#pnDocumentName"), templates: app.querySelector("#pnTemplates"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
-      outline: app.querySelector("#pnOutline"), canvasPane: app.querySelector(".pn-canvas-pane"), docPage: app.querySelector("#pnDocPage"), canvas: app.querySelector("#pnCanvas"), inspector: app.querySelector("#pnInspector"), pageHeader: app.querySelector("#pnPageHeader"), footer: app.querySelector("#pnFooterName"), footerStatus: app.querySelector("#pnFooterStatus"), modal: app.querySelector("#pnImportModal"), confirmModal: app.querySelector("#pnConfirmModal"), confirmTitle: app.querySelector("#pnConfirmTitle"), confirmCopy: app.querySelector("#pnConfirmCopy"), confirmCancel: app.querySelector("#pnConfirmCancel"), confirmAccept: app.querySelector("#pnConfirmAccept"),
+      app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), templates: app.querySelector("#pnTemplates"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
+      outline: app.querySelector("#pnOutline"), canvasPane: app.querySelector(".pn-canvas-pane"), docPage: app.querySelector("#pnDocPage"), canvas: app.querySelector("#pnCanvas"), inspector: app.querySelector("#pnInspector"), inspectorTopLabel: app.querySelector("#pnInspectorTopLabel"), pageHeader: app.querySelector("#pnPageHeader"), footer: app.querySelector("#pnFooterName"), footerStatus: app.querySelector("#pnFooterStatus"), modal: app.querySelector("#pnImportModal"), confirmModal: app.querySelector("#pnConfirmModal"), confirmTitle: app.querySelector("#pnConfirmTitle"), confirmCopy: app.querySelector("#pnConfirmCopy"), confirmCancel: app.querySelector("#pnConfirmCancel"), confirmAccept: app.querySelector("#pnConfirmAccept"),
       importText: app.querySelector("#pnImportText"), importFile: app.querySelector("#pnImportFile"), importReport: app.querySelector("#pnImportReport"),
       outlineMenu: app.querySelector("#pnOutlineMenu"), undoToast: app.querySelector("#pnUndoToast"), undoCopy: app.querySelector("#pnUndoCopy"), undoButton: app.querySelector("#pnUndoButton")
     };
@@ -254,6 +258,14 @@
     app.addEventListener("click", (event) => {
       if (!event.target.closest(".pn-toolbar-menu")) setActionMenuOpen(false);
       if (!event.target.closest(".pn-template-menu-wrap")) setTemplateMenuOpen(false);
+    });
+    // The paper remains the primary editing surface. A click on its open
+    // whitespace should return it to a quiet reading state, rather than
+    // leaving a formerly selected block visually pinned in place.
+    els.canvasPane.addEventListener("pointerdown", (event) => {
+      if (!selectedBlockId) return;
+      if (event.target.closest(".pn-canvas-block, .pn-insert-point, input, textarea, select, button, a, label")) return;
+      clearCanvasSelection();
     });
     // Close the Outline menu on the *next pointer down* outside it, rather
     // than on click. A secondary click dispatches contextmenu before some
@@ -298,8 +310,8 @@
     app.querySelector("#pnCopyAi").addEventListener("click", () => { copyAiInstructions(); setActionMenuOpen(false); });
     app.querySelector("#pnExportTemplate").addEventListener("click", () => { exportTemplate(); setTemplateMenuOpen(false); });
     app.querySelector("#pnExportLegacy").addEventListener("click", () => { exportLegacy(); setActionMenuOpen(false); });
+    app.querySelector("#pnEditMetadata").addEventListener("click", () => { setActionMenuOpen(false); selectProofMetadata(); });
     app.querySelector("#pnLang").addEventListener("click", () => { try { root.localStorage.setItem("sn-lang", english() ? "zh" : "en"); } catch (_) {} root.location.reload(); });
-    els.name.addEventListener("input", () => { state.metadata.name = els.name.value; changed(); });
     bindSidebarResize();
     bindOutlineViewportTracking();
   }
@@ -342,14 +354,11 @@
     els.sidebarResize.setAttribute("aria-valuetext", sidebarValueText(sidebarWidth));
     els.sidebarResize.title = tr("拖动调整宽度；双击恢复默认", "Drag to resize; double-click to reset");
   }
-  function applySidebarWidth(value, persist) {
+  function applySidebarWidth(value) {
     sidebarWidth = clampSidebarWidth(value);
     if (els.utility && els.utility.classList.contains("is-open")) els.app.style.setProperty("--pn-left", sidebarWidth + "px");
     syncSidebarResize();
     root.requestAnimationFrame(syncCanvasScale);
-    if (persist) {
-      try { root.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth)); } catch (_) {}
-    }
   }
   function bindSidebarResize() {
     const resize = els.sidebarResize;
@@ -359,13 +368,13 @@
       event.preventDefault();
       const startX = event.clientX;
       const startWidth = sidebarWidth;
-      const move = (moveEvent) => applySidebarWidth(startWidth + moveEvent.clientX - startX, false);
+      const move = (moveEvent) => applySidebarWidth(startWidth + moveEvent.clientX - startX);
       const finish = () => {
         document.body.classList.remove("pn-sidebar-resizing");
         root.removeEventListener("pointermove", move);
         root.removeEventListener("pointerup", finish);
         root.removeEventListener("pointercancel", finish);
-        applySidebarWidth(sidebarWidth, true);
+        applySidebarWidth(sidebarWidth);
       };
       document.body.classList.add("pn-sidebar-resizing");
       if (resize.setPointerCapture) resize.setPointerCapture(event.pointerId);
@@ -373,14 +382,14 @@
       root.addEventListener("pointerup", finish);
       root.addEventListener("pointercancel", finish);
     });
-    resize.addEventListener("dblclick", () => applySidebarWidth(SIDEBAR_DEFAULT_WIDTH, true));
+    resize.addEventListener("dblclick", () => applySidebarWidth(SIDEBAR_DEFAULT_WIDTH));
     resize.addEventListener("keydown", (event) => {
       if (!canResizeSidebar() || !els.utility.classList.contains("is-open")) return;
       const delta = event.shiftKey ? 24 : 8;
-      if (event.key === "ArrowLeft") { event.preventDefault(); applySidebarWidth(sidebarWidth - delta, true); }
-      if (event.key === "ArrowRight") { event.preventDefault(); applySidebarWidth(sidebarWidth + delta, true); }
-      if (event.key === "Home") { event.preventDefault(); applySidebarWidth(SIDEBAR_MIN_WIDTH, true); }
-      if (event.key === "End") { event.preventDefault(); applySidebarWidth(SIDEBAR_MAX_WIDTH, true); }
+      if (event.key === "ArrowLeft") { event.preventDefault(); applySidebarWidth(sidebarWidth - delta); }
+      if (event.key === "ArrowRight") { event.preventDefault(); applySidebarWidth(sidebarWidth + delta); }
+      if (event.key === "Home") { event.preventDefault(); applySidebarWidth(SIDEBAR_MIN_WIDTH); }
+      if (event.key === "End") { event.preventDefault(); applySidebarWidth(SIDEBAR_MAX_WIDTH); }
     });
     root.addEventListener("resize", () => { syncSidebarResize(); syncCanvasScale(); });
   }
@@ -767,6 +776,7 @@
     if (primary) {
       addOutlineMenuButton(menu, tr("在后方添加章节", "Add section after"), "add-section-after", () => addSectionAfter(node.id));
       addOutlineMenuButton(menu, tr("添加小节", "Add subsection"), "add-subsection", () => addSubsection(node.id, "child"));
+      addContentMenu(menu, node);
       addOutlineMenuRule(menu);
       addOutlineMenuButton(menu, tr("重命名", "Rename"), "rename", () => focusOutlineNodeTitle(node.id));
       addOutlineMenuButton(menu, tr("复制章节", "Duplicate section"), "duplicate-section", () => duplicateStructuralNode(node.id));
@@ -888,8 +898,32 @@
   }
   function selectedIndex() { return state ? state.blocks.findIndex((block) => block.id === selectedBlockId) : -1; }
   function selectedBlock() { const index = selectedIndex(); return index < 0 ? null : state.blocks[index]; }
+  function isProofMetadataSelected() { return selectedBlockId === PROOF_METADATA_SELECTION; }
   function applyCanvasSelection() {
-    document.querySelectorAll(".pn-canvas-block").forEach((node) => node.classList.toggle("is-selected", node.dataset.blockId === selectedBlockId));
+    document.querySelectorAll(".pn-canvas-block").forEach((node) => {
+      const selected = node.dataset.blockId === selectedBlockId || (node.dataset.documentHeader === "proof" && isProofMetadataSelected());
+      node.classList.toggle("is-selected", selected);
+    });
+  }
+  function selectProofMetadata(options) {
+    if (!isProofNoteDocument()) return;
+    selectedBlockId = PROOF_METADATA_SELECTION;
+    activeOutlineBlockId = "";
+    insertionIndex = null;
+    applyCanvasSelection();
+    syncOutlineActiveState();
+    renderInspector();
+    if (!options || options.openInspector !== false) setDetailOpen(true);
+  }
+  function clearCanvasSelection() {
+    if (!selectedBlockId) return;
+    selectedBlockId = "";
+    activeOutlineBlockId = "";
+    insertionIndex = null;
+    applyCanvasSelection();
+    syncOutlineActiveState();
+    renderInspector();
+    setDetailOpen(false);
   }
   function selectBlock(blockId, options) {
     if (!blockId || !state.blocks.some((block) => block.id === blockId)) return;
@@ -913,7 +947,7 @@
     // A direct edit is an explicit navigation decision and must win over the
     // passive viewport heuristic. Without this guard, scrollIntoView() can
     // briefly move the outline back to the preceding section.
-    if (selectedBlockId) {
+    if (selectedBlockId && !isProofMetadataSelected()) {
       setActiveOutlineForBlock(selectedBlockId);
       return;
     }
@@ -1005,13 +1039,37 @@
       source: String(metadata.source || "")
     };
   }
-  function renderProofMetadata() {
+  function proofMetadataFields() {
+    const metadata = state && state.metadata ? state.metadata : {};
+    const configured = metadata.proofMetadata && Array.isArray(metadata.proofMetadata.fields)
+      ? metadata.proofMetadata.fields : PROOF_METADATA_FIELDS;
+    const requested = new Set(configured.filter((field) => PROOF_METADATA_FIELDS.includes(field)));
+    return PROOF_METADATA_FIELDS.filter((field) => requested.has(field));
+  }
+  function setProofMetadataFieldVisible(field, visible) {
+    const next = new Set(proofMetadataFields());
+    if (visible) next.add(field);
+    else next.delete(field);
+    state.metadata.proofMetadata = { fields: PROOF_METADATA_FIELDS.filter((key) => next.has(key)) };
+    // A completely hidden group remains selected in the Inspector, so it can
+    // always be restored without relying on an accidental browser refresh.
+    changed({ structure: true, inspector: true, chrome: true });
+  }
+  function enableProofMetadata() {
+    state.metadata.proofMetadata = { fields: PROOF_METADATA_FIELDS.slice() };
+    changed({ structure: true, inspector: true, chrome: true });
+  }
+  function renderProofMetadata(options) {
+    const opts = options || {};
     const values = proofMetadataValues();
+    const fields = proofMetadataFields().map((key) => [key, {
+      author: tr("作者", "Author"), date: tr("日期", "Date"), status: tr("状态", "Status")
+    }[key]]);
+    if (!fields.length) return null;
     const metadata = element("section", { class: "pn-proof-metadata", "aria-label": tr("文档信息", "Document details") });
+    if (!opts.embedded) metadata.tabIndex = 0;
     const grid = element("dl", { class: "pn-proof-metadata-grid" });
-    const fields = [
-      ["author", tr("作者", "Author")], ["date", tr("日期", "Date")], ["status", tr("状态", "Status")]
-    ];
+    grid.style.gridTemplateColumns = "repeat(" + fields.length + ", minmax(0, 1fr))";
     fields.forEach(([key, label]) => {
       const item = element("div", { class: "pn-proof-metadata-item pn-proof-metadata-" + key });
       item.appendChild(element("dt", {}, label));
@@ -1029,6 +1087,15 @@
       item.appendChild(value); grid.appendChild(item);
     });
     metadata.appendChild(grid);
+    if (!opts.embedded) {
+      metadata.addEventListener("pointerdown", (event) => {
+        selectProofMetadata({ openInspector: !event.target.closest("input, textarea, select") });
+      });
+      metadata.addEventListener("click", (event) => {
+        if (!event.target.closest("input, textarea, select, button")) selectProofMetadata();
+      });
+      metadata.addEventListener("focusin", () => selectProofMetadata({ openInspector: false }));
+    }
     if (values.source.trim()) {
       const source = element("dl", { class: "pn-proof-source" });
       source.appendChild(element("dt", {}, tr("来源", "Source")));
@@ -1040,15 +1107,69 @@
     }
     return metadata;
   }
+  function proofHeaderRange() {
+    if (!isProofNoteDocument()) return null;
+    const titleIndex = state.blocks.findIndex((block) => block.type === "title");
+    const subtitleIndex = state.blocks.findIndex((block) => block.type === "subtitle");
+    if (titleIndex < 0) return null;
+    // A template may intentionally omit its subtitle, but unrelated content
+    // must never be silently pulled into the masthead by a non-adjacent block.
+    if (subtitleIndex >= 0 && subtitleIndex !== titleIndex + 1) return null;
+    return { titleIndex, subtitleIndex, endIndex: subtitleIndex >= 0 ? subtitleIndex : titleIndex };
+  }
+  function renderProofHeader(range) {
+    const header = element("section", { class: "pn-canvas-block pn-canvas-proof-header", "aria-label": tr("文档标题区", "Document header"), tabindex: "0" });
+    header.dataset.documentHeader = "proof";
+    const grip = button("⋮⋮", "pn-canvas-grip", () => selectProofMetadata(), tr("选择文档标题区", "Select document header"));
+    grip.setAttribute("aria-label", tr("选择文档标题区", "Select document header"));
+    const overflow = button("⋯", "pn-canvas-overflow", () => selectProofMetadata(), tr("打开文档标题区设置", "Open document header settings"));
+    overflow.setAttribute("aria-label", tr("打开文档标题区设置", "Open document header settings"));
+    header.append(grip, overflow);
+    const content = element("div", { class: "pn-canvas-content" });
+    const title = state.blocks[range.titleIndex];
+    const titleContent = element("div");
+    buildCanvasFields(titleContent, title, range.titleIndex);
+    content.appendChild(titleContent);
+    if (range.subtitleIndex >= 0) {
+      const subtitle = state.blocks[range.subtitleIndex];
+      const subtitleContent = element("div");
+      buildCanvasFields(subtitleContent, subtitle, range.subtitleIndex);
+      content.appendChild(subtitleContent);
+    }
+    const metadata = renderProofMetadata({ embedded: true });
+    if (metadata) content.appendChild(metadata);
+    header.appendChild(content);
+    header.addEventListener("pointerdown", (event) => {
+      selectProofMetadata({ openInspector: !event.target.closest("input, textarea, select") });
+    });
+    header.addEventListener("click", (event) => {
+      if (!event.target.closest("input, textarea, select, button")) selectProofMetadata();
+    });
+    header.addEventListener("focusin", () => selectProofMetadata({ openInspector: false }));
+    return header;
+  }
   function renderCanvas() {
     els.canvas.innerHTML = "";
     els.canvas.classList.toggle("pn-proofnote-document", isProofNoteDocument());
-    const metadataIndex = isProofNoteDocument()
-      ? Math.max(0, state.blocks.findIndex((block) => block.type === "subtitle") >= 0 ? state.blocks.findIndex((block) => block.type === "subtitle") : state.blocks.findIndex((block) => block.type === "title"))
+    const headerRange = proofHeaderRange();
+    // Older imported Proof Note documents can place title and subtitle apart.
+    // Preserve the metadata in that unusual ordering instead of dropping it
+    // simply because those blocks cannot safely form one visual header.
+    const fallbackMetadataIndex = !headerRange && isProofNoteDocument()
+      ? state.blocks.findIndex((block) => block.type === "subtitle")
       : -1;
     state.blocks.forEach((block, index) => {
+      if (headerRange && index === headerRange.titleIndex) {
+        els.canvas.appendChild(renderProofHeader(headerRange));
+        els.canvas.appendChild(renderInsertAffordance(headerRange.endIndex + 1, headerRange.endIndex === state.blocks.length - 1));
+        return;
+      }
+      if (headerRange && index === headerRange.subtitleIndex) return;
       els.canvas.appendChild(renderCanvasBlock(block, index));
-      if (index === metadataIndex) els.canvas.appendChild(renderProofMetadata());
+      if (index === fallbackMetadataIndex) {
+        const metadata = renderProofMetadata();
+        if (metadata) els.canvas.appendChild(metadata);
+      }
       els.canvas.appendChild(renderInsertAffordance(index + 1, index === state.blocks.length - 1));
     });
     if (!state.blocks.length) els.canvas.appendChild(renderInsertAffordance(0, true));
@@ -1276,6 +1397,11 @@
   function renderInspector() {
     if (!els.inspector) return;
     els.inspector.innerHTML = "";
+    if (els.inspectorTopLabel) els.inspectorTopLabel.textContent = isProofMetadataSelected() ? tr("文档", "Document") : tr("内容块", "Block");
+    if (isProofMetadataSelected()) {
+      renderProofMetadataInspector();
+      return;
+    }
     const index = selectedIndex();
     const block = selectedBlock();
     if (!block || index < 0) {
@@ -1305,6 +1431,15 @@
     });
     type.classList.add("pn-inspector-field"); structure.appendChild(type);
     const label = (zh, en) => tr(zh, en);
+    if (block.type === "title" && isProofNoteDocument() && !proofMetadataFields().length) {
+      const metadata = element("section", { class: "pn-inspector-group", "aria-label": tr("文档元数据", "Document metadata") });
+      metadata.appendChild(element("div", { class: "pn-inspector-group-title" }, tr("文档元数据", "Document metadata")));
+      const row = element("div", { class: "pn-inspector-property" });
+      row.appendChild(element("span", { class: "pn-inspector-property-label" }, tr("元数据块已隐藏", "Metadata block hidden")));
+      row.appendChild(button(tr("重新启用", "Enable"), "pn-inspector-enable-metadata", enableProofMetadata));
+      metadata.appendChild(row);
+      els.inspector.appendChild(metadata);
+    }
     if (block.type === "heading") {
       structure.appendChild(selectField(label("层级", "Level"), String(block.level), [["1", "H1"], ["2", "H2"], ["3", "H3"]], (value) => { block.level = Number(value); block.preset = "heading-" + value; changed({ structure: true, outline: true, inspector: true }); }));
     }
@@ -1335,6 +1470,30 @@
     actions.appendChild(button(label("复制", "Duplicate"), "pn-inspector-action", () => duplicateBlock(index)));
     actions.appendChild(button(label("删除内容块", "Delete block"), "pn-inspector-action pn-danger", () => removeBlock(index)));
     els.inspector.appendChild(actions);
+  }
+  function inspectorToggle(labelText, checked, onChange) {
+    const row = element("label", { class: "pn-inspector-toggle" });
+    row.appendChild(element("span", { class: "pn-inspector-toggle-label" }, labelText));
+    const control = element("input", { class: "pn-inspector-toggle-control", type: "checkbox" });
+    control.checked = Boolean(checked);
+    control.addEventListener("change", () => onChange(control.checked));
+    row.appendChild(control);
+    return row;
+  }
+  function renderProofMetadataInspector() {
+    const context = element("div", { class: "pn-inspector-context" });
+    context.appendChild(element("span", { class: "pn-inspector-context-label" }, tr("文档元数据", "Document metadata")));
+    els.inspector.appendChild(context);
+    const display = element("section", { class: "pn-inspector-group", "aria-label": tr("显示", "Display") });
+    display.appendChild(element("div", { class: "pn-inspector-group-title" }, tr("显示", "Display")));
+    const active = new Set(proofMetadataFields());
+    [
+      ["author", tr("作者", "Author")],
+      ["date", tr("日期", "Date")],
+      ["status", tr("状态", "Status")]
+    ].forEach(([field, label]) => display.appendChild(inspectorToggle(label, active.has(field), (visible) => setProofMetadataFieldVisible(field, visible))));
+    els.inspector.appendChild(display);
+    if (!active.size) els.inspector.appendChild(element("p", { class: "pn-inspector-note" }, tr("这组元数据已从纸面隐藏；勾选任意字段即可重新显示。", "This metadata group is hidden from the page. Select any field to restore it.")));
   }
   function buildImageInspector(panel, block) {
     const label = (zh, en) => tr(zh, en);
@@ -1447,9 +1606,13 @@
   }
   function proofMetadataHtml() {
     const values = proofMetadataValues();
+    const fields = proofMetadataFields();
+    if (!fields.length) return "";
     const item = (title, value, extraClass) => "<div class=\"pn-proof-metadata-item " + (extraClass || "") + "\"><dt>" + escapeHtml(title) + "</dt><dd>" + (String(value || "").trim() ? inline(value) : "&mdash;") + "</dd></div>";
     const source = values.source.trim() ? "<dl class=\"pn-proof-source\"><dt>" + escapeHtml(tr("来源", "Source")) + "</dt><dd>" + inline(values.source) + "</dd></dl>" : "";
-    return "<section class=\"pn-proof-metadata\"><dl class=\"pn-proof-metadata-grid\">" + item(tr("作者", "Author"), values.author) + item(tr("日期", "Date"), values.date) + item(tr("状态", "Status"), values.status, "pn-proof-metadata-status") + "</dl>" + source + "</section>";
+    const labels = { author: tr("作者", "Author"), date: tr("日期", "Date"), status: tr("状态", "Status") };
+    const items = fields.map((field) => item(labels[field], values[field], field === "status" ? "pn-proof-metadata-status" : "")).join("");
+    return "<section class=\"pn-proof-metadata\"><dl class=\"pn-proof-metadata-grid\" style=\"grid-template-columns:repeat(" + fields.length + ",minmax(0,1fr))\">" + items + "</dl>" + source + "</section>";
   }
   function renderDocumentChrome() {
     if (!state) return;
@@ -1471,7 +1634,6 @@
     els.footerStatus.textContent = "";
   }
   function renderAll() {
-    els.name.value = state.metadata.name;
     selectedBlockId = "";
     activeOutlineBlockId = "";
     insertionIndex = null;
@@ -1634,7 +1796,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
   }
   async function initialise() {
     mount();
-    try { applySidebarWidth(root.localStorage.getItem(SIDEBAR_WIDTH_KEY), false); } catch (_) { applySidebarWidth(SIDEBAR_DEFAULT_WIDTH, false); }
+    applySidebarWidth(SIDEBAR_DEFAULT_WIDTH);
     try {
       const savedCollapsed = JSON.parse(root.localStorage.getItem(OUTLINE_COLLAPSE_KEY) || "[]");
       collapsedOutlineIds = new Set(Array.isArray(savedCollapsed) ? savedCollapsed.filter((id) => typeof id === "string") : []);

@@ -31,6 +31,14 @@ async function settle(window, predicate, timeoutMs) {
 function blockHasControlValue(block, value) {
   return Array.from(block.querySelectorAll("input, textarea")).some((control) => control.value === value);
 }
+function canvasBlockNodes(document) {
+  return Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block")).filter((block) => Boolean(block.dataset.blockId));
+}
+function proofHeaderBlockCount(document) {
+  const header = document.querySelector("#pnCanvas .pn-canvas-proof-header");
+  if (!header) return 0;
+  return 1 + (header.querySelector(".pn-document-subtitle") ? 1 : 0);
+}
 
 async function main() {
   const runtimeErrors = [];
@@ -77,7 +85,9 @@ async function main() {
     });
     window.localStorage.setItem("proofnote-document:current:v1", JSON.stringify(fixture));
     window.eval(editorSource);
-    const canvasReady = await settle(window, () => document.querySelectorAll("#pnCanvas .pn-canvas-block").length === fixture.blocks.length);
+    const canvasReady = await settle(window, () => {
+      return canvasBlockNodes(document).length + proofHeaderBlockCount(document) === fixture.blocks.length;
+    });
 
     const app = document.querySelector("#proofnoteDocumentApp");
     const canvas = document.querySelector("#pnCanvas");
@@ -90,9 +100,9 @@ async function main() {
     const utilityToggle = document.querySelector("#pnUtilityToggle");
     const sidebarResize = document.querySelector("#pnSidebarResize");
     const outline = document.querySelector("#pnOutline");
-    const canvasBlocks = Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block"));
+    let canvasBlocks = canvasBlockNodes(document);
     const initialCanvasBlockIds = new Set(canvasBlocks.map((block) => block.dataset.blockId));
-    const globalActionIds = ["pnImport", "pnExport", "pnExportHtml", "pnExportLegacy", "pnCopyAi"];
+    const globalActionIds = ["pnImport", "pnExport", "pnExportHtml", "pnExportLegacy", "pnCopyAi", "pnEditMetadata"];
 
     check("editor-external-scripts-boot", Boolean(document.querySelector("#proofnoteDocumentApp")) && Boolean(window.ProofnoteDocument) && Boolean(window.ProofnoteStore), "document-model.js, document-store.js, and document-editor.js did not all boot");
     check(
@@ -115,10 +125,11 @@ async function main() {
         && sidebarResize.getAttribute("aria-valuemin") === "180"
         && sidebarResize.getAttribute("aria-valuemax") === "360"
         && sidebarResize.hidden === false
-        && editorSource.includes("SIDEBAR_WIDTH_KEY")
+        && editorSource.includes("const SIDEBAR_DEFAULT_WIDTH = 360")
+        && !editorSource.includes("SIDEBAR_WIDTH_KEY")
         && editorSource.includes("bindSidebarResize")
         && editorCss.includes("cursor: col-resize"),
-      "the open navigation sidebar needs a persisted, keyboard-accessible resize separator"
+      "the open navigation sidebar needs a keyboard-accessible session resize separator that resets to its wide default on reload"
     );
     check(
       "editor-outline-is-a-document-structure-tree",
@@ -150,7 +161,14 @@ async function main() {
         && docPageSource.includes("width: auto; margin: 0; zoom: 1;"),
       "a narrower desktop workspace must scale the whole screen sheet while print remains true size"
     );
-    check("editor-single-canvas", canvasReady && document.querySelectorAll("#pnCanvas").length === 1 && canvasBlocks.length === fixture.blocks.length, "expected one populated #pnCanvas; legacy markup may contain a hidden doc-page, so this test intentionally counts canvases rather than all doc-page elements");
+    check(
+      "editor-single-canvas",
+      canvasReady
+        && document.querySelectorAll("#pnCanvas").length === 1
+        && Boolean(document.querySelector("#pnCanvas .pn-canvas-proof-header"))
+        && canvasBlocks.length + proofHeaderBlockCount(document) === fixture.blocks.length,
+      "expected one populated #pnCanvas; the Proof Note masthead intentionally groups title and subtitle into one document-header surface"
+    );
     check("editor-no-duplicate-surface", !document.querySelector(".pn-editor") && !document.querySelector("#pnPreviewRoot"), "legacy editor/preview surface is still present");
     check(
       "editor-proof-template-restores-editorial-structure",
@@ -162,6 +180,54 @@ async function main() {
         && !document.querySelector("#pnCanvas .pn-semantic"),
       "Proof Note should use the original running header, metadata, and continuous numbered sections instead of default semantic cards"
     );
+    const proofMetadata = document.querySelector("#pnCanvas .pn-proof-metadata");
+    const proofHeader = document.querySelector("#pnCanvas .pn-canvas-proof-header");
+    if (proofMetadata) proofMetadata.dispatchEvent(new window.MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await settle(window, () => inspector && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 3);
+    check(
+      "editor-proof-metadata-has-contextual-display-controls",
+      Boolean(proofMetadata)
+        && Boolean(proofHeader)
+        && proofHeader.classList.contains("pn-canvas-block")
+        && Boolean(proofHeader.querySelector(".pn-canvas-grip"))
+        && Boolean(proofHeader.querySelector(".pn-canvas-overflow"))
+        && Boolean(inspector)
+        && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 3
+        && /Document|文档/.test(document.querySelector("#pnInspectorTopLabel").textContent),
+      inspector ? inspector.textContent : "missing metadata inspector"
+    );
+    const disableMetadataField = async () => {
+      const control = Array.from(inspector.querySelectorAll(".pn-inspector-toggle-control")).find((node) => node.checked);
+      if (control) control.click();
+      await settle(window);
+    };
+    await disableMetadataField();
+    await disableMetadataField();
+    await disableMetadataField();
+    check(
+      "editor-proof-metadata-hides-entire-group-when-no-fields-selected",
+      !document.querySelector("#pnCanvas .pn-proof-metadata")
+        && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 3
+        && /hidden from the page|已从纸面隐藏/.test(inspector.textContent)
+        && editorSource.includes('if (!fields.length) return "";'),
+      inspector ? inspector.textContent : "missing hidden-metadata inspector"
+    );
+    const titleCanvasBlock = document.querySelector("#pnCanvas .pn-canvas-proof-header");
+    if (titleCanvasBlock) titleCanvasBlock.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await settle(window, () => inspector && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 3);
+    const restoreMetadata = inspector && Array.from(inspector.querySelectorAll(".pn-inspector-toggle-control")).find((node) => !node.checked);
+    if (restoreMetadata) restoreMetadata.click();
+    await settle(window);
+    check(
+      "editor-proof-header-inspector-can-restore-complete-hide",
+      Boolean(document.querySelector("#pnCanvas .pn-proof-metadata"))
+        && document.querySelectorAll("#pnCanvas .pn-proof-metadata-item").length === 1,
+      document.querySelector("#pnCanvas").textContent
+    );
+    const closeMetadataInspector = document.querySelector("#pnCloseInspector");
+    if (closeMetadataInspector) closeMetadataInspector.click();
+    await settle(window, () => detail && detail.hidden === true);
+    canvasBlocks = canvasBlockNodes(document);
     check(
       "editor-editorial-export-is-shared",
       editorSource.includes("EXPORT_PROOFNOTE_EDITORIAL_CSS")
@@ -281,6 +347,16 @@ async function main() {
           Boolean(activeOutlineItem) && activeOutlineItem.dataset.blockId === resultBlock.dataset.blockId,
           "a selected canvas block must stay active in the Outline even when the viewport heuristic runs"
         );
+        canvas.dispatchEvent(new window.MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+        await settle(window, () => detail && detail.hidden === true);
+        check(
+          "editor-paper-whitespace-clears-selection",
+          detail.hidden === true
+            && app.style.getPropertyValue("--pn-right").trim() === "0px"
+            && !resultBlock.classList.contains("is-selected")
+            && !document.querySelector("#pnOutline .pn-outline-item.is-active"),
+          "clicking unoccupied paper should clear the selected block and close its contextual Inspector"
+        );
       }
     }
 
@@ -298,7 +374,10 @@ async function main() {
       Boolean(outlineMenu)
         && outlineMenu.hidden === false
         && Boolean(outlineMenu.querySelector('[data-command="add-section-after"]'))
-        && Boolean(outlineMenu.querySelector('[data-command="add-subsection"]')),
+        && Boolean(outlineMenu.querySelector('[data-command="add-subsection"]'))
+        && Boolean(outlineMenu.querySelector('[data-command="add-content-paragraph"]'))
+        && Boolean(outlineMenu.querySelector('[data-command="add-content-table"]'))
+        && Boolean(outlineMenu.querySelector('[data-command="add-content-code"]')),
       outlineMenu ? outlineMenu.textContent : "missing outline menu"
     );
     // Some browsers emit a follow-up click after contextmenu. That click must
@@ -331,8 +410,8 @@ async function main() {
     await settle(window, () => outlineMenu && !outlineMenu.hidden);
     const addSubsectionAfter = outlineMenu && outlineMenu.querySelector('[data-command="add-subsection-after"]');
     if (addSubsectionAfter) addSubsectionAfter.click();
-    await settle(window, () => Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block")).some((block) => !initialCanvasBlockIds.has(block.dataset.blockId) && block.classList.contains("pn-canvas-heading")));
-    const postSiblingBlocks = Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block"));
+    await settle(window, () => canvasBlockNodes(document).some((block) => !initialCanvasBlockIds.has(block.dataset.blockId) && block.classList.contains("pn-canvas-heading")));
+    const postSiblingBlocks = canvasBlockNodes(document);
     const procedureContentIndex = postSiblingBlocks.findIndex((block) => blockHasControlValue(block, "Procedure content"));
     const newSubsectionIndex = postSiblingBlocks.findIndex((block) => !initialCanvasBlockIds.has(block.dataset.blockId) && block.classList.contains("pn-canvas-heading"));
     const equipmentIndex = postSiblingBlocks.findIndex((block) => blockHasControlValue(block, "Equipment"));
@@ -348,8 +427,8 @@ async function main() {
     await settle(window, () => outlineMenu && !outlineMenu.hidden);
     const duplicateProcedure = outlineMenu && outlineMenu.querySelector('[data-command="duplicate-subsection"]');
     if (duplicateProcedure) duplicateProcedure.click();
-    await settle(window, () => Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block")).filter((block) => blockHasControlValue(block, "Procedure")).length === 2);
-    const duplicatedBlocks = Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block"));
+    await settle(window, () => canvasBlockNodes(document).filter((block) => blockHasControlValue(block, "Procedure")).length === 2);
+    const duplicatedBlocks = canvasBlockNodes(document);
     check(
       "editor-outline-duplicates-complete-subtree-with-new-ids",
       duplicatedBlocks.filter((block) => blockHasControlValue(block, "Procedure content")).length === 2
@@ -363,11 +442,29 @@ async function main() {
     await settle(window, () => outlineMenu && !outlineMenu.hidden);
     const removeHeadingOnly = outlineMenu && outlineMenu.querySelector('[data-command="remove-heading"]');
     if (removeHeadingOnly) removeHeadingOnly.click();
-    await settle(window, () => Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block")).filter((block) => blockHasControlValue(block, "Procedure")).length === 1);
+    await settle(window, () => canvasBlockNodes(document).filter((block) => blockHasControlValue(block, "Procedure")).length === 1);
     check(
       "editor-outline-remove-heading-only-preserves-subtree-content",
-      Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block")).filter((block) => blockHasControlValue(block, "Procedure content")).length === 2,
+      canvasBlockNodes(document).filter((block) => blockHasControlValue(block, "Procedure content")).length === 2,
       document.querySelector("#pnCanvas").textContent
+    );
+
+    const primaryMethodItem = findOutlineItem("Method");
+    const primaryMethodMore = primaryMethodItem && primaryMethodItem.closest(".pn-outline-row").querySelector(".pn-outline-more");
+    const codesBeforePrimaryInsert = document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-code").length;
+    if (primaryMethodMore) primaryMethodMore.click();
+    await settle(window, () => outlineMenu && !outlineMenu.hidden);
+    const primaryAddCode = outlineMenu && outlineMenu.querySelector('[data-command="add-content-code"]');
+    if (primaryAddCode) primaryAddCode.click();
+    await settle(window, () => document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-code").length === codesBeforePrimaryInsert + 1);
+    check(
+      "editor-outline-primary-section-adds-content-blocks",
+      document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-code").length === codesBeforePrimaryInsert + 1,
+      JSON.stringify({
+        before: codesBeforePrimaryInsert,
+        after: document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-code").length,
+        hasButton: Boolean(primaryAddCode)
+      })
     );
 
     const deleteMethodItem = findOutlineItem("Method");

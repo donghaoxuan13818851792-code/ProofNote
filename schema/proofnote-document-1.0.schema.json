@@ -20,6 +20,18 @@
         "date": { "type": "string", "maxLength": 200000 },
         "status": { "type": "string", "maxLength": 200000 },
         "source": { "type": "string", "maxLength": 200000 },
+        "proofMetadata": {
+          "type": "object",
+          "description": "Optional Proof Note display settings. Omit to show Author, Date, and Status.",
+          "properties": {
+            "fields": {
+              "type": "array",
+              "maxItems": 3,
+              "uniqueItems": true,
+              "items": { "enum": ["author", "date", "status"] }
+            }
+          }
+        },
         "createdAt": { "type": "string", "maxLength": 200000 },
         "updatedAt": { "type": "string", "maxLength": 200000 }
       }

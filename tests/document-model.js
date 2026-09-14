@@ -11,6 +11,21 @@ function check(name, condition, detail) {
 const blank = Model.blankDocument({ name: "Working title" });
 check("document-blank-format", blank.format === "proofnote-document" && blank.version === "1.0", JSON.stringify(blank));
 check("document-blank-movable-title", blank.metadata.name === "Working title" && blank.blocks[0].type === "title", JSON.stringify(blank));
+const configuredMetadata = Model.normalizeDocument({
+  format: Model.FORMAT,
+  version: Model.VERSION,
+  metadata: { name: "Metadata", proofMetadata: { fields: ["status", "author", "author", "unknown"] } },
+  blocks: []
+});
+check(
+  "document-proof-metadata-display-is-portable",
+  JSON.stringify(configuredMetadata.metadata.proofMetadata) === JSON.stringify({ fields: ["author", "status"] }),
+  JSON.stringify(configuredMetadata.metadata)
+);
+const hiddenMetadata = Model.normalizeDocument({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Hidden", proofMetadata: { fields: [] } }, blocks: [] });
+check("document-proof-metadata-allows-complete-hide", hiddenMetadata.metadata.proofMetadata.fields.length === 0, JSON.stringify(hiddenMetadata.metadata));
+const malformedMetadataDisplay = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad display", proofMetadata: { fields: ["author", "unknown"] } }, blocks: [] });
+check("document-proof-metadata-warns-on-unknown-field", malformedMetadataDisplay.warnings.some((warning) => warning.path === "metadata.proofMetadata.fields[1]"), JSON.stringify(malformedMetadataDisplay));
 
 // Structural type, semantic kind, and typography preset are distinct concepts.
 const heading = Model.createBlock("heading", { level: 3, content: "Details" });

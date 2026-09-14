@@ -39,6 +39,16 @@ fonts, colours, margins, or coordinates; Proofnote owns those decisions.
 Proofnote assigns the matching `preset` when importing; including it is allowed
 but not required for AI-authored JSON.
 
+For the Proof Note template only, an optional display setting can control its
+editorial metadata row without deleting document metadata values:
+
+```json
+"proofMetadata": { "fields": ["author", "date"] }
+```
+
+Use any subset of `author`, `date`, and `status`; use an empty `fields` list to
+hide the entire row. Omit `proofMetadata` to show all three.
+
 For a semantic block that must override its template's presentation, use
 `"appearance": "editorial"` or `"appearance": "card"`. Normally omit this
 field: Proof Note uses the editorial treatment by default, while other

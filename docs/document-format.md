@@ -39,6 +39,11 @@ typography under Proofnote's control.
   movable `title` block, so file identity and page title are not coupled.
 - `metadata` may also carry template-controlled document details such as
   `documentType`, `noteNumber`, `author`, `date`, `status`, and `source`.
+  A Proof Note may add `proofMetadata.fields` with any subset of `author`,
+  `date`, and `status` to control which of those details appear in its
+  editorial metadata row. An empty list hides the row while preserving the
+  values in the document; omitting the setting shows all three for backwards
+  compatibility.
 
 The first version supports title, subtitle, heading levels 1–3, paragraph,
 equation, code, table, image, quote, divider, page break, callout, semantic

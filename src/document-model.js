@@ -20,6 +20,7 @@
   ]);
   const SEMANTIC_KINDS = new Set(["problem", "theorem", "proof", "result", "verification"]);
   const CALLOUT_KINDS = new Set(["note", "tip", "warning", "info"]);
+  const PROOF_METADATA_FIELDS = ["author", "date", "status"];
   // These are deliberately generous authoring limits, not layout limits. They
   // protect the untrusted JSON boundary from accidental or hostile inputs that
   // would otherwise lock up an offline browser tab.
@@ -61,6 +62,17 @@
 
   function safeClone(value) {
     return stripUnsafe(value && typeof value === "object" ? value : {});
+  }
+
+  // Proof Note's editorial metadata is a template-level display choice. Keep
+  // it separate from the values themselves so an author or date can remain in
+  // a portable document even when that row is intentionally not shown.
+  function normalizeProofMetadata(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.fields)) {
+      return { fields: PROOF_METADATA_FIELDS.slice() };
+    }
+    const requested = new Set(value.fields.filter((field) => PROOF_METADATA_FIELDS.includes(field)));
+    return { fields: PROOF_METADATA_FIELDS.filter((field) => requested.has(field)) };
   }
 
   function defaultPreset(type, raw) {
@@ -168,6 +180,7 @@
         date: string(opts.date),
         status: string(opts.status),
         source: string(opts.source),
+        proofMetadata: normalizeProofMetadata(opts.proofMetadata),
         createdAt: string(opts.createdAt) || timestamp,
         updatedAt: string(opts.updatedAt) || timestamp
       },
@@ -189,6 +202,7 @@
       date: safe.metadata && safe.metadata.date,
       status: safe.metadata && safe.metadata.status,
       source: safe.metadata && safe.metadata.source,
+      proofMetadata: safe.metadata && safe.metadata.proofMetadata,
       createdAt: safe.metadata && safe.metadata.createdAt,
       updatedAt: safe.metadata && safe.metadata.updatedAt,
       blocks: Array.isArray(safe.blocks) ? safe.blocks : [],
@@ -225,6 +239,20 @@
       ["templateName", "documentType", "noteNumber", "author", "date", "status", "source", "createdAt", "updatedAt"].forEach((key) => {
         if (raw.metadata[key] !== undefined && typeof raw.metadata[key] !== "string") warn("metadata." + key, "Expected a string; it will be treated as empty text.");
       });
+      if (raw.metadata.proofMetadata !== undefined) {
+        const proofMetadata = raw.metadata.proofMetadata;
+        if (!proofMetadata || typeof proofMetadata !== "object" || Array.isArray(proofMetadata)) warn("metadata.proofMetadata", "Expected metadata display settings; default fields will be shown.");
+        else if (!Array.isArray(proofMetadata.fields)) warn("metadata.proofMetadata.fields", "Expected an array of visible metadata fields.");
+        else {
+          if (proofMetadata.fields.length > PROOF_METADATA_FIELDS.length) warn("metadata.proofMetadata.fields", "Extra metadata fields are ignored.");
+          const seenFields = new Set();
+          proofMetadata.fields.forEach((field, index) => {
+            if (!PROOF_METADATA_FIELDS.includes(field)) warn("metadata.proofMetadata.fields[" + index + "]", "Unknown metadata field is ignored.");
+            else if (seenFields.has(field)) warn("metadata.proofMetadata.fields[" + index + "]", "Duplicate metadata field is ignored.");
+            else seenFields.add(field);
+          });
+        }
+      }
     }
 
     // Keep this scan iterative: a deeply nested compatibility payload should
