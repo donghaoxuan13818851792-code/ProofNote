@@ -66,6 +66,12 @@ async function main() {
         Model.createBlock("title", { content: "Canvas QA" }),
         Model.createBlock("semantic", { kind: "problem", title: "Canvas problem", content: "Direct editing should keep focus." }),
         Model.createBlock("semantic", { kind: "result", title: "Canvas result", content: "The active outline item must follow the selected block." }),
+        Model.createBlock("heading", { level: 1, content: "Method" }),
+        Model.createBlock("heading", { level: 2, content: "Procedure" }),
+        Model.createBlock("paragraph", { content: "Procedure content" }),
+        Model.createBlock("table", { columns: ["Input"], rows: [["Observed"]] }),
+        Model.createBlock("heading", { level: 2, content: "Equipment" }),
+        Model.createBlock("heading", { level: 3, content: "Details" }),
         Model.createBlock("paragraph", { content: "A closing paragraph." })
       ]
     });
@@ -85,6 +91,7 @@ async function main() {
     const sidebarResize = document.querySelector("#pnSidebarResize");
     const outline = document.querySelector("#pnOutline");
     const canvasBlocks = Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block"));
+    const initialCanvasBlockIds = new Set(canvasBlocks.map((block) => block.dataset.blockId));
     const globalActionIds = ["pnImport", "pnExport", "pnExportHtml", "pnExportLegacy", "pnCopyAi"];
 
     check("editor-external-scripts-boot", Boolean(document.querySelector("#proofnoteDocumentApp")) && Boolean(window.ProofnoteDocument) && Boolean(window.ProofnoteStore), "document-model.js, document-store.js, and document-editor.js did not all boot");
@@ -124,9 +131,11 @@ async function main() {
         && editorSource.includes("updateViewportOutlineActive")
         && document.querySelectorAll("#pnOutlinePanel .pn-sidebar-heading").length === 1
         && Boolean(outline)
-        && outline.querySelectorAll(".pn-outline-item").length === 2
+        && outline.querySelectorAll(".pn-outline-item").length === 6
         && outline.textContent.includes("Canvas problem")
         && outline.textContent.includes("Canvas result")
+        && outline.textContent.includes("Method")
+        && outline.textContent.includes("Details")
         && !outline.textContent.includes("Canvas QA")
         && !outline.querySelector(".pn-outline-kind")
         && /Document navigation|文档导航/.test(document.querySelector("#pnUtilityToggle").textContent),
@@ -172,6 +181,15 @@ async function main() {
           return Boolean(control) && actionMenu.contains(control) && !(detail && detail.contains(control));
         }),
       "Import/export/AI controls must live in #pnActionMenu, not inside the contextual Inspector"
+    );
+    check(
+      "editor-images-require-explicit-remote-approval",
+      editorSource.includes("block.remoteApproved === true")
+        && editorSource.includes("/^https:\\/\\//i.test(source)")
+        && !editorSource.includes("https?:\\/\\/")
+        && editorSource.includes("referrerpolicy=\\\"no-referrer\\\"")
+        && editorSource.includes("MAX_LOCAL_IMAGE_BYTES"),
+      "remote images must require a deliberate Load action, reject HTTP, and omit the referrer"
     );
     check(
       "editor-template-library-not-a-form",
@@ -265,6 +283,120 @@ async function main() {
         );
       }
     }
+
+    // Structural editing is deliberately derived from the flat block list.
+    // Exercise the real Outline menu so sibling/child boundaries cannot regress
+    // into a simple index + 1 insertion.
+    const findOutlineItem = (title, occurrence) => Array.from(document.querySelectorAll("#pnOutline .pn-outline-item"))
+      .filter((item) => item.textContent.trim() === title)[occurrence || 0] || null;
+    const outlineMenu = document.querySelector("#pnOutlineMenu");
+    const methodItem = findOutlineItem("Method");
+    if (methodItem) methodItem.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 80, clientY: 120 }));
+    await settle(window, () => outlineMenu && !outlineMenu.hidden);
+    check(
+      "editor-outline-right-click-opens-structural-menu",
+      Boolean(outlineMenu)
+        && outlineMenu.hidden === false
+        && Boolean(outlineMenu.querySelector('[data-command="add-section-after"]'))
+        && Boolean(outlineMenu.querySelector('[data-command="add-subsection"]')),
+      outlineMenu ? outlineMenu.textContent : "missing outline menu"
+    );
+    // Some browsers emit a follow-up click after contextmenu. That click must
+    // not dismiss the menu which was just opened by the secondary click.
+    if (methodItem) methodItem.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await settle(window);
+    check(
+      "editor-outline-right-click-menu-survives-follow-up-click",
+      Boolean(outlineMenu) && outlineMenu.hidden === false,
+      "a click following contextmenu closed the Outline menu"
+    );
+    if (app) app.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+
+    const detailItem = findOutlineItem("Details");
+    const detailMore = detailItem && detailItem.closest(".pn-outline-row").querySelector(".pn-outline-more");
+    if (detailMore) detailMore.click();
+    await settle(window, () => outlineMenu && !outlineMenu.hidden);
+    check(
+      "editor-outline-h3-remains-navigation-only",
+      Boolean(outlineMenu)
+        && !outlineMenu.querySelector('[data-command="add-section-after"]')
+        && !outlineMenu.querySelector('[data-command="add-subsection-after"]'),
+      outlineMenu ? outlineMenu.textContent : "missing H3 menu"
+    );
+    if (app) app.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+
+    const procedureItem = findOutlineItem("Procedure");
+    const procedureMore = procedureItem && procedureItem.closest(".pn-outline-row").querySelector(".pn-outline-more");
+    if (procedureMore) procedureMore.click();
+    await settle(window, () => outlineMenu && !outlineMenu.hidden);
+    const addSubsectionAfter = outlineMenu && outlineMenu.querySelector('[data-command="add-subsection-after"]');
+    if (addSubsectionAfter) addSubsectionAfter.click();
+    await settle(window, () => Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block")).some((block) => !initialCanvasBlockIds.has(block.dataset.blockId) && block.classList.contains("pn-canvas-heading")));
+    const postSiblingBlocks = Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block"));
+    const procedureContentIndex = postSiblingBlocks.findIndex((block) => blockHasControlValue(block, "Procedure content"));
+    const newSubsectionIndex = postSiblingBlocks.findIndex((block) => !initialCanvasBlockIds.has(block.dataset.blockId) && block.classList.contains("pn-canvas-heading"));
+    const equipmentIndex = postSiblingBlocks.findIndex((block) => blockHasControlValue(block, "Equipment"));
+    check(
+      "editor-outline-sibling-inserts-after-complete-subtree",
+      procedureContentIndex >= 0 && procedureContentIndex < newSubsectionIndex && newSubsectionIndex < equipmentIndex,
+      JSON.stringify({ procedureContentIndex, newSubsectionIndex, equipmentIndex })
+    );
+
+    const duplicateProcedureItem = findOutlineItem("Procedure");
+    const duplicateProcedureMore = duplicateProcedureItem && duplicateProcedureItem.closest(".pn-outline-row").querySelector(".pn-outline-more");
+    if (duplicateProcedureMore) duplicateProcedureMore.click();
+    await settle(window, () => outlineMenu && !outlineMenu.hidden);
+    const duplicateProcedure = outlineMenu && outlineMenu.querySelector('[data-command="duplicate-subsection"]');
+    if (duplicateProcedure) duplicateProcedure.click();
+    await settle(window, () => Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block")).filter((block) => blockHasControlValue(block, "Procedure")).length === 2);
+    const duplicatedBlocks = Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block"));
+    check(
+      "editor-outline-duplicates-complete-subtree-with-new-ids",
+      duplicatedBlocks.filter((block) => blockHasControlValue(block, "Procedure content")).length === 2
+        && new Set(duplicatedBlocks.map((block) => block.dataset.blockId)).size === duplicatedBlocks.length,
+      duplicatedBlocks.map((block) => block.dataset.blockId).join(",")
+    );
+
+    const copiedProcedureItem = findOutlineItem("Procedure", 1);
+    const copiedProcedureMore = copiedProcedureItem && copiedProcedureItem.closest(".pn-outline-row").querySelector(".pn-outline-more");
+    if (copiedProcedureMore) copiedProcedureMore.click();
+    await settle(window, () => outlineMenu && !outlineMenu.hidden);
+    const removeHeadingOnly = outlineMenu && outlineMenu.querySelector('[data-command="remove-heading"]');
+    if (removeHeadingOnly) removeHeadingOnly.click();
+    await settle(window, () => Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block")).filter((block) => blockHasControlValue(block, "Procedure")).length === 1);
+    check(
+      "editor-outline-remove-heading-only-preserves-subtree-content",
+      Array.from(document.querySelectorAll("#pnCanvas .pn-canvas-block")).filter((block) => blockHasControlValue(block, "Procedure content")).length === 2,
+      document.querySelector("#pnCanvas").textContent
+    );
+
+    const deleteMethodItem = findOutlineItem("Method");
+    const deleteMethodMore = deleteMethodItem && deleteMethodItem.closest(".pn-outline-row").querySelector(".pn-outline-more");
+    if (deleteMethodMore) deleteMethodMore.click();
+    await settle(window, () => outlineMenu && !outlineMenu.hidden);
+    const deleteMethod = outlineMenu && outlineMenu.querySelector('[data-command="delete-section"]');
+    if (deleteMethod) deleteMethod.click();
+    await settle(window, () => confirmModal && !confirmModal.hidden);
+    check(
+      "editor-outline-delete-subtree-requires-counted-confirmation",
+      Boolean(confirmModal)
+        && confirmModal.hidden === false
+        && /Method/.test(confirmModal.textContent)
+        && /content block|内容块/.test(confirmModal.textContent),
+      confirmModal ? confirmModal.textContent : "missing confirmation"
+    );
+    const acceptDelete = document.querySelector("#pnConfirmAccept");
+    if (acceptDelete) acceptDelete.click();
+    const undoToast = document.querySelector("#pnUndoToast");
+    await settle(window, () => !findOutlineItem("Method") && undoToast && !undoToast.hidden);
+    const undoButton = document.querySelector("#pnUndoButton");
+    if (undoButton) undoButton.click();
+    await settle(window, () => Boolean(findOutlineItem("Method")) && undoToast && undoToast.hidden);
+    check(
+      "editor-outline-delete-subtree-has-one-time-undo",
+      Boolean(findOutlineItem("Method")) && Boolean(undoToast) && undoToast.hidden === true,
+      undoToast ? undoToast.textContent : "missing undo"
+    );
 
     check("editor-no-runtime-errors", runtimeErrors.length === 0, runtimeErrors.join(" | ").slice(0, 500));
   } catch (error) {

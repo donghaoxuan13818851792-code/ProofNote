@@ -71,8 +71,7 @@
         await transaction("documents", "readwrite", (objectStore) => objectStore.put(payload, CURRENT_KEY));
         return "indexeddb";
       } catch (_) {
-        fallbackWrite(FALLBACK_CURRENT, payload.document);
-        return "localStorage";
+        return fallbackWrite(FALLBACK_CURRENT, payload.document) ? "localStorage" : "failed";
       }
     },
     async listTemplates() {
@@ -95,15 +94,15 @@
       } catch (_) {
         const templates = fallbackRead(FALLBACK_TEMPLATES, []).filter((item) => item && item.template && item.template.id !== payload.template.id);
         templates.push(payload);
-        fallbackWrite(FALLBACK_TEMPLATES, templates);
-        return "localStorage";
+        return fallbackWrite(FALLBACK_TEMPLATES, templates) ? "localStorage" : "failed";
       }
     },
     async deleteTemplate(templateId) {
       try {
         await transaction("templates", "readwrite", (objectStore) => objectStore.delete(templateId));
+        return "indexeddb";
       } catch (_) {
-        fallbackWrite(FALLBACK_TEMPLATES, fallbackRead(FALLBACK_TEMPLATES, []).filter((item) => item && item.template && item.template.id !== templateId));
+        return fallbackWrite(FALLBACK_TEMPLATES, fallbackRead(FALLBACK_TEMPLATES, []).filter((item) => item && item.template && item.template.id !== templateId)) ? "localStorage" : "failed";
       }
     }
   };

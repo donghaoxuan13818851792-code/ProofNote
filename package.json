@@ -5,7 +5,7 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "test": "node --check src/doc-page.js && node tests/regression.js && node tests/i18n.js && node tests/document-model.js && node tests/document-editor.js"
+    "test": "node --check src/doc-page.js && node tests/regression.js && node tests/i18n.js && node tests/document-model.js && node tests/document-store.js && node tests/document-editor.js"
   },
   "devDependencies": {
     "jsdom": "^29.1.1"

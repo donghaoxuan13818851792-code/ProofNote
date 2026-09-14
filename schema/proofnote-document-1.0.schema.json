@@ -12,20 +12,21 @@
       "type": "object",
       "required": ["name"],
       "properties": {
-        "name": { "type": "string" },
-        "templateName": { "type": "string" },
-        "documentType": { "type": "string", "description": "Optional template-controlled running-header label." },
-        "noteNumber": { "type": "string" },
-        "author": { "type": "string" },
-        "date": { "type": "string" },
-        "status": { "type": "string" },
-        "source": { "type": "string" },
-        "createdAt": { "type": "string" },
-        "updatedAt": { "type": "string" }
+        "name": { "type": "string", "maxLength": 200000 },
+        "templateName": { "type": "string", "maxLength": 200000 },
+        "documentType": { "type": "string", "maxLength": 200000, "description": "Optional template-controlled running-header label." },
+        "noteNumber": { "type": "string", "maxLength": 200000 },
+        "author": { "type": "string", "maxLength": 200000 },
+        "date": { "type": "string", "maxLength": 200000 },
+        "status": { "type": "string", "maxLength": 200000 },
+        "source": { "type": "string", "maxLength": 200000 },
+        "createdAt": { "type": "string", "maxLength": 200000 },
+        "updatedAt": { "type": "string", "maxLength": 200000 }
       }
     },
     "blocks": {
       "type": "array",
+      "maxItems": 2000,
       "items": { "$ref": "#/definitions/block" }
     },
     "compatibility": { "type": "object", "description": "Optional migration metadata; not required by new documents." }
@@ -35,25 +36,26 @@
       "type": "object",
       "required": ["type"],
       "properties": {
-        "id": { "type": "string", "description": "Stable editor identifier. Proofnote generates one when importing AI-authored JSON." },
+        "id": { "type": "string", "maxLength": 200000, "description": "Stable editor identifier. Proofnote generates one when importing AI-authored JSON; duplicate IDs are regenerated." },
         "type": { "enum": ["title", "subtitle", "heading", "paragraph", "equation", "code", "table", "image", "quote", "divider", "page-break", "callout", "semantic", "list", "key-value", "stats"] },
         "preset": { "type": "string", "description": "A Proofnote-controlled typography or component preset. Proofnote derives it when omitted." },
-        "content": { "type": "string" },
+        "content": { "type": "string", "maxLength": 200000 },
         "level": { "enum": [1, 2, 3] },
         "kind": { "type": "string" },
-        "title": { "type": "string" },
-        "label": { "type": "string" },
-        "summary": { "type": "string" },
+        "title": { "type": "string", "maxLength": 200000 },
+        "label": { "type": "string", "maxLength": 200000 },
+        "summary": { "type": "string", "maxLength": 200000 },
         "appearance": { "enum": ["editorial", "card"], "description": "An optional template-controlled semantic presentation. Omit to inherit the template default." },
-        "language": { "type": "string" },
-        "columns": { "type": "array", "items": { "type": "string" } },
-        "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
-        "src": { "type": "string" },
-        "alt": { "type": "string" },
-        "caption": { "type": "string" },
-        "citation": { "type": "string" },
+        "language": { "type": "string", "maxLength": 200000 },
+        "columns": { "type": "array", "maxItems": 50, "items": { "type": "string", "maxLength": 200000 } },
+        "rows": { "type": "array", "maxItems": 500, "items": { "type": "array", "maxItems": 50, "items": { "type": "string", "maxLength": 200000 } } },
+        "src": { "type": "string", "maxLength": 14680064, "description": "Local data images or HTTPS URLs. Remote images require explicit user approval before loading." },
+        "alt": { "type": "string", "maxLength": 200000 },
+        "caption": { "type": "string", "maxLength": 200000 },
+        "citation": { "type": "string", "maxLength": 200000 },
         "ordered": { "type": "boolean" },
-        "items": { "type": "array" }
+        "items": { "type": "array", "maxItems": 1000 },
+        "remoteApproved": { "type": "boolean", "description": "Local editor state only. Proofnote ignores this field when importing a document." }
       }
     }
   }

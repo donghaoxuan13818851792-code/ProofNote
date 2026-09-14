@@ -56,8 +56,46 @@ check("document-migrates-legacy-ui", migrated.compatibility.sourceUi.sections.pr
 const legacyExport = Model.documentToSolutionNote(migrated);
 check("document-legacy-export", legacyExport.note.format === "solution-note" && legacyExport.note.meta.title === "A legacy note" && legacyExport.note.core.result.statement === "x = 2", JSON.stringify(legacyExport.note));
 check("document-legacy-export-ui", legacyExport.note.ui && legacyExport.note.ui.sections.proof === true, JSON.stringify(legacyExport.note.ui));
+check(
+  "document-legacy-export-preserves-reproduce-and-optional-content",
+  legacyExport.note.core.reproduce.sourceCode === "solve.py"
+    && Array.isArray(legacyExport.note.optional.proof)
+    && legacyExport.note.optional.proof[0].text === "Useful fact",
+  JSON.stringify({ reproduce: legacyExport.note.core.reproduce, optional: legacyExport.note.optional })
+);
 migrated.metadata.author = "Grace";
 check("document-legacy-export-prefers-edited-metadata", Model.documentToSolutionNote(migrated).note.meta.author === "Grace", JSON.stringify(Model.documentToSolutionNote(migrated).note.meta));
+const draftExport = Model.documentToSolutionNote(Model.builtInTemplates().find((template) => template.template.id === "proof-note").document);
+check("document-legacy-export-maps-draft-status", draftExport.note.meta.status === "Partial" && draftExport.warnings.some((warning) => warning.includes("Draft")), JSON.stringify(draftExport));
+const genericLegacyExport = Model.documentToSolutionNote(Model.blankDocument({ blocks: [Model.createBlock("heading", { content: "Introduction" }), Model.createBlock("paragraph", { content: "Not a Solution Note section." })] }));
+check("document-legacy-export-warns-on-unmappable-content", genericLegacyExport.warnings.length > 0, JSON.stringify(genericLegacyExport.warnings));
+
+// The new format is an untrusted interchange boundary. Shape errors, duplicate
+// editor IDs, and resource limits must be detected before normalization.
+const duplicateIds = {
+  format: Model.FORMAT, version: Model.VERSION, metadata: { name: "IDs" },
+  blocks: [
+    { id: "same", type: "paragraph", content: "First" },
+    { id: "same", type: "paragraph", content: "Second" }
+  ]
+};
+const duplicateValidation = Model.validateDocumentRaw(duplicateIds);
+const duplicateNormalized = Model.normalizeDocument(duplicateIds);
+check("document-duplicate-id-warning", duplicateValidation.warnings.some((warning) => warning.path === "blocks[1].id"), JSON.stringify(duplicateValidation));
+check("document-duplicate-id-normalized", new Set(duplicateNormalized.blocks.map((block) => block.id)).size === 2, JSON.stringify(duplicateNormalized.blocks));
+const malformedShapes = Model.validateDocumentRaw({
+  format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Shapes" },
+  blocks: [{ type: "paragraph", content: 42 }, { type: "table", columns: ["A"], rows: [[1]] }, { type: "key-value", items: [{ label: 5, value: false }] }]
+});
+check("document-raw-validation-covers-block-shapes", malformedShapes.errors.length === 0 && malformedShapes.warnings.length >= 4, JSON.stringify(malformedShapes));
+const tooManyBlocks = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Large" }, blocks: Array.from({ length: Model.LIMITS.maxBlocks + 1 }, () => ({ type: "paragraph", content: "" })) });
+check("document-raw-validation-has-block-limit", tooManyBlocks.errors.some((error) => error.path === "blocks"), JSON.stringify(tooManyBlocks.errors));
+let deeplyNestedCompatibility = {};
+for (let index = 0; index < Model.LIMITS.maxDepth + 2; index += 1) deeplyNestedCompatibility = { next: deeplyNestedCompatibility };
+const deeplyNestedValidation = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Deep" }, blocks: [], compatibility: deeplyNestedCompatibility });
+check("document-raw-validation-has-depth-limit", deeplyNestedValidation.errors.some((error) => error.message.includes("nesting")), JSON.stringify(deeplyNestedValidation.errors));
+const remoteImageRaw = { format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Image" }, blocks: [{ type: "image", src: "https://example.test/pixel.png", remoteApproved: true }] };
+check("document-import-does-not-trust-remote-image-approval", Model.normalizeDocument(remoteImageRaw).blocks[0].remoteApproved !== true && Model.normalizeDocument(remoteImageRaw, { allowRemoteImages: true }).blocks[0].remoteApproved === true, JSON.stringify(Model.normalizeDocument(remoteImageRaw)));
 
 // Templates include the expected shareable envelope and are distinct from the
 // document name carried by the template's document metadata.
@@ -69,6 +107,8 @@ const blankTemplate = builtIns.find((template) => template.template.id === "blan
 const proofTemplate = builtIns.find((template) => template.template.id === "proof-note");
 check("document-template-controls-running-header", Boolean(blankTemplate) && blankTemplate.document.metadata.templateName === "" && Boolean(proofTemplate) && proofTemplate.document.metadata.templateName === "Proof Note", JSON.stringify({ blank: blankTemplate && blankTemplate.document.metadata, proof: proofTemplate && proofTemplate.document.metadata }));
 check("document-proof-template-is-editorial", Boolean(proofTemplate) && proofTemplate.document.metadata.documentType === "Solution Note" && proofTemplate.document.metadata.status === "Draft" && proofTemplate.document.blocks.filter((block) => block.type === "semantic").every((block) => block.appearance === "editorial"), JSON.stringify(proofTemplate && proofTemplate.document));
+const invalidTemplate = Model.validateTemplateRaw({ format: Model.TEMPLATE_FORMAT, version: Model.VERSION, template: { name: "Bad" }, document: { format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad" }, blocks: [{ type: "table", rows: "not rows" }] } });
+check("document-template-raw-validation", invalidTemplate.warnings.some((warning) => warning.path === "blocks[0].rows"), JSON.stringify(invalidTemplate));
 
 const pass = results.filter((result) => result.pass).length;
 results.forEach((result) => {

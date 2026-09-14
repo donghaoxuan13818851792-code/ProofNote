@@ -20,6 +20,20 @@
   ]);
   const SEMANTIC_KINDS = new Set(["problem", "theorem", "proof", "result", "verification"]);
   const CALLOUT_KINDS = new Set(["note", "tip", "warning", "info"]);
+  // These are deliberately generous authoring limits, not layout limits. They
+  // protect the untrusted JSON boundary from accidental or hostile inputs that
+  // would otherwise lock up an offline browser tab.
+  const LIMITS = Object.freeze({
+    maxBlocks: 2000,
+    maxStringLength: 200000,
+    maxImageDataUrlLength: 14 * 1024 * 1024,
+    maxTableColumns: 50,
+    maxTableRows: 500,
+    maxListItems: 1000,
+    maxDataItems: 1000,
+    maxDepth: 32,
+    maxObjectKeys: 2000
+  });
   let idCounter = 0;
 
   function string(value) { return typeof value === "string" ? value : ""; }
@@ -29,12 +43,18 @@
     return (prefix || "block") + "_" + Date.now().toString(36) + "_" + idCounter.toString(36);
   }
 
-  function stripUnsafe(value) {
-    if (Array.isArray(value)) return value.map(stripUnsafe);
+  function stripUnsafe(value, depth, seen) {
+    const level = depth || 0;
+    const visited = seen || new WeakSet();
     if (!value || typeof value !== "object") return value;
+    // Imported JSON is acyclic, but callers of the public model API are not
+    // necessarily JSON. Do not recurse indefinitely for either case.
+    if (level >= LIMITS.maxDepth || visited.has(value)) return null;
+    visited.add(value);
+    if (Array.isArray(value)) return value.slice(0, LIMITS.maxBlocks).map((item) => stripUnsafe(item, level + 1, visited));
     const output = {};
-    Object.keys(value).forEach((key) => {
-      if (!UNSAFE_KEYS.has(key)) output[key] = stripUnsafe(value[key]);
+    Object.keys(value).slice(0, LIMITS.maxObjectKeys).forEach((key) => {
+      if (!UNSAFE_KEYS.has(key)) output[key] = stripUnsafe(value[key], level + 1, visited);
     });
     return output;
   }
@@ -71,15 +91,19 @@
         break;
       case "table":
         block.columns = Array.isArray(raw.columns) && raw.columns.length
-          ? raw.columns.map(string) : ["Column 1", "Column 2"];
+          ? raw.columns.slice(0, LIMITS.maxTableColumns).map(string) : ["Column 1", "Column 2"];
         block.rows = Array.isArray(raw.rows) && raw.rows.length
-          ? raw.rows.map((row) => Array.isArray(row) ? row.map(string) : block.columns.map(() => ""))
+          ? raw.rows.slice(0, LIMITS.maxTableRows).map((row) => Array.isArray(row) ? block.columns.map((_, index) => string(row[index])) : block.columns.map(() => ""))
           : [block.columns.map(() => "")];
         break;
       case "image":
         block.src = string(raw.src);
         block.alt = string(raw.alt);
         block.caption = string(raw.caption);
+        // A remote image is never implicitly trusted by a document payload.
+        // The editor grants this flag only after a person clicks Load remote
+        // image; imported JSON always resets it before rendering.
+        if (raw.remoteApproved === true) block.remoteApproved = true;
         break;
       case "quote":
         block.content = string(raw.content);
@@ -107,24 +131,25 @@
         break;
       case "list":
         block.ordered = Boolean(raw.ordered);
-        block.items = Array.isArray(raw.items) && raw.items.length ? raw.items.map(string) : [""];
+        block.items = Array.isArray(raw.items) && raw.items.length ? raw.items.slice(0, LIMITS.maxListItems).map(string) : [""];
         break;
       case "key-value":
         block.items = Array.isArray(raw.items) && raw.items.length
-          ? raw.items.map((item) => ({ label: string(item && item.label), value: string(item && item.value) }))
+          ? raw.items.slice(0, LIMITS.maxDataItems).map((item) => ({ label: string(item && item.label), value: string(item && item.value) }))
           : [{ label: "", value: "" }];
         break;
       case "stats":
         block.items = Array.isArray(raw.items) && raw.items.length
-          ? raw.items.map((item) => ({ kicker: string(item && item.kicker), value: string(item && item.value), body: string(item && item.body) }))
+          ? raw.items.slice(0, LIMITS.maxDataItems).map((item) => ({ kicker: string(item && item.kicker), value: string(item && item.value), body: string(item && item.body) }))
           : [{ kicker: "", value: "", body: "" }];
         break;
     }
     return block;
   }
 
-  function normalizeBlock(raw) {
+  function normalizeBlock(raw, options) {
     const safe = raw && typeof raw === "object" && !Array.isArray(raw) ? safeClone(raw) : {};
+    if (safe.type === "image" && (!options || options.allowRemoteImages !== true)) safe.remoteApproved = false;
     return createBlock(safe.type, safe);
   }
 
@@ -146,14 +171,14 @@
         createdAt: string(opts.createdAt) || timestamp,
         updatedAt: string(opts.updatedAt) || timestamp
       },
-      blocks: Array.isArray(opts.blocks) ? opts.blocks.map(normalizeBlock) : [
+      blocks: Array.isArray(opts.blocks) ? opts.blocks.map((block) => normalizeBlock(block, opts)) : [
         createBlock("title", { content: "Untitled document" }),
         createBlock("paragraph", { content: "Start writing here." })
       ]
     };
   }
 
-  function normalizeDocument(raw) {
+  function normalizeDocument(raw, options) {
     const safe = safeClone(raw);
     const document = blankDocument({
       name: safe.metadata && safe.metadata.name,
@@ -166,7 +191,16 @@
       source: safe.metadata && safe.metadata.source,
       createdAt: safe.metadata && safe.metadata.createdAt,
       updatedAt: safe.metadata && safe.metadata.updatedAt,
-      blocks: Array.isArray(safe.blocks) ? safe.blocks : []
+      blocks: Array.isArray(safe.blocks) ? safe.blocks : [],
+      allowRemoteImages: options && options.allowRemoteImages === true
+    });
+    // IDs are used by selection, outline navigation and DOM anchors. Never
+    // retain duplicates from imported JSON: generate a fresh stable ID for
+    // every collision before the document reaches the UI.
+    const seenIds = new Set();
+    document.blocks.forEach((block) => {
+      while (!block.id || seenIds.has(block.id)) block.id = id("block");
+      seenIds.add(block.id);
     });
     document.format = FORMAT;
     document.version = VERSION;
@@ -186,17 +220,123 @@
     if (raw.format !== FORMAT) error("format", 'Expected "' + FORMAT + '".');
     if (raw.version !== VERSION) error("version", 'Expected "' + VERSION + '".');
     if (!raw.metadata || typeof raw.metadata !== "object" || Array.isArray(raw.metadata)) error("metadata", "Expected a metadata object.");
-    else if (typeof raw.metadata.name !== "string") error("metadata.name", "Expected a document name string.");
+    else {
+      if (typeof raw.metadata.name !== "string") error("metadata.name", "Expected a document name string.");
+      ["templateName", "documentType", "noteNumber", "author", "date", "status", "source", "createdAt", "updatedAt"].forEach((key) => {
+        if (raw.metadata[key] !== undefined && typeof raw.metadata[key] !== "string") warn("metadata." + key, "Expected a string; it will be treated as empty text.");
+      });
+    }
+
+    // Keep this scan iterative: a deeply nested compatibility payload should
+    // produce a useful import error rather than a recursive stack overflow in
+    // the later unsafe-key stripping pass.
+    const pending = [{ value: raw, depth: 0 }];
+    const visited = new WeakSet();
+    let nodes = 0;
+    while (pending.length) {
+      const item = pending.pop();
+      const value = item.value;
+      if (!value || typeof value !== "object") continue;
+      if (visited.has(value)) continue;
+      visited.add(value);
+      nodes += 1;
+      if (nodes > 25000) { error("", "Document is too complex to import safely."); break; }
+      if (item.depth > LIMITS.maxDepth) { error("", "Document nesting exceeds the supported limit."); break; }
+      const values = Array.isArray(value) ? value : Object.keys(value).map((key) => value[key]);
+      values.forEach((child) => { if (child && typeof child === "object") pending.push({ value: child, depth: item.depth + 1 }); });
+    }
+
+    let textLength = 0;
+    const expectString = (path, value) => {
+      if (value === undefined) return;
+      if (typeof value !== "string") { warn(path, "Expected a string; it will be treated as empty text."); return; }
+      textLength += value.length;
+      if (value.length > LIMITS.maxStringLength) error(path, "Text exceeds the maximum supported length.");
+    };
+    const expectStringArray = (path, value, limit) => {
+      if (!Array.isArray(value)) { warn(path, "Expected an array."); return; }
+      if (value.length > limit) error(path, "Contains more items than Proofnote can import safely.");
+      value.slice(0, limit).forEach((entry, entryIndex) => expectString(path + "[" + entryIndex + "]", entry));
+    };
+    const expectDataItems = (path, value, fields) => {
+      if (!Array.isArray(value)) { warn(path, "Expected an array."); return; }
+      if (value.length > LIMITS.maxDataItems) error(path, "Contains more items than Proofnote can import safely.");
+      value.slice(0, LIMITS.maxDataItems).forEach((entry, entryIndex) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) { warn(path + "[" + entryIndex + "]", "Expected an object; it will be treated as an empty item."); return; }
+        fields.forEach((field) => expectString(path + "[" + entryIndex + "]." + field, entry[field]));
+      });
+    };
+
     if (!Array.isArray(raw.blocks)) error("blocks", "Expected a blocks array.");
-    else raw.blocks.forEach((block, index) => {
+    else {
+      if (raw.blocks.length > LIMITS.maxBlocks) error("blocks", "Contains more blocks than Proofnote can import safely.");
+      const ids = new Set();
+      raw.blocks.slice(0, LIMITS.maxBlocks).forEach((block, index) => {
       const path = "blocks[" + index + "]";
       if (!block || typeof block !== "object" || Array.isArray(block)) { warn(path, "Ignored a non-object block."); return; }
       if (!BLOCK_TYPES.has(block.type)) warn(path + ".type", "Unknown block type is treated as a paragraph.");
+      if (block.id !== undefined) {
+        if (typeof block.id !== "string" || !block.id.trim()) warn(path + ".id", "A missing or invalid block ID will be regenerated.");
+        else if (ids.has(block.id)) warn(path + ".id", "Duplicate block ID will be regenerated.");
+        else ids.add(block.id);
+      }
+      if (!BLOCK_TYPES.has(block.type)) return;
+      if (["title", "subtitle", "paragraph", "equation", "quote"].includes(block.type)) expectString(path + ".content", block.content);
       if (block.type === "heading" && ![1, 2, 3].includes(block.level)) warn(path + ".level", "Heading level is treated as Heading 1.");
-      if (block.type === "semantic" && !SEMANTIC_KINDS.has(block.kind)) warn(path + ".kind", "Unknown semantic kind is treated as Result.");
-      if (block.type === "image" && block.src !== undefined && typeof block.src !== "string") warn(path + ".src", "Image source must be a string.");
-    });
+      if (block.type === "heading") expectString(path + ".content", block.content);
+      if (block.type === "code") { expectString(path + ".language", block.language); expectString(path + ".content", block.content); }
+      if (block.type === "table") {
+        if (block.columns !== undefined) expectStringArray(path + ".columns", block.columns, LIMITS.maxTableColumns);
+        if (block.rows !== undefined) {
+          if (!Array.isArray(block.rows)) warn(path + ".rows", "Expected an array.");
+          else {
+            if (block.rows.length > LIMITS.maxTableRows) error(path + ".rows", "Contains more rows than Proofnote can import safely.");
+            block.rows.slice(0, LIMITS.maxTableRows).forEach((row, rowIndex) => {
+              if (!Array.isArray(row)) { warn(path + ".rows[" + rowIndex + "]", "Expected an array; it will be treated as an empty row."); return; }
+              if (row.length > LIMITS.maxTableColumns) warn(path + ".rows[" + rowIndex + "]", "Extra cells beyond the table columns are ignored.");
+              row.slice(0, LIMITS.maxTableColumns).forEach((cell, cellIndex) => expectString(path + ".rows[" + rowIndex + "][" + cellIndex + "]", cell));
+            });
+          }
+        }
+      }
+      if (block.type === "image") {
+        ["src", "alt", "caption"].forEach((key) => expectString(path + "." + key, block[key]));
+        if (typeof block.src === "string" && /^data:image\//i.test(block.src) && block.src.length > LIMITS.maxImageDataUrlLength) error(path + ".src", "Embedded image exceeds the maximum supported size.");
+        if (block.remoteApproved !== undefined && typeof block.remoteApproved !== "boolean") warn(path + ".remoteApproved", "Remote-image approval is ignored unless it is a boolean.");
+      }
+      if (block.type === "quote") expectString(path + ".citation", block.citation);
+      if (block.type === "callout") {
+        if (!CALLOUT_KINDS.has(block.kind)) warn(path + ".kind", "Unknown callout kind is treated as Note.");
+        ["title", "content"].forEach((key) => expectString(path + "." + key, block[key]));
+      }
+      if (block.type === "semantic") {
+        if (!SEMANTIC_KINDS.has(block.kind)) warn(path + ".kind", "Unknown semantic kind is treated as Result.");
+        ["title", "label", "content", "summary"].forEach((key) => expectString(path + "." + key, block[key]));
+        if (block.appearance !== undefined && !["editorial", "card"].includes(block.appearance)) warn(path + ".appearance", "Unknown appearance is ignored.");
+      }
+      if (block.type === "list") { if (block.ordered !== undefined && typeof block.ordered !== "boolean") warn(path + ".ordered", "Expected a boolean; it will be treated as false."); if (block.items !== undefined) expectStringArray(path + ".items", block.items, LIMITS.maxListItems); }
+      if (block.type === "key-value") { if (block.items !== undefined) expectDataItems(path + ".items", block.items, ["label", "value"]); }
+      if (block.type === "stats") { if (block.items !== undefined) expectDataItems(path + ".items", block.items, ["kicker", "value", "body"]); }
+      });
+    }
+    if (textLength > 20 * 1024 * 1024) error("", "Document text exceeds the maximum supported import size.");
     return { errors, warnings };
+  }
+
+  function validateTemplateRaw(raw) {
+    const errors = [], warnings = [];
+    const error = (path, message) => errors.push({ path, message });
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { errors: [{ path: "", message: "A Proofnote template must be a JSON object." }], warnings };
+    if (raw.format !== TEMPLATE_FORMAT) error("format", 'Expected "' + TEMPLATE_FORMAT + '".');
+    if (raw.version !== VERSION) error("version", 'Expected "' + VERSION + '".');
+    if (!raw.template || typeof raw.template !== "object" || Array.isArray(raw.template)) error("template", "Expected template metadata.");
+    else {
+      if (raw.template.id !== undefined && typeof raw.template.id !== "string") warnings.push({ path: "template.id", message: "Template ID will be regenerated." });
+      if (typeof raw.template.name !== "string") error("template.name", "Expected a template name string.");
+      if (raw.template.description !== undefined && typeof raw.template.description !== "string") warnings.push({ path: "template.description", message: "Expected a string; it will be treated as empty text." });
+    }
+    const documentValidation = validateDocumentRaw(raw.document);
+    return { errors: errors.concat(documentValidation.errors), warnings: warnings.concat(documentValidation.warnings) };
   }
 
   function legacyTextBlocks(value) {
@@ -232,6 +372,12 @@
     ["limitations", "Limitations"], ["openQuestions", "Open Questions"], ["notes", "Notes"],
     ["references", "References"], ["acknowledgements", "Acknowledgements"]
   ];
+  const OPTIONAL_SECTION_BY_HEADING = new Map(OPTIONAL_SECTIONS.map(([key, title]) => [title.toLowerCase(), key]));
+  const LEGACY_STATUS_OPTIONS = new Set(["Solved", "Partial", "Computational", "Conjecture", "Counterexample", "Improved Algorithm"]);
+  const REPRODUCE_FIELD_BY_LABEL = new Map([
+    ["source code", "sourceCode"], ["data", "data"], ["verification script", "verificationScript"],
+    ["certificate", "certificate"], ["discussion", "discussion"]
+  ]);
 
   function migrateSolutionNote(raw) {
     const note = safeClone(raw);
@@ -306,33 +452,83 @@
       status: string(doc.metadata.status) || string(retainedMeta.status),
       source: string(doc.metadata.source) || string(retainedMeta.source)
     };
+    const warnings = [];
+    const warned = new Set();
+    const warnOnce = (message) => { if (!warned.has(message)) { warned.add(message); warnings.push(message); } };
+    const requestedStatus = string(sourceMeta.status).trim();
+    let legacyStatus = requestedStatus || "Solved";
+    if (!LEGACY_STATUS_OPTIONS.has(legacyStatus)) {
+      // "Draft" is the natural state for a new Proof Note, but it was never a
+      // valid Solution Note 1.0 enum. Map rather than write an invalid file.
+      const replacement = "Partial";
+      warnOnce('Status "' + legacyStatus + '" was exported as "' + replacement + '" for Solution Note 1.0 compatibility.');
+      legacyStatus = replacement;
+    }
     const note = {
       format: "solution-note", version: "1.0",
-      meta: { noteNumber: string(sourceMeta.noteNumber), title: "", summary: "", author: string(sourceMeta.author), date: string(sourceMeta.date), status: string(sourceMeta.status) || "Solved", source: string(sourceMeta.source) },
+      meta: { noteNumber: string(sourceMeta.noteNumber), title: "", summary: "", author: string(sourceMeta.author), date: string(sourceMeta.date), status: legacyStatus, source: string(sourceMeta.source) },
       core: { problem: "", result: { type: "Theorem", statement: "", explanation: "" }, whyItWorks: [], evidence: [], reproduce: { sourceCode: "", data: "", verificationScript: "", certificate: "", discussion: "" } },
       optional: {}
     };
     if (doc.compatibility && doc.compatibility.sourceUi && typeof doc.compatibility.sourceUi === "object" && Object.keys(doc.compatibility.sourceUi).length) {
       note.ui = safeClone(doc.compatibility.sourceUi);
     }
-    const warnings = [];
     let currentHeading = "";
+    const appendOptional = (key, block) => {
+      if (key === "references" && block.type === "list") {
+        note.optional.references = (note.optional.references || []).concat(block.items.map(string).filter((item) => item.trim()));
+        return;
+      }
+      const legacy = documentBlockToLegacy(block);
+      if (!legacy) { warnOnce("Some document-only blocks are omitted by Solution Note export."); return; }
+      if (!note.optional[key]) note.optional[key] = [];
+      note.optional[key].push(legacy);
+    };
+    const isEmpty = (block) => {
+      if (["divider", "page-break"].includes(block.type)) return true;
+      if (block.type === "table") return !block.columns.some((value) => string(value).trim()) && !block.rows.some((row) => row.some((value) => string(value).trim()));
+      if (["list", "key-value", "stats"].includes(block.type)) return !(block.items || []).some((item) => typeof item === "string" ? item.trim() : Object.values(item || {}).some((value) => string(value).trim()));
+      return ![block.content, block.title, block.label, block.summary, block.src, block.caption, block.citation].some((value) => string(value).trim());
+    };
     doc.blocks.forEach((block) => {
       if (block.type === "title" && !note.meta.title) note.meta.title = block.content;
       else if (block.type === "subtitle" && !note.meta.summary) note.meta.summary = block.content;
-      else if (block.type === "heading") currentHeading = block.content.trim().toLowerCase();
+      else if (block.type === "heading") {
+        const heading = block.content.trim().toLowerCase();
+        if (heading === "why it works") currentHeading = "why-it-works";
+        else if (heading === "evidence") currentHeading = "evidence";
+        else if (heading === "reproduce") currentHeading = "reproduce";
+        else if (OPTIONAL_SECTION_BY_HEADING.has(heading)) currentHeading = "optional:" + OPTIONAL_SECTION_BY_HEADING.get(heading);
+        else {
+          currentHeading = "";
+          if (heading) warnOnce('Heading "' + block.content.trim() + '" is not represented in Solution Note 1.0 and was omitted.');
+        }
+      }
       else if (block.type === "semantic") {
         if (block.kind === "problem") note.core.problem = block.content;
-        else if (block.kind === "result") { note.core.result = { type: block.label || "Theorem", statement: block.content, explanation: block.summary }; }
-        else if (block.kind === "proof") note.core.whyItWorks.push({ title: block.title, body: block.content });
+        else if (["result", "theorem"].includes(block.kind)) { note.core.result = { type: block.label || "Theorem", statement: block.content, explanation: block.summary }; }
+        else if (block.kind === "proof" && currentHeading === "why-it-works") note.core.whyItWorks.push({ title: block.title, body: block.content });
+        else if (currentHeading === "evidence") note.core.evidence.push({ type: "callout", kicker: block.title || block.label, text: block.content + (block.summary ? "\n\n" + block.summary : "") });
+        else if (!isEmpty(block)) warnOnce("Some semantic blocks are not represented by Solution Note export in their current position.");
       } else if (currentHeading === "evidence") {
-        note.core.evidence.push(documentBlockToLegacy(block));
+        const legacy = documentBlockToLegacy(block);
+        if (legacy) note.core.evidence.push(legacy);
+        else if (!isEmpty(block)) warnOnce("Some document-only blocks are omitted by Solution Note export.");
+      } else if (currentHeading === "reproduce") {
+        if (block.type === "key-value") {
+          block.items.forEach((item) => {
+            const field = REPRODUCE_FIELD_BY_LABEL.get(string(item.label).trim().toLowerCase());
+            if (field) note.core.reproduce[field] = string(item.value);
+            else if (string(item.label).trim() || string(item.value).trim()) warnOnce("Some Reproduce fields are not represented by Solution Note 1.0 and were omitted.");
+          });
+        } else if (!isEmpty(block)) warnOnce("Some Reproduce content is not represented by Solution Note 1.0 and was omitted.");
+      } else if (currentHeading.indexOf("optional:") === 0) {
+        appendOptional(currentHeading.slice("optional:".length), block);
+      } else if (!isEmpty(block)) {
+        warnOnce("Some document content is outside a Solution Note section and was omitted by compatibility export.");
       }
     });
     if (!note.meta.title) note.meta.title = doc.metadata.name;
-    if (doc.blocks.some((block) => !["title", "subtitle", "heading", "semantic", "paragraph", "equation", "code", "table", "list", "callout", "key-value", "stats"].includes(block.type))) {
-      warnings.push("Some document-only blocks are omitted by Solution Note export.");
-    }
     return { note, warnings };
   }
 
@@ -345,6 +541,7 @@
       case "callout": return { type: "callout", kicker: block.title, text: block.content };
       case "key-value": return { type: "keyvalue", items: block.items.map((item) => ({ label: item.label, value: item.value })) };
       case "stats": return { type: "stats", items: block.items.map((item) => ({ kicker: item.kicker, value: item.value, body: item.body })) };
+      case "image": case "quote": case "divider": case "page-break": return null;
       default: return { type: "paragraph", text: string(block.content) };
     }
   }
@@ -416,9 +613,9 @@
   }
 
   const api = {
-    FORMAT, VERSION, TEMPLATE_FORMAT, BLOCK_TYPES: Array.from(BLOCK_TYPES), SEMANTIC_KINDS: Array.from(SEMANTIC_KINDS),
+    FORMAT, VERSION, TEMPLATE_FORMAT, LIMITS, BLOCK_TYPES: Array.from(BLOCK_TYPES), SEMANTIC_KINDS: Array.from(SEMANTIC_KINDS),
     CALLOUT_KINDS: Array.from(CALLOUT_KINDS), stripUnsafe, createBlock, normalizeBlock, blankDocument,
-    normalizeDocument, validateDocumentRaw, migrateSolutionNote, documentToSolutionNote, builtInTemplates,
+    normalizeDocument, validateDocumentRaw, validateTemplateRaw, migrateSolutionNote, documentToSolutionNote, builtInTemplates,
     makeTemplate, normalizeTemplate, markdownTable
   };
   root.ProofnoteDocument = api;

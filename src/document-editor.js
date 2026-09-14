@@ -31,6 +31,9 @@
   let activeOutlineBlockId = "";
   let collapsedOutlineIds = new Set();
   let outlineViewportFrame = 0;
+  let outlineMenuNodeId = "";
+  let undoAction = null;
+  let undoTimer = null;
   let confirmActionHandler = null;
   let insertionIndex = null;
   // Keep the reader-facing navigator at the user's established width. The
@@ -41,6 +44,9 @@
   const SIDEBAR_DEFAULT_WIDTH = 232;
   const SIDEBAR_MIN_WIDTH = 180;
   const SIDEBAR_MAX_WIDTH = 360;
+  const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
+  const MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
+  const OUTLINE_UNDO_WINDOW_MS = 8000;
   let sidebarWidth = SIDEBAR_DEFAULT_WIDTH;
   let els = {};
 
@@ -227,12 +233,15 @@
           <p id="pnConfirmCopy" class="pn-modal-copy"></p>
           <div class="pn-actions pn-confirm-actions"><button class="btn btn-secondary" id="pnConfirmCancel" type="button">${tr("取消", "Cancel")}</button><button class="btn btn-primary" id="pnConfirmAccept" type="button"></button></div>
         </section>
-      </div>`;
+      </div>
+      <div class="pn-outline-menu" id="pnOutlineMenu" role="menu" aria-label="${tr("大纲结构操作", "Outline structure actions")}" hidden></div>
+      <div class="pn-undo-toast" id="pnUndoToast" role="status" hidden><span id="pnUndoCopy"></span><button class="pn-undo-button" id="pnUndoButton" type="button">${tr("撤销", "Undo")}</button></div>`;
     document.body.appendChild(app);
     els = {
       app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), name: app.querySelector("#pnDocumentName"), templates: app.querySelector("#pnTemplates"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
       outline: app.querySelector("#pnOutline"), canvasPane: app.querySelector(".pn-canvas-pane"), docPage: app.querySelector("#pnDocPage"), canvas: app.querySelector("#pnCanvas"), inspector: app.querySelector("#pnInspector"), pageHeader: app.querySelector("#pnPageHeader"), footer: app.querySelector("#pnFooterName"), footerStatus: app.querySelector("#pnFooterStatus"), modal: app.querySelector("#pnImportModal"), confirmModal: app.querySelector("#pnConfirmModal"), confirmTitle: app.querySelector("#pnConfirmTitle"), confirmCopy: app.querySelector("#pnConfirmCopy"), confirmCancel: app.querySelector("#pnConfirmCancel"), confirmAccept: app.querySelector("#pnConfirmAccept"),
-      importText: app.querySelector("#pnImportText"), importFile: app.querySelector("#pnImportFile"), importReport: app.querySelector("#pnImportReport")
+      importText: app.querySelector("#pnImportText"), importFile: app.querySelector("#pnImportFile"), importReport: app.querySelector("#pnImportReport"),
+      outlineMenu: app.querySelector("#pnOutlineMenu"), undoToast: app.querySelector("#pnUndoToast"), undoCopy: app.querySelector("#pnUndoCopy"), undoButton: app.querySelector("#pnUndoButton")
     };
     bindToolbar(app);
   }
@@ -246,10 +255,23 @@
       if (!event.target.closest(".pn-toolbar-menu")) setActionMenuOpen(false);
       if (!event.target.closest(".pn-template-menu-wrap")) setTemplateMenuOpen(false);
     });
-    app.addEventListener("keydown", (event) => {
+    // Close the Outline menu on the *next pointer down* outside it, rather
+    // than on click. A secondary click dispatches contextmenu before some
+    // browsers emit a follow-up click; closing on that click made the menu
+    // flash and disappear immediately after it opened.
+    document.addEventListener("pointerdown", (event) => {
+      if (!els.outlineMenu || els.outlineMenu.hidden) return;
+      if (event.target.closest(".pn-outline-menu") || event.target.closest(".pn-outline-more")) return;
+      closeOutlineMenu();
+    });
+    // The structural menu lives at document.body so it can escape the clipped
+    // sidebar. Listen at document level as well, otherwise Escape stops
+    // working whenever the active element is inside that floating menu.
+    document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       setActionMenuOpen(false);
       setTemplateMenuOpen(false);
+      closeOutlineMenu();
       if (!els.modal.hidden) closeImport();
       if (!els.confirmModal.hidden) closeConfirm();
     });
@@ -268,6 +290,7 @@
       if (handler) handler();
     });
     els.confirmModal.addEventListener("click", (event) => { if (event.target === els.confirmModal) closeConfirm(); });
+    els.undoButton.addEventListener("click", undoLastStructuralDelete);
     app.querySelector("#pnConfirmImport").addEventListener("click", importFromDialog);
     els.importFile.addEventListener("change", readImportFile);
     app.querySelector("#pnExport").addEventListener("click", () => { exportDocument(); setActionMenuOpen(false); });
@@ -430,8 +453,16 @@
   function scheduleSave() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
-      const backend = await Store.saveCurrent(state);
-      setStatus(backend === "indexeddb" ? tr("已自动保存到此设备", "Saved on this device") : tr("已自动保存（本地存储）", "Saved locally"), "saved");
+      try {
+        const backend = await Store.saveCurrent(state);
+        if (backend === "failed") {
+          setStatus(tr("自动保存失败；请立即导出文档备份。", "Autosave failed — export a backup now."), "error");
+          return;
+        }
+        setStatus(backend === "indexeddb" ? tr("已自动保存到此设备", "Saved on this device") : tr("已自动保存（本地存储）", "Saved locally"), "saved");
+      } catch (_) {
+        setStatus(tr("自动保存失败；请立即导出文档备份。", "Autosave failed — export a backup now."), "error");
+      }
     }, 350);
   }
   async function refreshTemplates() {
@@ -481,6 +512,7 @@
       message: tr("这会替换当前文档内容。", "This replaces the current document."),
       confirmLabel: tr("新建并替换", "Replace document"),
       onConfirm: () => {
+        clearStructuralUndo();
         selectedTemplateId = "blank-document";
         state = Model.normalizeDocument(blank.document);
         state.metadata.name = tr("未命名文档", "Untitled document");
@@ -498,6 +530,7 @@
       message: tr("应用“" + template.template.name + "”会替换当前文档。", "Applying “" + template.template.name + "” replaces the current document."),
       confirmLabel: tr("使用模板", "Use template"),
       onConfirm: () => {
+        clearStructuralUndo();
         selectedTemplateId = template.template.id;
         state = Model.normalizeDocument(template.document);
         state.metadata.name = template.template.name;
@@ -510,7 +543,11 @@
     const name = root.prompt(tr("模板名称", "Template name"), state.metadata.name || tr("我的模板", "My template"));
     if (!name || !name.trim()) return;
     const template = Model.makeTemplate(state, { name: name.trim(), description: tr("由当前 Proofnote 文档保存", "Saved from the current Proofnote document") });
-    await Store.saveTemplate(template);
+    const backend = await Store.saveTemplate(template);
+    if (backend === "failed") {
+      setStatus(tr("模板保存失败；请导出模板备份。", "Template save failed — export a backup."), "error");
+      return;
+    }
     selectedTemplateId = template.template.id;
     await refreshTemplates();
     setStatus(tr("模板已保存到此设备", "Template saved on this device"), "saved");
@@ -521,6 +558,11 @@
     if (block.type === "semantic") return String(block.title || block.label || "").trim();
     return "";
   }
+  // The outline is intentionally a view over the ordered block list, not a
+  // second tree-shaped document model. Templates influence participation via
+  // their structural blocks (headings and named semantic blocks); content
+  // remains flat so import, export, pagination and old-note migration stay
+  // straightforward.
   function buildOutlineTree() {
     const roots = [];
     const entries = [];
@@ -552,6 +594,217 @@
       entries.push(node);
     });
     return { roots, entries };
+  }
+  function outlineNodeFor(blockId) {
+    return buildOutlineTree().entries.find((entry) => entry.id === blockId) || null;
+  }
+  // All structural commands below use these three helpers. In particular,
+  // sibling insertion happens after a node's complete subtree, never directly
+  // after a heading where it could capture the former node's content.
+  function getSectionRange(blockId) {
+    const node = outlineNodeFor(blockId);
+    if (!node) return null;
+    const { entries } = buildOutlineTree();
+    const nextBoundary = entries.find((entry) => entry.index > node.index && entry.level <= node.level);
+    return {
+      node,
+      start: node.index,
+      end: nextBoundary ? nextBoundary.index : state.blocks.length,
+      blocks: state.blocks.slice(node.index, nextBoundary ? nextBoundary.index : state.blocks.length)
+    };
+  }
+  function getSiblingInsertionIndex(blockId) {
+    const range = getSectionRange(blockId);
+    return range ? range.end : -1;
+  }
+  function getChildInsertionIndex(blockId) {
+    const range = getSectionRange(blockId);
+    return range ? range.end : -1;
+  }
+  function isPrimaryStructureNode(node) { return node && node.level === 0; }
+  function isSecondaryStructureNode(node) { return node && node.level === 1; }
+  function focusOutlineNodeTitle(blockId) {
+    focusBlock(blockId);
+    root.requestAnimationFrame(() => {
+      const canvasBlock = document.getElementById("pn-block-" + blockId);
+      if (!canvasBlock) return;
+      const control = canvasBlock.querySelector(".pn-editorial-section-title-input,.pn-canvas-heading-input,.pn-editorial-detail-title-input,.pn-canvas-component-title-input,input,textarea");
+      if (!control) return;
+      control.focus();
+      if (typeof control.select === "function") control.select();
+    });
+  }
+  function uniqueBlockCopy(block) {
+    const values = Object.assign({}, block);
+    delete values.id;
+    return Model.createBlock(block.type, values);
+  }
+  function finishStructuralChange(selectedId, focusTitle) {
+    selectedBlockId = selectedId || "";
+    activeOutlineBlockId = "";
+    changed({ structure: true, outline: true, inspector: true, chrome: true });
+    if (selectedBlockId) {
+      root.requestAnimationFrame(() => {
+        if (focusTitle) focusOutlineNodeTitle(selectedBlockId);
+        else focusBlock(selectedBlockId);
+      });
+    }
+  }
+  function insertStructuralBlock(index, block, focusTitle) {
+    if (index < 0) return;
+    clearStructuralUndo();
+    state.blocks.splice(index, 0, block);
+    finishStructuralChange(block.id, Boolean(focusTitle));
+  }
+  function addSectionAfter(blockId) {
+    const index = getSiblingInsertionIndex(blockId);
+    insertStructuralBlock(index, Model.createBlock("heading", { level: 1, content: tr("未命名章节", "Untitled section") }), true);
+  }
+  function addSubsection(blockId, placement) {
+    const index = placement === "after" ? getSiblingInsertionIndex(blockId) : getChildInsertionIndex(blockId);
+    insertStructuralBlock(index, Model.createBlock("heading", { level: 2, content: tr("未命名小节", "Untitled subsection") }), true);
+  }
+  function addContentToSection(blockId, type) {
+    const index = getChildInsertionIndex(blockId);
+    if (index < 0) return;
+    const values = type === "semantic" ? { kind: "result", title: "", content: "" } : {};
+    insertStructuralBlock(index, Model.createBlock(type, values), false);
+  }
+  function duplicateStructuralNode(blockId) {
+    const range = getSectionRange(blockId);
+    if (!range) return;
+    const copies = range.blocks.map(uniqueBlockCopy);
+    if (!copies.length) return;
+    clearStructuralUndo();
+    state.blocks.splice(range.end, 0, ...copies);
+    finishStructuralChange(copies[0].id, false);
+  }
+  function removeHeadingOnly(blockId) {
+    const range = getSectionRange(blockId);
+    if (!range) return;
+    clearStructuralUndo();
+    state.blocks.splice(range.start, 1);
+    const next = state.blocks[range.start] || state.blocks[range.start - 1] || null;
+    finishStructuralChange(next ? next.id : "", false);
+  }
+  function deleteSectionAndContents(blockId) {
+    const range = getSectionRange(blockId);
+    if (!range) return;
+    const contentCount = Math.max(0, range.end - range.start - 1);
+    const title = range.node.title;
+    openConfirm({
+      title: tr("删除章节与内容？", "Delete section and contents?"),
+      message: tr("将删除“" + title + "”及其 " + contentCount + " 个内容块。", "Delete “" + title + "” and its " + contentCount + " content block" + (contentCount === 1 ? "" : "s") + "?"),
+      confirmLabel: tr("删除", "Delete"),
+      onConfirm: () => {
+        const removed = state.blocks.splice(range.start, range.end - range.start);
+        const next = state.blocks[range.start] || state.blocks[range.start - 1] || null;
+        finishStructuralChange(next ? next.id : "", false);
+        showStructuralUndo(tr("已删除章节与内容", "Section and contents deleted"), () => {
+          state.blocks.splice(range.start, 0, ...removed);
+          finishStructuralChange(removed[0] ? removed[0].id : "", false);
+        });
+      }
+    });
+  }
+  function clearStructuralUndo() {
+    if (undoTimer) root.clearTimeout(undoTimer);
+    undoTimer = null;
+    undoAction = null;
+    if (els.undoToast) els.undoToast.hidden = true;
+  }
+  function showStructuralUndo(message, action) {
+    clearStructuralUndo();
+    undoAction = action;
+    els.undoCopy.textContent = message;
+    els.undoToast.hidden = false;
+    undoTimer = root.setTimeout(clearStructuralUndo, OUTLINE_UNDO_WINDOW_MS);
+  }
+  function undoLastStructuralDelete() {
+    const action = undoAction;
+    if (!action) return;
+    clearStructuralUndo();
+    action();
+    setStatus(tr("已撤销删除", "Deletion undone"), "saved");
+  }
+  function closeOutlineMenu() {
+    if (!els.outlineMenu) return;
+    outlineMenuNodeId = "";
+    els.outlineMenu.hidden = true;
+    els.outlineMenu.innerHTML = "";
+  }
+  function addOutlineMenuButton(menu, labelText, command, handler, options) {
+    const opts = options || {};
+    const item = button(labelText, "pn-outline-menu-item" + (opts.danger ? " pn-outline-menu-danger" : ""), (event) => {
+      event.stopPropagation();
+      closeOutlineMenu();
+      handler();
+    });
+    item.dataset.command = command;
+    item.setAttribute("role", "menuitem");
+    menu.appendChild(item);
+    return item;
+  }
+  function addOutlineMenuRule(menu) { menu.appendChild(element("div", { class: "pn-outline-menu-rule", "aria-hidden": "true" })); }
+  function addContentMenu(menu, node) {
+    const wrap = element("div", { class: "pn-outline-menu-submenu-wrap" });
+    const trigger = button(tr("添加内容", "Add content"), "pn-outline-menu-item pn-outline-menu-submenu-trigger", () => {});
+    trigger.setAttribute("aria-haspopup", "menu");
+    trigger.appendChild(element("span", { class: "pn-outline-menu-arrow", "aria-hidden": "true" }, "›"));
+    const submenu = element("div", { class: "pn-outline-menu pn-outline-menu-submenu", role: "menu", "aria-label": tr("添加内容", "Add content") });
+    [
+      ["paragraph", tr("正文", "Text")], ["equation", tr("公式", "Equation")], ["table", tr("表格", "Table")],
+      ["code", tr("代码", "Code")], ["image", tr("图片", "Image")], ["list", tr("列表", "List")],
+      ["quote", tr("引用", "Quote")], ["callout", tr("提示", "Callout")], ["semantic", tr("语义模块", "Semantic block")]
+    ].forEach(([type, name]) => addOutlineMenuButton(submenu, name, "add-content-" + type, () => addContentToSection(node.id, type)));
+    wrap.append(trigger, submenu);
+    menu.appendChild(wrap);
+  }
+  function populateOutlineMenu(node) {
+    const menu = els.outlineMenu;
+    const primary = isPrimaryStructureNode(node);
+    const secondary = isSecondaryStructureNode(node);
+    if (primary) {
+      addOutlineMenuButton(menu, tr("在后方添加章节", "Add section after"), "add-section-after", () => addSectionAfter(node.id));
+      addOutlineMenuButton(menu, tr("添加小节", "Add subsection"), "add-subsection", () => addSubsection(node.id, "child"));
+      addOutlineMenuRule(menu);
+      addOutlineMenuButton(menu, tr("重命名", "Rename"), "rename", () => focusOutlineNodeTitle(node.id));
+      addOutlineMenuButton(menu, tr("复制章节", "Duplicate section"), "duplicate-section", () => duplicateStructuralNode(node.id));
+    } else if (secondary) {
+      addOutlineMenuButton(menu, tr("在后方添加小节", "Add subsection after"), "add-subsection-after", () => addSubsection(node.id, "after"));
+      addContentMenu(menu, node);
+      addOutlineMenuRule(menu);
+      addOutlineMenuButton(menu, tr("重命名", "Rename"), "rename", () => focusOutlineNodeTitle(node.id));
+      addOutlineMenuButton(menu, tr("复制小节", "Duplicate subsection"), "duplicate-subsection", () => duplicateStructuralNode(node.id));
+    } else {
+      // H3 remains navigable and collapsible, but it is not promoted to a
+      // third fully-editable structural tier in this first version.
+      addOutlineMenuButton(menu, tr("重命名", "Rename"), "rename", () => focusOutlineNodeTitle(node.id));
+    }
+    addOutlineMenuRule(menu);
+    addOutlineMenuButton(menu, tr("仅移除标题", "Remove heading only"), "remove-heading", () => removeHeadingOnly(node.id));
+    addOutlineMenuButton(menu, tr("删除章节与内容…", "Delete section and contents…"), "delete-section", () => deleteSectionAndContents(node.id), { danger: true });
+  }
+  function openOutlineMenu(node, position) {
+    if (!node || !els.outlineMenu) return;
+    outlineMenuNodeId = node.id;
+    els.outlineMenu.innerHTML = "";
+    populateOutlineMenu(node);
+    const point = position || {};
+    const fallback = point.target && point.target.getBoundingClientRect ? point.target.getBoundingClientRect() : null;
+    const left = Number.isFinite(point.clientX) ? point.clientX : (fallback ? fallback.right : 12);
+    const top = Number.isFinite(point.clientY) ? point.clientY : (fallback ? fallback.bottom + 4 : 12);
+    els.outlineMenu.style.left = left + "px";
+    els.outlineMenu.style.top = top + "px";
+    els.outlineMenu.hidden = false;
+    root.requestAnimationFrame(() => {
+      if (els.outlineMenu.hidden || outlineMenuNodeId !== node.id) return;
+      const rect = els.outlineMenu.getBoundingClientRect();
+      const maxLeft = Math.max(8, root.innerWidth - rect.width - 8);
+      const maxTop = Math.max(8, root.innerHeight - rect.height - 8);
+      els.outlineMenu.style.left = Math.max(8, Math.min(left, maxLeft)) + "px";
+      els.outlineMenu.style.top = Math.max(8, Math.min(top, maxTop)) + "px";
+    });
   }
   function persistOutlineCollapseState() {
     try { root.localStorage.setItem(OUTLINE_COLLAPSE_KEY, JSON.stringify(Array.from(collapsedOutlineIds))); } catch (_) {}
@@ -600,7 +853,18 @@
     item.dataset.blockId = node.id;
     item.setAttribute("aria-label", node.title);
     item.appendChild(element("span", { class: "pn-outline-label" }, node.title));
+    item.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openOutlineMenu(node, event);
+    });
     row.appendChild(item);
+    const more = button("⋯", "pn-outline-more", (event) => {
+      event.stopPropagation();
+      openOutlineMenu(node, { clientX: event.clientX, clientY: event.clientY, target: more });
+    }, tr("章节操作", "Section actions"));
+    more.setAttribute("aria-label", tr("打开“" + node.title + "”的结构操作", "Open structure actions for “" + node.title + "”"));
+    row.appendChild(more);
     wrapper.appendChild(row);
     if (node.children.length) {
       const children = element("div", { class: "pn-outline-children", role: "group" });
@@ -611,6 +875,7 @@
     return wrapper;
   }
   function renderOutline() {
+    closeOutlineMenu();
     els.outline.innerHTML = "";
     const tree = buildOutlineTree();
     if (els.outlineCount) els.outlineCount.textContent = String(tree.entries.length);
@@ -678,6 +943,7 @@
         updateViewportOutlineActive();
       });
     }, { passive: true });
+    if (els.outline) els.outline.addEventListener("scroll", closeOutlineMenu, { passive: true });
   }
   function changeOptions(options) {
     if (typeof options === "boolean") return { structure: options, outline: true, inspector: options, chrome: true };
@@ -694,6 +960,9 @@
   }
   function update(block, key, value, options) {
     block[key] = value;
+    // Changing a remote URL is a new network request, so a previous explicit
+    // approval can never accidentally carry over to it.
+    if (block.type === "image" && key === "src") delete block.remoteApproved;
     const affectsOutline = block.type === "title" || block.type === "heading" || block.type === "semantic";
     changed(Object.assign({ outline: affectsOutline }, options || {}));
   }
@@ -969,6 +1238,7 @@
     return point;
   }
   function insertBlock(type, index) {
+    clearStructuralUndo();
     const block = Model.createBlock(type);
     state.blocks.splice(index, 0, block);
     selectedBlockId = block.id;
@@ -978,6 +1248,7 @@
     root.requestAnimationFrame(() => focusBlock(block.id));
   }
   function moveBlock(index, delta) {
+    clearStructuralUndo();
     const destination = index + delta;
     if (destination < 0 || destination >= state.blocks.length) return;
     const moved = state.blocks.splice(index, 1)[0];
@@ -987,6 +1258,7 @@
     focusBlock(moved.id);
   }
   function duplicateBlock(index) {
+    clearStructuralUndo();
     const copy = Model.normalizeBlock(Object.assign({}, state.blocks[index], { id: "" }));
     state.blocks.splice(index + 1, 0, copy);
     selectedBlockId = copy.id;
@@ -994,6 +1266,7 @@
     focusBlock(copy.id);
   }
   function removeBlock(index) {
+    clearStructuralUndo();
     if (state.blocks.length === 1) { setStatus(tr("文档至少保留一个内容块。", "A document needs at least one block."), "warning"); return; }
     state.blocks.splice(index, 1);
     const next = state.blocks[Math.min(index, state.blocks.length - 1)];
@@ -1009,35 +1282,58 @@
       els.inspector.appendChild(element("p", { class: "pn-inspector-empty" }, tr("选择纸面上的内容块以查看其设置。", "Select a block on the page to see its settings.")));
       return;
     }
-    els.inspector.appendChild(element("h2", { class: "pn-inspector-name" }, blockEditorLabel(block)));
+    // The Inspector is deliberately a compact tool surface, not a second
+    // document. The canvas already shows the block's reader-facing title.
+    const context = element("div", { class: "pn-inspector-context" });
+    context.appendChild(element("span", { class: "pn-inspector-context-label" }, optionText(block.type)));
+    const overflow = element("details", { class: "pn-inspector-overflow" });
+    const overflowSummary = element("summary", { class: "pn-inspector-overflow-trigger", "aria-label": tr("更多内容块操作", "More block actions") }, "⋯");
+    const overflowMenu = element("div", { class: "pn-inspector-overflow-menu" });
+    overflowMenu.appendChild(button(tr("上移", "Move up"), "pn-inspector-overflow-item", () => moveBlock(index, -1)));
+    overflowMenu.appendChild(button(tr("下移", "Move down"), "pn-inspector-overflow-item", () => moveBlock(index, 1)));
+    overflow.append(overflowSummary, overflowMenu);
+    context.appendChild(overflow);
+    els.inspector.appendChild(context);
+    const structure = element("section", { class: "pn-inspector-group", "aria-label": tr("结构", "Structure") });
+    structure.appendChild(element("div", { class: "pn-inspector-group-title" }, tr("结构", "Structure")));
+    els.inspector.appendChild(structure);
     const type = selectField(tr("内容块类型", "Block type"), block.type, TYPE_OPTIONS.map(([key]) => [key, optionText(key)]), (value) => {
       const keep = { id: block.id, content: block.content, title: block.title, summary: block.summary, label: block.label };
       state.blocks[index] = Model.createBlock(value, keep);
       selectedBlockId = block.id;
       changed({ structure: true, outline: true, inspector: true });
     });
-    type.classList.add("pn-inspector-field"); els.inspector.appendChild(type);
+    type.classList.add("pn-inspector-field"); structure.appendChild(type);
     const label = (zh, en) => tr(zh, en);
     if (block.type === "heading") {
-      els.inspector.appendChild(selectField(label("层级", "Level"), String(block.level), [["1", "H1"], ["2", "H2"], ["3", "H3"]], (value) => { block.level = Number(value); block.preset = "heading-" + value; changed({ structure: true, outline: true, inspector: true }); }));
+      structure.appendChild(selectField(label("层级", "Level"), String(block.level), [["1", "H1"], ["2", "H2"], ["3", "H3"]], (value) => { block.level = Number(value); block.preset = "heading-" + value; changed({ structure: true, outline: true, inspector: true }); }));
     }
     if (block.type === "semantic") {
-      els.inspector.appendChild(selectField(label("语义类型", "Semantic type"), block.kind, [["problem", label("问题", "Problem")], ["theorem", "Theorem"], ["proof", "Proof"], ["result", label("结果", "Result")], ["verification", label("验证", "Verification")]], (value) => { block.kind = value; block.preset = "semantic-" + value; changed({ structure: true, outline: true, inspector: true }); }));
-      els.inspector.appendChild(selectField(label("呈现方式", "Presentation"), semanticAppearance(block), [["editorial", label("出版式", "Editorial")], ["card", label("卡片", "Card")]], (value) => { block.appearance = value; changed({ structure: true, inspector: true }); }));
-      els.inspector.appendChild(inputField(label("标签（可选）", "Label (optional)"), block.label, (value) => update(block, "label", value, { structure: true, outline: true })));
+      structure.appendChild(selectField(label("语义类型", "Semantic type"), block.kind, [["problem", label("问题", "Problem")], ["theorem", "Theorem"], ["proof", "Proof"], ["result", label("结果", "Result")], ["verification", label("验证", "Verification")]], (value) => { block.kind = value; block.preset = "semantic-" + value; changed({ structure: true, outline: true, inspector: true }); }));
+      const appearance = element("section", { class: "pn-inspector-group", "aria-label": label("外观", "Appearance") });
+      appearance.appendChild(element("div", { class: "pn-inspector-group-title" }, label("外观", "Appearance")));
+      appearance.appendChild(selectField(label("呈现方式", "Presentation"), semanticAppearance(block), [["editorial", label("出版式", "Editorial")], ["card", label("卡片", "Card")]], (value) => { block.appearance = value; changed({ structure: true, inspector: true }); }));
+      const advanced = element("details", { class: "pn-inspector-advanced" });
+      advanced.open = Boolean(block.label);
+      advanced.appendChild(element("summary", {}, label("高级选项", "Advanced")));
+      advanced.appendChild(inputField(label("标签", "Label"), block.label, (value) => update(block, "label", value, { structure: true, outline: true }), { placeholder: "—" }));
+      appearance.appendChild(advanced);
+      els.inspector.appendChild(appearance);
     }
-    if (block.type === "callout") els.inspector.appendChild(selectField(label("样式", "Style"), block.kind, [["note", label("说明", "Note")], ["tip", label("提示", "Tip")], ["warning", label("注意", "Warning")], ["info", label("信息", "Info")]], (value) => { block.kind = value; block.preset = "callout-" + value; changed({ structure: true, inspector: true }); }));
-    if (block.type === "code") els.inspector.appendChild(inputField(label("语言（可选）", "Language (optional)"), block.language, (value) => update(block, "language", value, { structure: true })));
-    if (block.type === "quote") els.inspector.appendChild(inputField(label("出处（可选）", "Citation (optional)"), block.citation, (value) => update(block, "citation", value, { structure: true })));
-    if (block.type === "image") buildImageInspector(els.inspector, block);
-    if (block.type === "list") els.inspector.appendChild(selectField(label("列表类型", "List type"), block.ordered ? "ordered" : "unordered", [["unordered", label("项目符号", "Bullets")], ["ordered", label("编号", "Numbered")]], (value) => { block.ordered = value === "ordered"; changed({ structure: true, inspector: true }); }));
-    if (block.type === "page-break") els.inspector.appendChild(element("p", { class: "pn-inspector-note" }, label("此内容块将在打印和导出时开始新的一页。", "This block starts a new page in print and export.")));
-    else els.inspector.appendChild(element("p", { class: "pn-inspector-note" }, label("页面行为：随文档流动", "Page behaviour: flows with document")));
-    const actions = element("div", { class: "pn-inspector-actions" });
-    actions.appendChild(button("↑", "pn-icon-btn", () => moveBlock(index, -1), label("上移", "Move up")));
-    actions.appendChild(button("↓", "pn-icon-btn", () => moveBlock(index, 1), label("下移", "Move down")));
-    actions.appendChild(button("⧉", "pn-icon-btn", () => duplicateBlock(index), label("复制", "Duplicate")));
-    actions.appendChild(button("×", "pn-icon-btn pn-danger", () => removeBlock(index), label("删除", "Delete")));
+    if (block.type === "callout") structure.appendChild(selectField(label("样式", "Style"), block.kind, [["note", label("说明", "Note")], ["tip", label("提示", "Tip")], ["warning", label("注意", "Warning")], ["info", label("信息", "Info")]], (value) => { block.kind = value; block.preset = "callout-" + value; changed({ structure: true, inspector: true }); }));
+    if (block.type === "code") structure.appendChild(inputField(label("语言", "Language"), block.language, (value) => update(block, "language", value, { structure: true }), { placeholder: "—" }));
+    if (block.type === "quote") structure.appendChild(inputField(label("出处", "Citation"), block.citation, (value) => update(block, "citation", value, { structure: true }), { placeholder: "—" }));
+    if (block.type === "image") buildImageInspector(structure, block);
+    if (block.type === "list") structure.appendChild(selectField(label("列表类型", "List type"), block.ordered ? "ordered" : "unordered", [["unordered", label("项目符号", "Bullets")], ["ordered", label("编号", "Numbered")]], (value) => { block.ordered = value === "ordered"; changed({ structure: true, inspector: true }); }));
+    const page = element("section", { class: "pn-inspector-group pn-inspector-page", "aria-label": label("页面", "Page") });
+    page.appendChild(element("div", { class: "pn-inspector-group-title" }, label("页面", "Page")));
+    const flow = element("div", { class: "pn-inspector-property" });
+    flow.append(element("span", { class: "pn-inspector-property-label" }, label("流动", "Flow")), element("span", { class: "pn-inspector-property-value" }, block.type === "page-break" ? label("新页开始", "New page") : label("正常", "Normal")));
+    page.appendChild(flow);
+    els.inspector.appendChild(page);
+    const actions = element("section", { class: "pn-inspector-actions", "aria-label": label("内容块操作", "Block actions") });
+    actions.appendChild(button(label("复制", "Duplicate"), "pn-inspector-action", () => duplicateBlock(index)));
+    actions.appendChild(button(label("删除内容块", "Delete block"), "pn-inspector-action pn-danger", () => removeBlock(index)));
     els.inspector.appendChild(actions);
   }
   function buildImageInspector(panel, block) {
@@ -1045,21 +1341,35 @@
     panel.appendChild(inputField(label("图片 URL 或 data URL", "Image URL or data URL"), block.src, (value) => update(block, "src", value, { structure: true }), { placeholder: "https://…" }));
     panel.appendChild(inputField(label("替代文字", "Alt text"), block.alt, (value) => update(block, "alt", value, { structure: true })));
     panel.appendChild(inputField(label("图片说明", "Caption"), block.caption, (value) => update(block, "caption", value, { structure: true })));
+    if (/^https:\/\//i.test(String(block.src || "").trim()) && block.remoteApproved !== true) {
+      panel.appendChild(element("p", { class: "pn-inspector-note" }, label("远程图片不会自动加载。确认后才会请求该地址。", "Remote images do not load automatically. Confirm before requesting this address.")));
+      panel.appendChild(button(label("加载远程图片", "Load remote image"), "pn-add-inline", () => {
+        block.remoteApproved = true;
+        changed({ structure: true, inspector: true });
+      }));
+    }
     const file = element("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
     const choose = button(label("选择本地图片", "Choose local image"), "pn-add-inline", () => file.click());
     file.addEventListener("change", () => {
       const image = file.files && file.files[0];
       if (!image) return;
+      if (image.size > MAX_LOCAL_IMAGE_BYTES) {
+        setStatus(tr("图片超过 10MB 上限。", "Image exceeds the 10 MB limit."), "error");
+        file.value = "";
+        return;
+      }
       const reader = new FileReader();
-      reader.onload = () => { block.src = String(reader.result || ""); if (!block.alt) block.alt = image.name.replace(/\.[^.]+$/, ""); changed({ structure: true, inspector: true }); };
+      reader.onload = () => { block.src = String(reader.result || ""); delete block.remoteApproved; if (!block.alt) block.alt = image.name.replace(/\.[^.]+$/, ""); changed({ structure: true, inspector: true }); };
       reader.readAsDataURL(image);
     });
     panel.append(choose, file);
   }
 
-  function safeImageSource(value) {
-    const source = String(value || "").trim();
-    return /^(https?:\/\/|data:image\/(png|jpe?g|gif|webp);base64,)/i.test(source) ? source : "";
+  function safeImageSource(block) {
+    const source = String(block && block.src || "").trim();
+    if (/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(source)) return source;
+    if (/^https:\/\//i.test(source) && block && block.remoteApproved === true) return source;
+    return "";
   }
   function paragraphs(value) {
     return String(value || "").split(/\n\s*\n/).filter((part) => part.trim()).map((part) => "<p>" + inline(part.replace(/\n/g, " ")) + "</p>").join("");
@@ -1091,9 +1401,15 @@
     return "<div class=\"pn-table-wrap\"><table class=\"pn-table\"><thead><tr>" + columns.map((column) => "<th>" + inline(column) + "</th>").join("") + "</tr></thead><tbody>" + rows.map((row) => "<tr>" + columns.map((_, index) => "<td>" + inline(row[index] || "") + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>";
   }
   function renderImage(block) {
-    const source = safeImageSource(block.src);
-    if (!source) return "<div class=\"pn-image-empty\">" + escapeHtml(tr("添加安全的 https 图片 URL，或选择本地图片。", "Add a safe https image URL or choose a local image.")) + "</div>";
-    return "<figure class=\"pn-image\"><img src=\"" + escapeHtml(source) + "\" alt=\"" + escapeHtml(block.alt) + "\">" + (block.caption.trim() ? "<figcaption>" + inline(block.caption) + "</figcaption>" : "") + "</figure>";
+    const source = safeImageSource(block);
+    if (!source) {
+      const remote = /^https:\/\//i.test(String(block.src || "").trim());
+      const message = remote
+        ? tr("远程图片等待确认加载。", "Remote image awaits approval to load.")
+        : tr("添加安全的 https 图片 URL，或选择本地图片。", "Add a safe https image URL or choose a local image.");
+      return "<div class=\"pn-image-empty\">" + escapeHtml(message) + "</div>";
+    }
+    return "<figure class=\"pn-image\"><img referrerpolicy=\"no-referrer\" src=\"" + escapeHtml(source) + "\" alt=\"" + escapeHtml(block.alt) + "\">" + (block.caption.trim() ? "<figcaption>" + inline(block.caption) + "</figcaption>" : "") + "</figure>";
   }
   function semanticExportLabel(block) {
     if (String(block.label || "").trim()) return block.label;
@@ -1180,8 +1496,14 @@
   }
   function exportLegacy() {
     const exported = Model.documentToSolutionNote(state);
+    const validation = root.__snTest && root.__snTest.validateRaw ? root.__snTest.validateRaw(exported.note) : { errors: [], warnings: [] };
+    if (validation.errors && validation.errors.length) {
+      setStatus(tr("兼容格式导出失败；请导出 Document JSON 备份。", "Compatibility export failed — export Document JSON as a backup."), "error");
+      return;
+    }
+    const notices = exported.warnings.concat(validation.warnings || []);
     download(slug() + ".solution-note.json", JSON.stringify(exported.note, null, 2));
-    setStatus(exported.warnings.length ? tr("已导出兼容格式；部分 document 专属 blocks 未包含。", "Compatibility export complete; document-only blocks were omitted.") : tr("已导出兼容 Solution Note", "Solution Note exported"), exported.warnings.length ? "warning" : "saved");
+    setStatus(notices.length ? tr("已导出兼容格式；请查看兼容性提示。", "Compatibility export complete; review compatibility notices.") : tr("已导出兼容 Solution Note", "Solution Note exported"), notices.length ? "warning" : "saved");
   }
   const AI_DOCUMENT_INSTRUCTIONS = `Return one valid JSON object in Proofnote Document Format 1.0. Do not return Markdown fences or commentary.
 
@@ -1267,11 +1589,20 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
   function readImportFile() {
     const file = els.importFile.files && els.importFile.files[0];
     if (!file) return;
+    if (file.size > MAX_IMPORT_BYTES) {
+      els.importReport.textContent = tr("文件超过 25MB 导入上限。", "File exceeds the 25 MB import limit.");
+      els.importFile.value = "";
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => { els.importText.value = String(reader.result || ""); els.importReport.textContent = ""; };
     reader.readAsText(file);
   }
   async function importFromDialog() {
+    if (els.importText.value.length > MAX_IMPORT_BYTES / 2) {
+      els.importReport.textContent = tr("JSON 文本超过 25MB 导入上限。", "JSON text exceeds the 25 MB import limit.");
+      return;
+    }
     let raw;
     try { raw = JSON.parse(els.importText.value); } catch (error) { els.importReport.textContent = tr("JSON 无法解析：", "Could not parse JSON: ") + error.message; return; }
     let next, warnings = [];
@@ -1281,18 +1612,22 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       warnings = legacyValidation.warnings || [];
       next = Model.migrateSolutionNote(raw);
     } else if (raw && raw.format === Model.TEMPLATE_FORMAT) {
+      const validation = Model.validateTemplateRaw(raw);
+      if (validation.errors.length) { els.importReport.textContent = tr("模板校验失败：", "Template validation failed: ") + validation.errors.map((item) => item.path + " — " + item.message).join("; "); return; }
       const template = Model.normalizeTemplate(raw);
-      await Store.saveTemplate(template);
+      const backend = await Store.saveTemplate(template);
+      if (backend === "failed") { els.importReport.textContent = tr("模板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."); return; }
       selectedTemplateId = template.template.id;
       await refreshTemplates();
       next = Model.normalizeDocument(template.document);
-      warnings = [tr("模板已保存到此设备。", "Template saved on this device.")];
+      warnings = validation.warnings.concat([tr("模板已保存到此设备。", "Template saved on this device.")]);
     } else {
       const validation = Model.validateDocumentRaw(raw);
       if (validation.errors.length) { els.importReport.textContent = tr("Document 校验失败：", "Document validation failed: ") + validation.errors.map((item) => item.path + " — " + item.message).join("; "); return; }
       warnings = validation.warnings;
       next = Model.normalizeDocument(raw);
     }
+    clearStructuralUndo();
     state = next;
     closeImport(); renderAll(); scheduleSave();
     setStatus(warnings.length ? tr("已导入；有 " + warnings.length + " 条可恢复提示。", "Imported with " + warnings.length + " recoverable notice(s).") : tr("文档已导入", "Document imported"), warnings.length ? "warning" : "saved");
@@ -1309,7 +1644,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     try { setSidebarTab(root.localStorage.getItem("proofnote-document:sidebar-tab") || "outline"); } catch (_) { setSidebarTab("outline"); }
     await refreshTemplates();
     const stored = await Store.loadCurrent();
-    if (stored && stored.format === Model.FORMAT) state = Model.normalizeDocument(stored);
+    if (stored && stored.format === Model.FORMAT) state = Model.normalizeDocument(stored, { allowRemoteImages: true });
     else {
       let legacy = null;
       try { legacy = JSON.parse(root.localStorage.getItem("solution-note-generator:v1") || "null"); } catch (_) {}
