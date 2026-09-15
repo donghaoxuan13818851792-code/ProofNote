@@ -84,28 +84,43 @@
   function fallbackWriteString(key, value) {
     try { root.localStorage.setItem(key, String(value || "")); return true; } catch (_) { return false; }
   }
+  function fallbackRemove(key) {
+    try {
+      if (typeof root.localStorage.removeItem === "function") root.localStorage.removeItem(key);
+      // A few embedded WebViews expose only getItem/setItem. `null` is still
+      // an unambiguous cleared value for the JSON legacy document slot.
+      else root.localStorage.setItem(key, "null");
+      return true;
+    } catch (_) { return false; }
+  }
   function fallbackLibrary(seedDocument) {
     const raw = fallbackRead(FALLBACK_DOCUMENTS, []);
     const records = Array.isArray(raw) ? raw.filter(validRecord) : [];
+    const legacy = fallbackRead(FALLBACK_CURRENT, null);
+    const hasLegacy = Boolean(legacy && typeof legacy === "object");
     let currentId = fallbackReadString(FALLBACK_CURRENT_DOCUMENT_ID);
     let current = records.find((record) => record.id === currentId) || null;
     if (!current) {
       const remembered = ordered(records)[0] || null;
-      if (remembered) return { records, current: remembered, currentId: remembered.id, migrated: true };
-      const legacy = fallbackRead(FALLBACK_CURRENT, null);
+      if (remembered) return { records, current: remembered, currentId: remembered.id, migrated: true, hasLegacy };
       const document = legacy && typeof legacy === "object" ? legacy : seedDocument;
-      if (!document || typeof document !== "object") return { records, current: null, currentId, migrated: false };
+      if (!document || typeof document !== "object") return { records, current: null, currentId, migrated: false, hasLegacy };
       current = recordFor(document);
       records.push(current);
       currentId = current.id;
-      return { records, current, currentId, migrated: true };
+      return { records, current, currentId, migrated: true, hasLegacy };
     }
-    return { records, current, currentId, migrated: false };
+    return { records, current, currentId, migrated: false, hasLegacy };
   }
   function persistFallbackLibrary(library, includeLegacy) {
     const documentsSaved = fallbackWrite(FALLBACK_DOCUMENTS, library.records);
     const currentSaved = fallbackWriteString(FALLBACK_CURRENT_DOCUMENT_ID, library.currentId);
-    const legacySaved = !library.current ? fallbackWrite(FALLBACK_CURRENT, null) : includeLegacy === false || fallbackWrite(FALLBACK_CURRENT, library.current.document);
+    // `current` was the v1 single-document cache. Once the document library
+    // exists, retaining it creates a second migration source that can revive
+    // deleted documents or duplicate the active one after a fallback.
+    const legacySaved = includeLegacy === true && library.current
+      ? fallbackWrite(FALLBACK_CURRENT, library.current.document)
+      : fallbackRemove(FALLBACK_CURRENT);
     return documentsSaved && currentSaved && legacySaved;
   }
   async function readIndexedLibrary() {
@@ -142,14 +157,14 @@
     let current = library.records.find((record) => record.id === library.currentId) || ordered(library.records)[0] || null;
     if (current) {
       current = Object.assign({}, current, { lastOpenedAt: timestamp() });
-      await writeIndexedLibrary({ put: [current], currentId: current.id });
+      await writeIndexedLibrary({ put: [current], remove: library.legacy ? [CURRENT_KEY] : [], currentId: current.id });
       return current;
     }
     const legacyDocument = library.legacy && library.legacy.document;
     const document = legacyDocument && typeof legacyDocument === "object" ? legacyDocument : seedDocument;
     if (!document || typeof document !== "object") return null;
     current = recordFor(document);
-    await writeIndexedLibrary({ put: [current], currentId: current.id });
+    await writeIndexedLibrary({ put: [current], remove: library.legacy ? [CURRENT_KEY] : [], currentId: current.id });
     return current;
   }
 
@@ -163,7 +178,7 @@
         return { record: record && clone(record), backend: "indexeddb" };
       } catch (_) {
         const library = fallbackLibrary(seedDocument);
-        const saved = library.migrated ? persistFallbackLibrary(library) : true;
+        const saved = library.migrated || library.hasLegacy ? persistFallbackLibrary(library, false) : true;
         return { record: library.current && clone(library.current), backend: saved ? "localStorage" : "failed" };
       }
     },

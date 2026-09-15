@@ -35,6 +35,11 @@
   let currentDocumentId = "";
   let renamingDocumentId = "";
   let saveTimer = null;
+  // A document may be edited again while an earlier IndexedDB write is still
+  // in flight. Keep immutable snapshots in a serial queue so an older save
+  // can never finish after, and overwrite, a newer edit.
+  let saveQueue = Promise.resolve();
+  let editRevision = 0;
   let hasUnsavedChanges = false;
   let statusTimer = null;
   let selectedTemplateId = "";
@@ -342,6 +347,18 @@
     app.querySelector("#pnExportLegacy").addEventListener("click", () => { exportLegacy(); setActionMenuOpen(false); });
     app.querySelector("#pnEditMetadata").addEventListener("click", () => { setActionMenuOpen(false); selectProofMetadata(); });
     app.querySelector("#pnLang").addEventListener("click", () => { try { root.localStorage.setItem("sn-lang", english() ? "zh" : "en"); } catch (_) {} root.location.reload(); });
+    // A debounce timer is convenient during editing, but a tab can be hidden
+    // or closed before it fires. Queue the current immutable snapshot on both
+    // lifecycle boundaries; the store queue preserves its order with saves
+    // already in flight.
+    const flushBeforeLeaving = () => {
+      if (!hasUnsavedChanges) return;
+      saveActiveDocumentNow().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flushBeforeLeaving();
+    });
+    root.addEventListener("pagehide", flushBeforeLeaving);
     bindSidebarResize();
     bindOutlineViewportTracking();
   }
@@ -494,40 +511,72 @@
     if (!hasUnsavedChanges) return;
     saveTimer = setTimeout(async () => {
       try {
-        const backend = await saveActiveDocument();
-        if (backend === "unchanged") return;
-        if (backend === "failed") {
+        const result = await saveActiveDocument();
+        if (result.backend === "unchanged" || !result.current) return;
+        if (result.backend === "failed") {
           setStatus(tr("自动保存失败；请立即导出文档备份。", "Autosave failed — export a backup now."), "error");
           return;
         }
-        setStatus(backend === "indexeddb" ? tr("已自动保存到此设备", "Saved on this device") : tr("已自动保存（本地存储）", "Saved locally"), "saved");
+        setStatus(result.backend === "indexeddb" ? tr("已自动保存到此设备", "Saved on this device") : tr("已自动保存（本地存储）", "Saved locally"), "saved");
       } catch (_) {
         setStatus(tr("自动保存失败；请立即导出文档备份。", "Autosave failed — export a backup now."), "error");
       }
     }, 350);
   }
-  async function saveActiveDocument() {
-    if (!state) return "failed";
-    if (currentDocumentId && !hasUnsavedChanges) return "unchanged";
-    if (!currentDocumentId) {
-      const created = await Store.createDocument(state);
-      if (!created || !created.record) return "failed";
-      currentDocumentId = created.record.id;
-      documents = [created.record].concat(documents.filter((record) => record.id !== currentDocumentId));
-      renderDocumentLibrary();
-      if (created.backend !== "failed") hasUnsavedChanges = false;
-      return created.backend;
-    }
-    const backend = await Store.saveDocument(currentDocumentId, state);
-    if (backend !== "failed") {
-      hasUnsavedChanges = false;
+
+  function saveSnapshot() {
+    if (!state) return null;
+    // The model is portable JSON by design, which gives us a clean, immutable
+    // snapshot without retaining mutable block objects across an await.
+    const document = Model.normalizeDocument(JSON.parse(JSON.stringify(state)), { allowRemoteImages: true });
+    return { documentId: currentDocumentId, revision: editRevision, document };
+  }
+
+  function queueDocumentSave(snapshot) {
+    const task = async () => {
+      let documentId = snapshot.documentId;
+      let backend = "failed";
+      if (!documentId) {
+        // This only occurs while bootstrapping an empty library. If an earlier
+        // queued creation has already supplied an id, save this newer snapshot
+        // into that same document rather than creating a duplicate.
+        documentId = currentDocumentId;
+        if (!documentId) {
+          const created = await Store.createDocument(snapshot.document);
+          if (!created || !created.record) return { backend: "failed", current: false };
+          documentId = created.record.id;
+          backend = created.backend;
+          if (currentDocumentId === "") {
+            currentDocumentId = documentId;
+            documents = [created.record].concat(documents.filter((record) => record.id !== documentId));
+            renderDocumentLibrary();
+          }
+        }
+      }
+      if (backend !== "failed" || documentId) {
+        if (backend === "failed") backend = await Store.saveDocument(documentId, snapshot.document);
+        if (backend === "failed") return { backend, current: false };
+      }
+      const current = currentDocumentId === documentId && editRevision === snapshot.revision;
+      if (current) hasUnsavedChanges = false;
       await refreshDocuments();
-    }
-    return backend;
+      return { backend, current };
+    };
+    const job = saveQueue.then(task, task);
+    // Keep the queue usable even if an unforeseen exception escaped `task`.
+    saveQueue = job.catch(() => undefined);
+    return job;
+  }
+
+  async function saveActiveDocument() {
+    if (!state) return { backend: "failed", current: false };
+    if (currentDocumentId && !hasUnsavedChanges) return { backend: "unchanged", current: true };
+    const snapshot = saveSnapshot();
+    return snapshot ? queueDocumentSave(snapshot) : { backend: "failed", current: false };
   }
   async function saveActiveDocumentNow() {
     clearTimeout(saveTimer);
-    try { return await saveActiveDocument(); } catch (_) { return "failed"; }
+    try { return (await saveActiveDocument()).backend; } catch (_) { return "failed"; }
   }
   async function refreshTemplates() {
     const custom = await Store.listTemplates();
@@ -591,7 +640,7 @@
       els.documents.appendChild(element("p", { class: "pn-library-empty" }, tr("还没有其他文档。", "No other documents yet.")));
       return;
     }
-    documents.slice(0, 12).forEach((record) => {
+    documents.forEach((record) => {
       const row = element("div", { class: "pn-document-item" + (record.id === currentDocumentId ? " is-active" : ""), role: "listitem" });
       if (renamingDocumentId === record.id) {
         const rename = element("input", { class: "pn-document-rename", type: "text", value: documentName(record), "aria-label": tr("重命名文档", "Rename document") });
@@ -627,6 +676,7 @@
     currentDocumentId = record.id;
     selectedTemplateId = "";
     state = Model.normalizeDocument(record.document, { allowRemoteImages: true });
+    editRevision = 0;
     hasUnsavedChanges = false;
     renderAll();
     await refreshDocuments();
@@ -723,7 +773,15 @@
     await activateDocument(opened.record);
   }
   async function finishDocumentRename(id, name) {
-    clearTimeout(saveTimer);
+    // Renaming a current document used to cancel the debounce timer and write
+    // the older in-memory record back later. Flush first, then rename.
+    if (id === currentDocumentId) {
+      const saved = await saveActiveDocumentNow();
+      if (saved === "failed") {
+        setStatus(tr("重命名前无法保存当前更改。", "Could not save current changes before renaming."), "error");
+        return;
+      }
+    }
     const renamed = await Store.renameDocument(id, name);
     if (!renamed || !renamed.record || renamed.backend === "failed") { setStatus(tr("重命名失败。", "Could not rename document."), "error"); return; }
     renamingDocumentId = "";
@@ -877,7 +935,13 @@
   }
   function getChildInsertionIndex(blockId) {
     const range = getSectionRange(blockId);
-    return range ? range.end : -1;
+    if (!range) return -1;
+    // Direct content cannot be appended after a child subtree: doing that
+    // makes it read as part of the final child when the flat block sequence is
+    // rebuilt. Place it after existing direct content but before the first
+    // structural child instead.
+    const firstChild = range.node.children[0];
+    return firstChild ? firstChild.index : range.end;
   }
   function isPrimaryStructureNode(node) { return node && node.level === 0; }
   function isSecondaryStructureNode(node) { return node && node.level === 1; }
@@ -946,9 +1010,40 @@
     const range = getSectionRange(blockId);
     if (!range) return;
     clearStructuralUndo();
-    state.blocks.splice(range.start, 1);
-    const next = state.blocks[range.start] || state.blocks[range.start - 1] || null;
+    const removed = state.blocks[range.start];
+    const replacements = [];
+    // A semantic section owns its title and its body in one block. Removing
+    // only its heading must keep that authored body on the page rather than
+    // silently discarding it with the semantic wrapper.
+    if (removed.type === "semantic") {
+      if (String(removed.content || "").trim()) replacements.push(Model.createBlock("paragraph", { content: removed.content }));
+      if (String(removed.summary || "").trim()) replacements.push(Model.createBlock("paragraph", { content: removed.summary }));
+    }
+    // Promote headings inside the removed range one level. This keeps an H2
+    // section reachable after its H1 parent is removed, rather than leaving a
+    // detached root-level H2 in the outline.
+    state.blocks.slice(range.start + 1, range.end).forEach((block) => {
+      if (block.type === "heading" && Number(block.level) > 1) block.level = Number(block.level) - 1;
+    });
+    state.blocks.splice(range.start, 1, ...replacements);
+    const next = replacements[0] || state.blocks[range.start] || state.blocks[range.start - 1] || null;
     finishStructuralChange(next ? next.id : "", false);
+  }
+
+  function moveStructuralNode(blockId, delta) {
+    const range = getSectionRange(blockId);
+    if (!range || !delta) return;
+    const siblings = range.node.parent ? range.node.parent.children : buildOutlineTree().roots;
+    const position = siblings.findIndex((node) => node.id === blockId);
+    const target = siblings[position + delta];
+    if (!target) return;
+    const targetRange = getSectionRange(target.id);
+    if (!targetRange) return;
+    clearStructuralUndo();
+    const moved = state.blocks.splice(range.start, range.end - range.start);
+    const destination = delta > 0 ? targetRange.end - moved.length : targetRange.start;
+    state.blocks.splice(destination, 0, ...moved);
+    finishStructuralChange(blockId, false);
   }
   function deleteSectionAndContents(blockId) {
     const range = getSectionRange(blockId);
@@ -1279,6 +1374,7 @@
   function changed(options) {
     const changes = changeOptions(options);
     state.metadata.updatedAt = new Date().toISOString();
+    editRevision += 1;
     hasUnsavedChanges = true;
     if (changes.structure) renderCanvas();
     if (changes.outline) renderOutline();
@@ -1328,6 +1424,7 @@
       right: side === "right" ? value : current.right
     };
     state.metadata.updatedAt = new Date().toISOString();
+    editRevision += 1;
     hasUnsavedChanges = true;
     scheduleSave();
   }
@@ -2042,6 +2139,7 @@
       els.inspector.appendChild(element("p", { class: "pn-inspector-empty" }, tr("选择纸面上的内容块以查看其设置。", "Select a block on the page to see its settings.")));
       return;
     }
+    const structuralNode = outlineNodeFor(block.id);
     // The Inspector is deliberately a compact tool surface, not a second
     // document. The canvas already shows the block's reader-facing title.
     const context = element("div", { class: "pn-inspector-context" });
@@ -2049,8 +2147,14 @@
     const overflow = element("details", { class: "pn-inspector-overflow" });
     const overflowSummary = element("summary", { class: "pn-inspector-overflow-trigger", "aria-label": tr("更多内容块操作", "More block actions") }, "⋯");
     const overflowMenu = element("div", { class: "pn-inspector-overflow-menu" });
-    overflowMenu.appendChild(button(tr("上移", "Move up"), "pn-inspector-overflow-item", () => moveBlock(index, -1)));
-    overflowMenu.appendChild(button(tr("下移", "Move down"), "pn-inspector-overflow-item", () => moveBlock(index, 1)));
+    overflowMenu.appendChild(button(tr("上移", "Move up"), "pn-inspector-overflow-item", () => {
+      if (structuralNode) moveStructuralNode(block.id, -1);
+      else moveBlock(index, -1);
+    }));
+    overflowMenu.appendChild(button(tr("下移", "Move down"), "pn-inspector-overflow-item", () => {
+      if (structuralNode) moveStructuralNode(block.id, 1);
+      else moveBlock(index, 1);
+    }));
     overflow.append(overflowSummary, overflowMenu);
     context.appendChild(overflow);
     els.inspector.appendChild(context);
@@ -2102,8 +2206,14 @@
     page.appendChild(flow);
     els.inspector.appendChild(page);
     const actions = element("section", { class: "pn-inspector-actions", "aria-label": label("内容块操作", "Block actions") });
-    actions.appendChild(button(label("复制", "Duplicate"), "pn-inspector-action", () => duplicateBlock(index)));
-    actions.appendChild(button(label("删除内容块", "Delete block"), "pn-inspector-action pn-danger", () => removeBlock(index)));
+    actions.appendChild(button(label("复制", "Duplicate"), "pn-inspector-action", () => {
+      if (structuralNode) duplicateStructuralNode(block.id);
+      else duplicateBlock(index);
+    }));
+    actions.appendChild(button(structuralNode ? label("删除章节与内容…", "Delete section and contents…") : label("删除内容块", "Delete block"), "pn-inspector-action pn-danger", () => {
+      if (structuralNode) deleteSectionAndContents(block.id);
+      else removeBlock(index);
+    }));
     els.inspector.appendChild(actions);
   }
   function inspectorToggle(labelText, checked, onChange) {
@@ -2422,8 +2532,15 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     reader.onload = () => { els.importText.value = String(reader.result || ""); els.importReport.textContent = ""; };
     reader.readAsText(file);
   }
+  function utf8ByteLength(value) {
+    const text = String(value || "");
+    if (typeof root.TextEncoder === "function") return new root.TextEncoder().encode(text).byteLength;
+    // TextEncoder is available in supported browsers, but Blob keeps the
+    // boundary correct for older WebViews too (notably for non-ASCII JSON).
+    return new Blob([text]).size;
+  }
   async function importFromDialog() {
-    if (els.importText.value.length > MAX_IMPORT_BYTES / 2) {
+    if (utf8ByteLength(els.importText.value) > MAX_IMPORT_BYTES) {
       els.importReport.textContent = tr("JSON 文本超过 25MB 导入上限。", "JSON text exceeds the 25 MB import limit.");
       return;
     }

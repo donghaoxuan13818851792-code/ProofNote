@@ -506,6 +506,24 @@ async function main() {
     const findOutlineItem = (title, occurrence) => Array.from(document.querySelectorAll("#pnOutline .pn-outline-item"))
       .filter((item) => item.textContent.trim() === title)[occurrence || 0] || null;
     const outlineMenu = document.querySelector("#pnOutlineMenu");
+    // Semantic sections carry title and body in the same data block. Removing
+    // only the heading must turn that body into ordinary content, not erase it.
+    const resultItemBeforeRemoval = findOutlineItem("Canvas result");
+    const resultMoreBeforeRemoval = resultItemBeforeRemoval && resultItemBeforeRemoval.closest(".pn-outline-row").querySelector(".pn-outline-more");
+    if (resultMoreBeforeRemoval) resultMoreBeforeRemoval.click();
+    await settle(window, () => outlineMenu && !outlineMenu.hidden);
+    const removeSemanticHeading = outlineMenu && outlineMenu.querySelector('[data-command="remove-heading"]');
+    if (removeSemanticHeading) removeSemanticHeading.click();
+    await settle(window, () => !findOutlineItem("Canvas result"));
+    check(
+      "editor-outline-remove-semantic-heading-preserves-body",
+      Boolean(removeSemanticHeading)
+        && !findOutlineItem("Canvas result")
+        && canvasBlockNodes(document).some((block) => blockHasControlValue(block, "The active outline item must follow the selected block."))
+        && editorSource.includes("if (removed.type === \"semantic\")"),
+      document.querySelector("#pnCanvas").textContent
+    );
+
     const methodItem = findOutlineItem("Method");
     if (methodItem) methodItem.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 80, clientY: 120 }));
     await settle(window, () => outlineMenu && !outlineMenu.hidden);
@@ -616,7 +634,13 @@ async function main() {
     await settle(window, () => document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-code").length === codesBeforePrimaryInsert + 1);
     check(
       "editor-outline-primary-section-adds-content-blocks",
-      document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-code").length === codesBeforePrimaryInsert + 1,
+      document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-code").length === codesBeforePrimaryInsert + 1
+        && (() => {
+          const blocks = canvasBlockNodes(document);
+          const insertedCode = blocks.findIndex((block) => !initialCanvasBlockIds.has(block.dataset.blockId) && block.classList.contains("pn-canvas-code"));
+          const procedure = blocks.findIndex((block) => blockHasControlValue(block, "Procedure"));
+          return insertedCode >= 0 && procedure >= 0 && insertedCode < procedure;
+        })(),
       JSON.stringify({
         before: codesBeforePrimaryInsert,
         after: document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-code").length,
@@ -643,6 +667,33 @@ async function main() {
         && Array.from(document.querySelectorAll("#pnOutline .pn-outline-item")).some((item) => untitledSectionPattern.test(item.textContent.trim()))
         && editorSource.includes('kind: "section"'),
       editorialSection ? editorialSection.textContent : "missing editorial section"
+    );
+
+    // Inspector actions must use the same subtree ranges as the Outline. Move
+    // Method after the newly-created root section and confirm Procedure stays
+    // nested inside it instead of being left behind as a detached H2.
+    const methodCanvasForInspector = canvasBlockNodes(document).find((block) => blockHasControlValue(block, "Method"));
+    if (methodCanvasForInspector) methodCanvasForInspector.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await settle(window, () => detail && !detail.hidden && inspector && inspector.querySelector(".pn-inspector-overflow"));
+    const inspectorOverflow = inspector && inspector.querySelector(".pn-inspector-overflow");
+    if (inspectorOverflow) inspectorOverflow.open = true;
+    const inspectorMoveDown = inspectorOverflow && inspectorOverflow.querySelectorAll(".pn-inspector-overflow-item")[1];
+    if (inspectorMoveDown) inspectorMoveDown.click();
+    await settle(window, () => {
+      const roots = Array.from(outline.children);
+      const rootLabel = (node) => node.firstElementChild && node.firstElementChild.querySelector(".pn-outline-label");
+      const methodRoot = roots.findIndex((node) => rootLabel(node)?.textContent.trim() === "Method");
+      const sectionRoot = roots.findIndex((node) => rootLabel(node) && untitledSectionPattern.test(rootLabel(node).textContent.trim()));
+      return methodRoot > sectionRoot;
+    });
+    const movedMethodRoot = Array.from(outline.children).find((node) => node.firstElementChild && node.firstElementChild.querySelector(".pn-outline-label")?.textContent.trim() === "Method");
+    check(
+      "editor-inspector-moves-structural-subtree-as-a-unit",
+      Boolean(inspectorMoveDown)
+        && Boolean(movedMethodRoot)
+        && Boolean(movedMethodRoot && Array.from(movedMethodRoot.querySelectorAll(".pn-outline-label")).some((label) => label.textContent.trim() === "Procedure"))
+        && editorSource.includes("moveStructuralNode(block.id"),
+      movedMethodRoot ? movedMethodRoot.textContent : "missing moved Method root"
     );
 
     const deleteMethodItem = findOutlineItem("Method");
@@ -755,6 +806,54 @@ async function main() {
         && editorSource.includes("openRemainingDocumentAfterDeletion")
         && !editorSource.includes("createBlankLibraryDocument"),
       documentLibrary ? documentLibrary.textContent : "current-document deletion should not create a replacement while documents remain"
+    );
+
+    // Hold two writes open deliberately. The editor must persist immutable
+    // snapshots in order, and an older completion must not claim the newer
+    // revision has been saved.
+    await new Promise((resolve) => window.setTimeout(resolve, 450));
+    const originalSaveDocument = window.ProofnoteStore.saveDocument;
+    const deferredSaves = [];
+    window.ProofnoteStore.saveDocument = (id, savedDocument) => new Promise((resolve) => {
+      deferredSaves.push({ id, document: JSON.parse(JSON.stringify(savedDocument)), resolve });
+    });
+    const autosaveTitle = document.querySelector("#pnCanvas .pn-document-title input, #pnCanvas .pn-document-title textarea");
+    if (autosaveTitle) {
+      autosaveTitle.value = "Autosave revision A";
+      autosaveTitle.dispatchEvent(new window.Event("input", { bubbles: true }));
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 380));
+    if (autosaveTitle) {
+      autosaveTitle.value = "Autosave revision B";
+      autosaveTitle.dispatchEvent(new window.Event("input", { bubbles: true }));
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 380));
+    const firstSnapshot = deferredSaves[0];
+    if (firstSnapshot) firstSnapshot.resolve("localStorage");
+    await settle(window, () => deferredSaves.length === 2, 1000);
+    const secondSnapshot = deferredSaves[1];
+    if (secondSnapshot) secondSnapshot.resolve("localStorage");
+    await settle(window, () => /Saved locally|已自动保存/.test(document.querySelector("#pnStatus").textContent), 1000);
+    window.ProofnoteStore.saveDocument = originalSaveDocument;
+    const titleFromSnapshot = (snapshot) => {
+      const title = snapshot && snapshot.document.blocks.find((block) => block.type === "title");
+      return title && title.content;
+    };
+    check(
+      "editor-autosave-queues-immutable-revisions",
+      Boolean(autosaveTitle)
+        && titleFromSnapshot(firstSnapshot) === "Autosave revision A"
+        && titleFromSnapshot(secondSnapshot) === "Autosave revision B"
+        && editorSource.includes("let saveQueue = Promise.resolve()")
+        && editorSource.includes("editRevision === snapshot.revision"),
+      JSON.stringify(deferredSaves.map((save) => titleFromSnapshot(save)))
+    );
+    check(
+      "editor-autosave-flushes-on-document-lifecycle",
+      editorSource.includes('document.addEventListener("visibilitychange"')
+        && editorSource.includes('root.addEventListener("pagehide"')
+        && editorSource.includes("flushBeforeLeaving"),
+      "pending autosaves need a hidden/pagehide flush"
     );
 
     check("editor-no-runtime-errors", runtimeErrors.length === 0, runtimeErrors.join(" | ").slice(0, 500));

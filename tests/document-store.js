@@ -36,6 +36,7 @@ async function main() {
   libraryWindow.localStorage.setItem("proofnote-document:current:v1", JSON.stringify(legacy));
   const initial = await Library.initialiseDocumentLibrary({ metadata: { name: "Seed" } });
   check("store-migrates-legacy-current-into-a-local-record", Boolean(initial.record && initial.record.id && initial.record.document.metadata.name === "Migrated note"));
+  check("store-migration-clears-the-legacy-single-document-cache", libraryWindow.localStorage.getItem("proofnote-document:current:v1") === "null");
   check("store-local-id-is-not-written-into-portable-document", initial.record && !Object.prototype.hasOwnProperty.call(initial.record.document, "id"));
   const created = await Library.createDocument({ metadata: { name: "Second note" }, blocks: [] });
   check("store-creates-separate-document-records", Boolean(created && created.record && created.record.id && created.record.id !== initial.record.id));
