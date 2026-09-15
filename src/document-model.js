@@ -18,7 +18,7 @@
     "table", "image", "quote", "divider", "page-break", "callout",
     "semantic", "list", "key-value", "stats"
   ]);
-  const SEMANTIC_KINDS = new Set(["problem", "theorem", "proof", "result", "verification"]);
+  const SEMANTIC_KINDS = new Set(["section", "introduction", "problem", "theorem", "proof", "result", "verification"]);
   const CALLOUT_KINDS = new Set(["note", "tip", "warning", "info"]);
   const PROOF_METADATA_FIELDS = ["author", "date", "status"];
   // These are deliberately generous authoring limits, not layout limits. They
@@ -75,6 +75,22 @@
     return { fields: PROOF_METADATA_FIELDS.filter((field) => requested.has(field)) };
   }
 
+  // Running headers are document metadata rather than content blocks: they
+  // repeat on every printed page and are independently editable from the
+  // document title. Keeping the two short strings portable lets Project
+  // documents retain their reader-facing page furniture on another device.
+  function normalizeRunningHeader(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    return { left: string(source.left), right: string(source.right) };
+  }
+
+  // The subtitle is still an editable block. This setting only controls
+  // whether the subtitle immediately below a document title is displayed.
+  function normalizeHeaderSubtitle(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    return { visible: source.visible !== false };
+  }
+
   function defaultPreset(type, raw) {
     if (type === "heading") return "heading-" + (raw && [1, 2, 3].includes(raw.level) ? raw.level : 1);
     if (type === "title") return "document-title";
@@ -102,6 +118,10 @@
         block.content = string(raw.content);
         break;
       case "table":
+        // Tables keep their shape even when the author chooses not to render
+        // a header row. `header` is intentionally optional in the portable
+        // format so older documents continue to mean "header on".
+        block.header = raw.header !== false;
         block.columns = Array.isArray(raw.columns) && raw.columns.length
           ? raw.columns.slice(0, LIMITS.maxTableColumns).map(string) : ["Column 1", "Column 2"];
         block.rows = Array.isArray(raw.rows) && raw.rows.length
@@ -181,6 +201,8 @@
         status: string(opts.status),
         source: string(opts.source),
         proofMetadata: normalizeProofMetadata(opts.proofMetadata),
+        runningHeader: normalizeRunningHeader(opts.runningHeader),
+        headerSubtitle: normalizeHeaderSubtitle(opts.headerSubtitle),
         createdAt: string(opts.createdAt) || timestamp,
         updatedAt: string(opts.updatedAt) || timestamp
       },
@@ -203,6 +225,8 @@
       status: safe.metadata && safe.metadata.status,
       source: safe.metadata && safe.metadata.source,
       proofMetadata: safe.metadata && safe.metadata.proofMetadata,
+      runningHeader: safe.metadata && safe.metadata.runningHeader,
+      headerSubtitle: safe.metadata && safe.metadata.headerSubtitle,
       createdAt: safe.metadata && safe.metadata.createdAt,
       updatedAt: safe.metadata && safe.metadata.updatedAt,
       blocks: Array.isArray(safe.blocks) ? safe.blocks : [],
@@ -218,7 +242,6 @@
     });
     document.format = FORMAT;
     document.version = VERSION;
-    document.metadata.updatedAt = now();
     if (safe.compatibility && typeof safe.compatibility === "object") document.compatibility = safeClone(safe.compatibility);
     return document;
   }
@@ -252,6 +275,18 @@
             else seenFields.add(field);
           });
         }
+      }
+      if (raw.metadata.runningHeader !== undefined) {
+        const runningHeader = raw.metadata.runningHeader;
+        if (!runningHeader || typeof runningHeader !== "object" || Array.isArray(runningHeader)) warn("metadata.runningHeader", "Expected running-header settings; empty labels will be used.");
+        else ["left", "right"].forEach((key) => {
+          if (runningHeader[key] !== undefined && typeof runningHeader[key] !== "string") warn("metadata.runningHeader." + key, "Expected a string; it will be treated as empty text.");
+        });
+      }
+      if (raw.metadata.headerSubtitle !== undefined) {
+        const headerSubtitle = raw.metadata.headerSubtitle;
+        if (!headerSubtitle || typeof headerSubtitle !== "object" || Array.isArray(headerSubtitle)) warn("metadata.headerSubtitle", "Expected header subtitle display settings; the subtitle will be shown.");
+        else if (headerSubtitle.visible !== undefined && typeof headerSubtitle.visible !== "boolean") warn("metadata.headerSubtitle.visible", "Expected a boolean; the subtitle will be shown.");
       }
     }
 
@@ -314,6 +349,7 @@
       if (block.type === "heading") expectString(path + ".content", block.content);
       if (block.type === "code") { expectString(path + ".language", block.language); expectString(path + ".content", block.content); }
       if (block.type === "table") {
+        if (block.header !== undefined && typeof block.header !== "boolean") warn(path + ".header", "Expected a boolean; table headers are shown by default.");
         if (block.columns !== undefined) expectStringArray(path + ".columns", block.columns, LIMITS.maxTableColumns);
         if (block.rows !== undefined) {
           if (!Array.isArray(block.rows)) warn(path + ".rows", "Expected an array.");

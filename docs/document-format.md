@@ -30,7 +30,7 @@ typography under Proofnote's control.
   for portability, but users do not enter arbitrary fonts, colours, spacing,
   or font sizes.
 - `kind` adds semantic meaning where needed. A single `semantic` block supports
-  `problem`, `theorem`, `proof`, `result`, and `verification`; a single
+  `section`, `introduction`, `problem`, `theorem`, `proof`, `result`, and `verification`; a single
   `callout` supports `note`, `tip`, `warning`, and `info`.
 - `appearance` is optional on semantic blocks. `editorial` renders a continuous
   publication-style section and `card` renders a component card. When omitted,
@@ -39,6 +39,12 @@ typography under Proofnote's control.
   movable `title` block, so file identity and page title are not coupled.
 - `metadata` may also carry template-controlled document details such as
   `documentType`, `noteNumber`, `author`, `date`, `status`, and `source`.
+  A document that uses a repeated page header may store independently editable
+  `runningHeader.left` and `runningHeader.right` labels; these are distinct
+  from the document name and movable title block.
+  `headerSubtitle.visible` controls whether the adjacent editable subtitle
+  block is shown in a document header. Hiding it preserves the subtitle text,
+  so it can be re-enabled later in the Inspector.
   A Proof Note may add `proofMetadata.fields` with any subset of `author`,
   `date`, and `status` to control which of those details appear in its
   editorial metadata row. An empty list hides the row while preserving the
@@ -50,6 +56,11 @@ equation, code, table, image, quote, divider, page break, callout, semantic
 block, list, key–value list, and stat cards. The last three also allow legacy
 Solution Note content-block arrays to migrate without throwing content away.
 
+Tables keep columns and rows as portable content. Their optional `header`
+boolean controls whether the columns render as a header row; omitting it keeps
+the established header-on behaviour. This lets authors switch between a data
+table and a plain grid without creating a separate block type.
+
 ## Templates
 
 Templates use a separate `proofnote-template` envelope. A template contains a
@@ -60,6 +71,19 @@ templates are saved locally and can be exported or imported as JSON.
 Proofnote stores documents and templates in IndexedDB when available. It falls
 back to local storage only when IndexedDB cannot be used. This keeps local
 image data practical without binding the format to a small storage quota.
+
+## Local document library
+
+The local library treats a document as the primary product entity. Each record
+has a device-only ID plus `createdAt`, `updatedAt`, and `lastOpenedAt` values
+for opening, renaming, duplicating, deleting, and ordering recent documents.
+Those record fields are never added to exported `proofnote-document` JSON.
+
+On first use, the earlier single `current-document` record is migrated into one
+library record without changing its document payload. `+ New document` uses the
+same blank-document factory but creates a new record; it never replaces the
+currently open document. The Templates view presents approved starting points
+separately from recent local documents.
 
 ## Solution Note compatibility
 

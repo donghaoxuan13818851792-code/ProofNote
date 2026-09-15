@@ -20,6 +20,21 @@
         "date": { "type": "string", "maxLength": 200000 },
         "status": { "type": "string", "maxLength": 200000 },
         "source": { "type": "string", "maxLength": 200000 },
+        "runningHeader": {
+          "type": "object",
+          "description": "Optional editable left and right running-header labels for documents that use a repeated page header.",
+          "properties": {
+            "left": { "type": "string", "maxLength": 200000 },
+            "right": { "type": "string", "maxLength": 200000 }
+          }
+        },
+        "headerSubtitle": {
+          "type": "object",
+          "description": "Optional display setting for the editable subtitle immediately beneath a document title. The subtitle block remains in the document when hidden.",
+          "properties": {
+            "visible": { "type": "boolean" }
+          }
+        },
         "proofMetadata": {
           "type": "object",
           "description": "Optional Proof Note display settings. Omit to show Author, Date, and Status.",
@@ -53,12 +68,13 @@
         "preset": { "type": "string", "description": "A Proofnote-controlled typography or component preset. Proofnote derives it when omitted." },
         "content": { "type": "string", "maxLength": 200000 },
         "level": { "enum": [1, 2, 3] },
-        "kind": { "type": "string" },
+        "kind": { "type": "string", "description": "Semantic blocks accept section, introduction, problem, theorem, proof, result, or verification; callouts accept note, tip, warning, or info." },
         "title": { "type": "string", "maxLength": 200000 },
         "label": { "type": "string", "maxLength": 200000 },
         "summary": { "type": "string", "maxLength": 200000 },
         "appearance": { "enum": ["editorial", "card"], "description": "An optional template-controlled semantic presentation. Omit to inherit the template default." },
         "language": { "type": "string", "maxLength": 200000 },
+        "header": { "type": "boolean", "description": "Optional table display setting. Omit or true renders columns as a header row; false renders all rows as body cells." },
         "columns": { "type": "array", "maxItems": 50, "items": { "type": "string", "maxLength": 200000 } },
         "rows": { "type": "array", "maxItems": 500, "items": { "type": "array", "maxItems": 50, "items": { "type": "string", "maxLength": 200000 } } },
         "src": { "type": "string", "maxLength": 14680064, "description": "Local data images or HTTPS URLs. Remote images require explicit user approval before loading." },

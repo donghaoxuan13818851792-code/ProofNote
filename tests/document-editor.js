@@ -72,12 +72,17 @@ async function main() {
       templateName: "Proof Note",
       blocks: [
         Model.createBlock("title", { content: "Canvas QA" }),
+        Model.createBlock("subtitle", { content: "A concise statement of the result." }),
         Model.createBlock("semantic", { kind: "problem", title: "Canvas problem", content: "Direct editing should keep focus." }),
         Model.createBlock("semantic", { kind: "result", title: "Canvas result", content: "The active outline item must follow the selected block." }),
         Model.createBlock("heading", { level: 1, content: "Method" }),
         Model.createBlock("heading", { level: 2, content: "Procedure" }),
         Model.createBlock("paragraph", { content: "Procedure content" }),
         Model.createBlock("table", { columns: ["Input"], rows: [["Observed"]] }),
+        Model.createBlock("list", { items: ["First item"] }),
+        Model.createBlock("equation", { content: "x^2 = 4" }),
+        Model.createBlock("code", { language: "js", content: "const answer = 42;" }),
+        Model.createBlock("image", { src: "data:image/png;base64,AA==", alt: "A test image", caption: "Figure 1" }),
         Model.createBlock("heading", { level: 2, content: "Equipment" }),
         Model.createBlock("heading", { level: 3, content: "Details" }),
         Model.createBlock("paragraph", { content: "A closing paragraph." })
@@ -183,7 +188,7 @@ async function main() {
     const proofMetadata = document.querySelector("#pnCanvas .pn-proof-metadata");
     const proofHeader = document.querySelector("#pnCanvas .pn-canvas-proof-header");
     if (proofMetadata) proofMetadata.dispatchEvent(new window.MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
-    await settle(window, () => inspector && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 3);
+    await settle(window, () => inspector && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 4);
     check(
       "editor-proof-metadata-has-contextual-display-controls",
       Boolean(proofMetadata)
@@ -192,12 +197,30 @@ async function main() {
         && Boolean(proofHeader.querySelector(".pn-canvas-grip"))
         && Boolean(proofHeader.querySelector(".pn-canvas-overflow"))
         && Boolean(inspector)
-        && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 3
+        && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 4
         && /Document|文档/.test(document.querySelector("#pnInspectorTopLabel").textContent),
       inspector ? inspector.textContent : "missing metadata inspector"
     );
+    const findDisplayToggle = (pattern) => Array.from(inspector.querySelectorAll(".pn-inspector-toggle")).find((row) => pattern.test(row.textContent))?.querySelector("input");
+    let subtitleToggle = findDisplayToggle(/Show subtitle|显示副标题/);
+    if (subtitleToggle) subtitleToggle.click();
+    await settle(window, () => !document.querySelector("#pnCanvas .pn-document-subtitle"));
+    check(
+      "editor-proof-header-subtitle-can-be-hidden-and-restored",
+      Boolean(subtitleToggle)
+        && !document.querySelector("#pnCanvas .pn-document-subtitle")
+        && editorSource.includes("setHeaderSubtitleVisible")
+        && editorSource.includes("headerSubtitle: { visible: true }"),
+      inspector ? inspector.textContent : "missing subtitle display control"
+    );
+    subtitleToggle = findDisplayToggle(/Show subtitle|显示副标题/);
+    if (subtitleToggle) subtitleToggle.click();
+    await settle(window, () => Boolean(document.querySelector("#pnCanvas .pn-document-subtitle")));
     const disableMetadataField = async () => {
-      const control = Array.from(inspector.querySelectorAll(".pn-inspector-toggle-control")).find((node) => node.checked);
+      const control = Array.from(inspector.querySelectorAll(".pn-inspector-toggle"))
+        .filter((row) => /Author|作者|Date|日期|Status|状态/.test(row.textContent))
+        .map((row) => row.querySelector("input"))
+        .find((node) => node && node.checked);
       if (control) control.click();
       await settle(window);
     };
@@ -207,15 +230,15 @@ async function main() {
     check(
       "editor-proof-metadata-hides-entire-group-when-no-fields-selected",
       !document.querySelector("#pnCanvas .pn-proof-metadata")
-        && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 3
+        && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 4
         && /hidden from the page|已从纸面隐藏/.test(inspector.textContent)
         && editorSource.includes('if (!fields.length) return "";'),
       inspector ? inspector.textContent : "missing hidden-metadata inspector"
     );
     const titleCanvasBlock = document.querySelector("#pnCanvas .pn-canvas-proof-header");
     if (titleCanvasBlock) titleCanvasBlock.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
-    await settle(window, () => inspector && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 3);
-    const restoreMetadata = inspector && Array.from(inspector.querySelectorAll(".pn-inspector-toggle-control")).find((node) => !node.checked);
+    await settle(window, () => inspector && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 4);
+    const restoreMetadata = findDisplayToggle(/Author|作者|Date|日期|Status|状态/);
     if (restoreMetadata) restoreMetadata.click();
     await settle(window);
     check(
@@ -258,29 +281,19 @@ async function main() {
       "remote images must require a deliberate Load action, reject HTTP, and omit the referrer"
     );
     check(
-      "editor-template-library-not-a-form",
+      "editor-template-and-document-library-are-separate",
       Boolean(templateLibrary)
         && templateLibrary.getAttribute("role") === "list"
         && !templateLibrary.matches("select")
-        && templateLibrary.querySelectorAll(".pn-template-item").length >= 3
+        && templateLibrary.querySelectorAll(".pn-template-item").length === 1
+        && templateLibrary.textContent.includes("Proof Note")
+        && !templateLibrary.textContent.includes("Blank Document")
+        && Boolean(document.querySelector("#pnDocuments"))
+        && Boolean(document.querySelector("#pnNew"))
         && Boolean(templateMenu)
         && ["pnSaveTemplate", "pnImportTemplate", "pnExportTemplate"].every((id) => templateMenu.contains(document.getElementById(id))),
-      "templates should read as a compact library; secondary template actions belong in its overflow menu"
+      "the library should show mature templates separately from locally stored documents, without exposing Blank Document as a template"
     );
-    const firstTemplate = templateLibrary && templateLibrary.querySelector(".pn-template-item");
-    if (firstTemplate) firstTemplate.click();
-    await settle(window, () => confirmModal && !confirmModal.hidden);
-    check(
-      "editor-template-confirmation-uses-proofnote-dialog",
-      Boolean(confirmModal)
-        && confirmModal.hidden === false
-        && Boolean(confirmModal.querySelector("#pnConfirmAccept"))
-        && editorSource.includes("openConfirm")
-        && !editorSource.includes("root.confirm"),
-      "replacing a document from the template library should use the Proofnote confirmation dialog, not a browser alert"
-    );
-    const cancelTemplateConfirm = document.querySelector("#pnConfirmCancel");
-    if (cancelTemplateConfirm) cancelTemplateConfirm.click();
     check(
       "editor-format-details-are-contextual",
       !document.querySelector(".pn-wordmark .pn-badge")
@@ -360,6 +373,133 @@ async function main() {
       }
     }
 
+    // Existing blocks should be authorable, not just renderable. These checks
+    // exercise the in-canvas controls that stay quiet until a block is used.
+    let tableBlock = document.querySelector("#pnCanvas .pn-canvas-table");
+    const tableRowCountBefore = tableBlock ? tableBlock.querySelectorAll("tbody tr").length : 0;
+    const addTableRow = tableBlock && Array.from(tableBlock.querySelectorAll("button")).find((control) => /Add row|添加行/.test(control.textContent));
+    if (addTableRow) addTableRow.click();
+    await settle(window, () => {
+      const nextTable = document.querySelector("#pnCanvas .pn-canvas-table");
+      return nextTable && nextTable.querySelectorAll("tbody tr").length === tableRowCountBefore + 1;
+    });
+    tableBlock = document.querySelector("#pnCanvas .pn-canvas-table");
+    const addTableColumn = tableBlock && Array.from(tableBlock.querySelectorAll("button")).find((control) => /Add column|添加列/.test(control.textContent));
+    if (addTableColumn) addTableColumn.click();
+    await settle(window, () => {
+      const nextTable = document.querySelector("#pnCanvas .pn-canvas-table");
+      return nextTable && nextTable.querySelectorAll("thead th").length === 2;
+    });
+    tableBlock = document.querySelector("#pnCanvas .pn-canvas-table");
+    if (tableBlock) tableBlock.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle(window, () => inspector && inspector.querySelector(".pn-inspector-toggle-control"));
+    const tableHeaderToggle = inspector && inspector.querySelector(".pn-inspector-toggle-control");
+    if (tableHeaderToggle) tableHeaderToggle.click();
+    await settle(window, () => {
+      const nextTable = document.querySelector("#pnCanvas .pn-canvas-table");
+      return nextTable && !nextTable.querySelector("thead");
+    });
+    tableBlock = document.querySelector("#pnCanvas .pn-canvas-table");
+    check(
+      "editor-table-has-real-row-column-and-header-controls",
+      tableRowCountBefore === 1
+        && Boolean(addTableRow)
+        && Boolean(addTableColumn)
+        && Boolean(tableHeaderToggle)
+        && Boolean(tableBlock)
+        && !tableBlock.querySelector("thead")
+        && tableBlock.querySelectorAll("tbody tr").length === 3
+        && tableBlock.querySelectorAll(".pn-table-row-remove").length === 3,
+      tableBlock ? tableBlock.textContent : "missing table"
+    );
+
+    let listBlock = document.querySelector("#pnCanvas .pn-canvas-list");
+    const firstListInput = listBlock && listBlock.querySelector(".pn-canvas-list-input");
+    if (firstListInput) {
+      firstListInput.focus();
+      firstListInput.setSelectionRange(firstListInput.value.length, firstListInput.value.length);
+      firstListInput.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    }
+    await settle(window, () => {
+      const nextList = document.querySelector("#pnCanvas .pn-canvas-list");
+      return nextList && nextList.querySelectorAll(".pn-canvas-list-input").length === 2;
+    });
+    listBlock = document.querySelector("#pnCanvas .pn-canvas-list");
+    const addListItem = listBlock && Array.from(listBlock.parentElement.querySelectorAll("button")).find((control) => /Add item|添加项目/.test(control.textContent));
+    if (addListItem) addListItem.click();
+    await settle(window, () => {
+      const nextList = document.querySelector("#pnCanvas .pn-canvas-list");
+      return nextList && nextList.querySelectorAll(".pn-canvas-list-input").length === 3;
+    });
+    listBlock = document.querySelector("#pnCanvas .pn-canvas-list");
+    check(
+      "editor-list-supports-enter-add-and-remove-controls",
+      Boolean(firstListInput)
+        && Boolean(addListItem)
+        && Boolean(listBlock)
+        && listBlock.querySelectorAll(".pn-canvas-list-input").length === 3
+        && listBlock.querySelectorAll(".pn-collection-remove").length === 3,
+      listBlock ? listBlock.textContent : "missing list"
+    );
+
+    const equationPreview = document.querySelector("#pnCanvas .pn-equation-preview");
+    const codeCopy = document.querySelector("#pnCanvas .pn-code-copy");
+    const imageBlock = document.querySelector("#pnCanvas .pn-canvas-image");
+    check(
+      "editor-equation-code-and-image-have-authoring-affordances",
+      Boolean(equationPreview)
+        && equationPreview.hidden === false
+        && Boolean(codeCopy)
+        && Boolean(codeCopy && codeCopy.querySelector("svg.pn-code-copy-icon"))
+        && /Copy code|复制代码/.test(codeCopy ? codeCopy.getAttribute("aria-label") || "" : "")
+        && Boolean(imageBlock)
+        && Boolean(imageBlock.querySelector("img"))
+        && Boolean(imageBlock.querySelector(".pn-canvas-image-caption-input"))
+        && editorSource.includes("copyBlockText")
+        && editorSource.includes("imageFilePicker"),
+      document.querySelector("#pnCanvas").textContent
+    );
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
+    const originalExecCommand = document.execCommand;
+    let legacyCopyCalls = 0;
+    const closeInspector = document.querySelector("#pnCloseInspector");
+    if (closeInspector) closeInspector.click();
+    if (codeCopy) codeCopy.dispatchEvent(new window.MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await settle(window, () => detail && detail.hidden === true);
+    check(
+      "editor-code-copy-does-not-open-inspector",
+      Boolean(codeCopy) && Boolean(detail) && detail.hidden === true,
+      detail ? String(detail.hidden) : "missing inspector"
+    );
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async () => { throw new Error("Clipboard permission denied"); } }
+    });
+    document.execCommand = (command) => { legacyCopyCalls += 1; return command === "copy"; };
+    if (codeCopy) codeCopy.click();
+    await settle(window, () => legacyCopyCalls === 1 && /Code copied|已复制代码/.test(document.querySelector("#pnStatus").textContent));
+    check(
+      "editor-code-copy-falls-back-when-clipboard-permission-is-denied",
+      legacyCopyCalls === 1
+        && /Code copied|已复制代码/.test(document.querySelector("#pnStatus").textContent)
+        && Boolean(codeCopy && codeCopy.classList.contains("is-copied"))
+        && Boolean(codeCopy && codeCopy.querySelector("svg.pn-code-copy-icon"))
+        && /Code copied|代码已复制/.test(codeCopy ? codeCopy.getAttribute("aria-label") || "" : ""),
+      document.querySelector("#pnStatus").textContent
+    );
+    if (clipboardDescriptor) Object.defineProperty(window.navigator, "clipboard", clipboardDescriptor);
+    else delete window.navigator.clipboard;
+    if (originalExecCommand === undefined) delete document.execCommand;
+    else document.execCommand = originalExecCommand;
+    check(
+      "editor-hover-only-controls-are-not-keyboard-focusable-while-hidden",
+      ["pn-code-copy", "pn-table-column-remove", "pn-collection-tools", "pn-collection-remove", "pn-insert-trigger"].every((className) => {
+        const rule = editorCss.slice(editorCss.indexOf("." + className), editorCss.indexOf("}", editorCss.indexOf("." + className)) + 1);
+        return rule.includes("visibility: hidden");
+      }),
+      "hidden controls must use visibility:hidden, not opacity alone"
+    );
+
     // Structural editing is deliberately derived from the flat block list.
     // Exercise the real Outline menu so sibling/child boundaries cannot regress
     // into a simple index + 1 insertion.
@@ -389,7 +529,24 @@ async function main() {
       Boolean(outlineMenu) && outlineMenu.hidden === false,
       "a click following contextmenu closed the Outline menu"
     );
-    if (app) app.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const contentMenuTrigger = outlineMenu && outlineMenu.querySelector(".pn-outline-menu-submenu-trigger");
+    if (contentMenuTrigger) contentMenuTrigger.click();
+    await settle(window, () => outlineMenu && outlineMenu.querySelector(".pn-outline-menu-submenu-wrap.is-open"));
+    const contentMenu = outlineMenu && outlineMenu.querySelector(".pn-outline-menu-submenu");
+    const paragraphsBeforeOutlineInsert = document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-paragraph").length;
+    const addParagraphFromOutline = contentMenu && contentMenu.querySelector('[data-command="add-content-paragraph"]');
+    if (addParagraphFromOutline) addParagraphFromOutline.click();
+    await settle(window, () => document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-paragraph").length === paragraphsBeforeOutlineInsert + 1);
+    check(
+      "editor-outline-add-content-menu-keeps-focus-until-a-choice-is-made",
+      Boolean(contentMenuTrigger)
+        && Boolean(addParagraphFromOutline)
+        && contentMenuTrigger.getAttribute("aria-expanded") === "true"
+        && document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-paragraph").length === paragraphsBeforeOutlineInsert + 1
+        && editorSource.includes("setSubmenuOpen")
+        && editorCss.includes(".pn-outline-menu-submenu-wrap.is-open .pn-outline-menu-submenu"),
+      "the Add content chooser should stay open long enough to select a content type"
+    );
 
     const detailItem = findOutlineItem("Details");
     const detailMore = detailItem && detailItem.closest(".pn-outline-row").querySelector(".pn-outline-more");
@@ -467,6 +624,27 @@ async function main() {
       })
     );
 
+    const methodAfterContent = findOutlineItem("Method");
+    const methodAfterContentMore = methodAfterContent && methodAfterContent.closest(".pn-outline-row").querySelector(".pn-outline-more");
+    if (methodAfterContentMore) methodAfterContentMore.click();
+    await settle(window, () => outlineMenu && !outlineMenu.hidden);
+    const addEditorialSection = outlineMenu && outlineMenu.querySelector('[data-command="add-section-after"]');
+    if (addEditorialSection) addEditorialSection.click();
+    const untitledSectionPattern = /^(Untitled section|未命名章节)$/;
+    await settle(window, () => canvasBlockNodes(document).some((block) => block.classList.contains("pn-canvas-semantic") && Array.from(block.querySelectorAll("input, textarea")).some((control) => untitledSectionPattern.test(control.value))));
+    const editorialSection = canvasBlockNodes(document).find((block) => block.classList.contains("pn-canvas-semantic") && Array.from(block.querySelectorAll("input, textarea")).some((control) => untitledSectionPattern.test(control.value)));
+    check(
+      "editor-outline-section-uses-editorial-semantic-treatment",
+      Boolean(addEditorialSection)
+        && Boolean(editorialSection)
+        && Boolean(editorialSection && editorialSection.querySelector(".pn-editorial-section"))
+        && Boolean(editorialSection && editorialSection.querySelector(".pn-editorial-section-number"))
+        && Boolean(editorialSection && editorialSection.querySelector(".pn-editorial-section-body-input"))
+        && Array.from(document.querySelectorAll("#pnOutline .pn-outline-item")).some((item) => untitledSectionPattern.test(item.textContent.trim()))
+        && editorSource.includes('kind: "section"'),
+      editorialSection ? editorialSection.textContent : "missing editorial section"
+    );
+
     const deleteMethodItem = findOutlineItem("Method");
     const deleteMethodMore = deleteMethodItem && deleteMethodItem.closest(".pn-outline-row").querySelector(".pn-outline-more");
     if (deleteMethodMore) deleteMethodMore.click();
@@ -493,6 +671,90 @@ async function main() {
       "editor-outline-delete-subtree-has-one-time-undo",
       Boolean(findOutlineItem("Method")) && Boolean(undoToast) && undoToast.hidden === true,
       undoToast ? undoToast.textContent : "missing undo"
+    );
+
+    const documentLibrary = document.querySelector("#pnDocuments");
+    const documentCountBeforeNew = documentLibrary ? documentLibrary.querySelectorAll(".pn-document-item").length : 0;
+    const newDocument = document.querySelector("#pnNew");
+    const newProjectModal = document.querySelector("#pnNewProjectModal");
+    const newProjectName = document.querySelector("#pnNewProjectName");
+    const createProject = document.querySelector("#pnCreateProject");
+    if (newDocument) newDocument.click();
+    await settle(window, () => newProjectModal && newProjectModal.hidden === false);
+    if (newProjectName) newProjectName.value = "Field notes";
+    if (createProject) createProject.click();
+    await settle(window, () => documentLibrary && documentLibrary.querySelectorAll(".pn-document-item").length === documentCountBeforeNew + 1);
+    check(
+      "editor-new-project-creates-a-named-library-document",
+      Boolean(documentLibrary)
+        && documentLibrary.querySelectorAll(".pn-document-item").length === documentCountBeforeNew + 1
+        && newProjectModal.hidden === true
+        && canvas.classList.contains("pn-project-document")
+        && Array.from(document.querySelectorAll("#pnCanvas .pn-document-title input, #pnCanvas .pn-document-title textarea")).some((control) => control.value === "Field notes")
+        && blockHasControlValue(document.querySelector("#pnCanvas .pn-canvas-proof-header"), "A concise statement of the result.")
+        && canvasBlockNodes(document).some((block) => block.classList.contains("pn-canvas-semantic") && block.querySelector(".pn-editorial-section") && blockHasControlValue(block, "Introduction"))
+        && !canvasBlockNodes(document).some((block) => block.classList.contains("pn-canvas-heading") && blockHasControlValue(block, "Introduction"))
+        && Boolean(document.querySelector("#pnCanvas .pn-proof-metadata-date-input"))
+        && document.querySelector("#pnCanvas .pn-proof-metadata-date-input").value === new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+        && document.querySelector("#pnPageHeader .pn-running-left").value === "Field notes"
+        && document.querySelector("#pnPageHeader .pn-running-right").value === "Project",
+      documentLibrary ? documentLibrary.textContent : "missing document library"
+    );
+    const documentCountBeforeDuplicateName = documentLibrary ? documentLibrary.querySelectorAll(".pn-document-item").length : 0;
+    if (newDocument) newDocument.click();
+    await settle(window, () => newProjectModal && newProjectModal.hidden === false);
+    if (newProjectName) newProjectName.value = "Field notes";
+    if (createProject) createProject.click();
+    await settle(window, () => documentLibrary && documentLibrary.querySelectorAll(".pn-document-item").length === documentCountBeforeDuplicateName + 1);
+    check(
+      "editor-new-project-disambiguates-duplicate-names",
+      Boolean(documentLibrary)
+        && Array.from(document.querySelectorAll("#pnCanvas .pn-document-title input, #pnCanvas .pn-document-title textarea")).some((control) => control.value === "Field notes(1)")
+        && document.querySelector("#pnPageHeader .pn-running-left").value === "Field notes(1)",
+      documentLibrary ? documentLibrary.textContent : "missing automatic duplicate name"
+    );
+    check(
+      "editor-project-header-shares-proofnote-editorial-rhythm",
+      editorCss.includes(".pn-proofnote-document .pn-document-title,.pn-project-document .pn-document-title")
+        && editorCss.includes(".pn-proofnote-document .pn-document-subtitle,.pn-project-document .pn-document-subtitle")
+        && editorSource.includes('const metadataAfter = documentMetadata && subtitleVisible ? "subtitle" : "title";')
+        && editorSource.includes('els.canvas.classList.toggle("pn-project-document", isProjectDocument());')
+        && editorSource.includes('block.kind === "introduction"')
+        && editorSource.includes('["introduction", "problem", "result", "theorem"].includes(block.kind)'),
+      "Project title, subtitle, metadata, and exported page header must share Proof Note's editorial sequence"
+    );
+    const firstTemplate = templateLibrary && templateLibrary.querySelector(".pn-template-item");
+    const documentCountBeforeTemplate = documentLibrary ? documentLibrary.querySelectorAll(".pn-document-item").length : 0;
+    if (firstTemplate) firstTemplate.click();
+    await settle(window, () => documentLibrary && documentLibrary.querySelectorAll(".pn-document-item").length === documentCountBeforeTemplate + 1);
+    check(
+      "editor-template-creates-a-new-library-document",
+      Boolean(documentLibrary)
+        && documentLibrary.querySelectorAll(".pn-document-item").length === documentCountBeforeTemplate + 1
+        && confirmModal.hidden === true
+        && editorSource.includes("Store.createDocument"),
+      documentLibrary ? documentLibrary.textContent : "template did not create a document"
+    );
+
+    const documentCountBeforeCurrentDelete = documentLibrary ? documentLibrary.querySelectorAll(".pn-document-item").length : 0;
+    const activeDocument = documentLibrary && documentLibrary.querySelector('.pn-document-open[aria-current="true"]');
+    const activeRow = activeDocument && activeDocument.closest(".pn-document-item");
+    const activeActions = activeRow && activeRow.querySelector(".pn-document-more");
+    const deleteCurrent = activeActions && Array.from(activeActions.querySelectorAll("button")).find((control) => /Delete document|删除文档/.test(control.textContent));
+    if (activeActions) activeActions.open = true;
+    if (deleteCurrent) deleteCurrent.click();
+    await settle(window, () => confirmModal && confirmModal.hidden === false);
+    const deleteAccept = document.querySelector("#pnConfirmAccept");
+    if (deleteAccept) deleteAccept.click();
+    await settle(window, () => documentLibrary && documentLibrary.querySelectorAll(".pn-document-item").length === documentCountBeforeCurrentDelete - 1);
+    check(
+      "editor-deleting-current-document-opens-an-existing-document-without-creating-one",
+      Boolean(documentLibrary && activeDocument && deleteCurrent)
+        && documentLibrary.querySelectorAll(".pn-document-item").length === documentCountBeforeCurrentDelete - 1
+        && documentLibrary.querySelector('.pn-document-open[aria-current="true"]') !== activeDocument
+        && editorSource.includes("openRemainingDocumentAfterDeletion")
+        && !editorSource.includes("createBlankLibraryDocument"),
+      documentLibrary ? documentLibrary.textContent : "current-document deletion should not create a replacement while documents remain"
     );
 
     check("editor-no-runtime-errors", runtimeErrors.length === 0, runtimeErrors.join(" | ").slice(0, 500));

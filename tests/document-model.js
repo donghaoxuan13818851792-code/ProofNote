@@ -24,16 +24,38 @@ check(
 );
 const hiddenMetadata = Model.normalizeDocument({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Hidden", proofMetadata: { fields: [] } }, blocks: [] });
 check("document-proof-metadata-allows-complete-hide", hiddenMetadata.metadata.proofMetadata.fields.length === 0, JSON.stringify(hiddenMetadata.metadata));
+const preservedUpdatedAt = "2026-01-02T00:00:00.000Z";
+const timestampPreservingDocument = Model.normalizeDocument({
+  format: Model.FORMAT,
+  version: Model.VERSION,
+  metadata: { name: "Timestamp", updatedAt: preservedUpdatedAt },
+  blocks: []
+});
+check("document-normalization-preserves-updated-at", timestampPreservingDocument.metadata.updatedAt === preservedUpdatedAt, JSON.stringify(timestampPreservingDocument.metadata));
 const malformedMetadataDisplay = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad display", proofMetadata: { fields: ["author", "unknown"] } }, blocks: [] });
 check("document-proof-metadata-warns-on-unknown-field", malformedMetadataDisplay.warnings.some((warning) => warning.path === "metadata.proofMetadata.fields[1]"), JSON.stringify(malformedMetadataDisplay));
+const runningHeader = Model.normalizeDocument({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Project", runningHeader: { left: "Field notes", right: "Project" } }, blocks: [] });
+check("document-running-header-is-portable", JSON.stringify(runningHeader.metadata.runningHeader) === JSON.stringify({ left: "Field notes", right: "Project" }), JSON.stringify(runningHeader.metadata));
+const malformedRunningHeader = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad header", runningHeader: { left: 42 } }, blocks: [] });
+check("document-running-header-warns-on-non-string-label", malformedRunningHeader.warnings.some((warning) => warning.path === "metadata.runningHeader.left"), JSON.stringify(malformedRunningHeader));
+const hiddenHeaderSubtitle = Model.normalizeDocument({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Hidden subtitle", headerSubtitle: { visible: false } }, blocks: [] });
+check("document-header-subtitle-display-is-portable", hiddenHeaderSubtitle.metadata.headerSubtitle.visible === false && Model.blankDocument().metadata.headerSubtitle.visible === true, JSON.stringify(hiddenHeaderSubtitle.metadata));
+const malformedHeaderSubtitle = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad subtitle", headerSubtitle: { visible: "no" } }, blocks: [] });
+check("document-header-subtitle-warns-on-non-boolean-display", malformedHeaderSubtitle.warnings.some((warning) => warning.path === "metadata.headerSubtitle.visible"), JSON.stringify(malformedHeaderSubtitle));
 
 // Structural type, semantic kind, and typography preset are distinct concepts.
 const heading = Model.createBlock("heading", { level: 3, content: "Details" });
+const introduction = Model.createBlock("semantic", { kind: "introduction", title: "Introduction" });
+const section = Model.createBlock("semantic", { kind: "section", appearance: "editorial", title: "Untitled section" });
 const theorem = Model.createBlock("semantic", { kind: "theorem", content: "Claim" });
 const editorialTheorem = Model.createBlock("semantic", { kind: "theorem", appearance: "editorial", content: "Claim" });
+const tableWithNoHeader = Model.createBlock("table", { header: false, columns: ["A"], rows: [["1"]] });
 check("document-heading-preset", heading.type === "heading" && heading.level === 3 && heading.preset === "heading-3", JSON.stringify(heading));
+check("document-introduction-is-a-semantic-kind", introduction.type === "semantic" && introduction.kind === "introduction" && introduction.preset === "semantic-introduction", JSON.stringify(introduction));
+check("document-section-is-a-neutral-semantic-kind", section.type === "semantic" && section.kind === "section" && section.appearance === "editorial" && section.preset === "semantic-section", JSON.stringify(section));
 check("document-semantic-preset", theorem.type === "semantic" && theorem.kind === "theorem" && theorem.preset === "semantic-theorem", JSON.stringify(theorem));
 check("document-semantic-appearance-is-separate", editorialTheorem.type === "semantic" && editorialTheorem.kind === "theorem" && editorialTheorem.appearance === "editorial" && editorialTheorem.preset === "semantic-theorem", JSON.stringify(editorialTheorem));
+check("document-table-header-is-a-portable-display-option", tableWithNoHeader.header === false && Model.createBlock("table").header === true, JSON.stringify(tableWithNoHeader));
 
 // Validation sees malformed raw data before normalisation makes it safe.
 const invalid = Model.validateDocumentRaw({ format: "proofnote-document", version: "1.0", metadata: { name: "Test" }, blocks: [{ type: "heading", level: 8 }] });
@@ -103,6 +125,8 @@ const malformedShapes = Model.validateDocumentRaw({
   blocks: [{ type: "paragraph", content: 42 }, { type: "table", columns: ["A"], rows: [[1]] }, { type: "key-value", items: [{ label: 5, value: false }] }]
 });
 check("document-raw-validation-covers-block-shapes", malformedShapes.errors.length === 0 && malformedShapes.warnings.length >= 4, JSON.stringify(malformedShapes));
+const malformedTableHeader = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Table" }, blocks: [{ type: "table", header: "yes" }] });
+check("document-table-header-validation", malformedTableHeader.warnings.some((warning) => warning.path === "blocks[0].header"), JSON.stringify(malformedTableHeader));
 const tooManyBlocks = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Large" }, blocks: Array.from({ length: Model.LIMITS.maxBlocks + 1 }, () => ({ type: "paragraph", content: "" })) });
 check("document-raw-validation-has-block-limit", tooManyBlocks.errors.some((error) => error.path === "blocks"), JSON.stringify(tooManyBlocks.errors));
 let deeplyNestedCompatibility = {};

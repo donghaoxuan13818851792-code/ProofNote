@@ -16,6 +16,8 @@
   ];
   const TYPE_LABEL = Object.fromEntries(TYPE_OPTIONS.map(([type, en, zh]) => [type, { en, zh }]));
   const OUTLINE_SEMANTIC_LABEL = {
+    section: { zh: "章节", en: "Section" },
+    introduction: { zh: "引言", en: "Introduction" },
     problem: { zh: "问题", en: "Problem" },
     theorem: { zh: "定理", en: "Theorem" },
     proof: { zh: "证明", en: "Proof" },
@@ -29,7 +31,11 @@
   const PROOF_METADATA_FIELDS = ["author", "date", "status"];
   let state = null;
   let templates = [];
+  let documents = [];
+  let currentDocumentId = "";
+  let renamingDocumentId = "";
   let saveTimer = null;
+  let hasUnsavedChanges = false;
   let statusTimer = null;
   let selectedTemplateId = "";
   let selectedBlockId = "";
@@ -184,10 +190,15 @@
               <button class="pn-sidebar-tab" id="pnOutlineTab" type="button" role="tab" aria-selected="false" aria-controls="pnOutlinePanel">${tr("大纲", "Outline")}</button>
             </div>
             <section class="pn-sidebar-panel" id="pnTemplatesPanel" role="tabpanel" aria-labelledby="pnTemplatesTab">
-              <div class="pn-sidebar-heading">${tr("模板", "Templates")}</div>
-              <div class="pn-template-list" id="pnTemplates" role="list" aria-label="${tr("选择模板", "Choose template")}"></div>
+              <section class="pn-library-section" aria-labelledby="pnTemplatesHeading">
+                <div class="pn-sidebar-heading" id="pnTemplatesHeading">${tr("模板", "Templates")}</div>
+                <div class="pn-template-list" id="pnTemplates" role="list" aria-label="${tr("选择模板", "Choose template")}"></div>
+              </section>
+              <section class="pn-library-section pn-library-documents" aria-labelledby="pnDocumentsHeading">
+                <div class="pn-library-heading-row"><div class="pn-sidebar-heading" id="pnDocumentsHeading">${tr("文档", "Documents")}</div><button class="pn-template-new" id="pnNew" type="button">${tr("＋ 新建项目", "+ New project")}</button></div>
+                <div class="pn-document-list" id="pnDocuments" role="list" aria-label="${tr("文档，按最近修改排序", "Documents, most recently modified first")}"></div>
+              </section>
               <div class="pn-template-footer">
-                <button class="pn-template-new" id="pnNew" type="button">${tr("＋ 新建文档", "+ New document")}</button>
                 <div class="pn-template-menu-wrap">
                   <button class="pn-template-more" id="pnTemplateMenuToggle" type="button" aria-expanded="false" aria-controls="pnTemplateMenu" aria-label="${tr("模板操作", "Template actions")}" title="${tr("模板操作", "Template actions")}">•••</button>
                   <div class="pn-template-menu" id="pnTemplateMenu" role="menu" aria-label="${tr("模板操作", "Template actions")}" hidden>
@@ -238,12 +249,21 @@
           <div class="pn-actions pn-confirm-actions"><button class="btn btn-secondary" id="pnConfirmCancel" type="button">${tr("取消", "Cancel")}</button><button class="btn btn-primary" id="pnConfirmAccept" type="button"></button></div>
         </section>
       </div>
+      <div class="pn-modal-backdrop" id="pnNewProjectModal" hidden>
+        <section class="pn-modal pn-confirm-modal pn-new-project-modal" role="dialog" aria-modal="true" aria-labelledby="pnNewProjectTitle" aria-describedby="pnNewProjectCopy">
+          <p class="pn-confirm-kicker">${tr("新建文档", "NEW DOCUMENT")}</p>
+          <h2 id="pnNewProjectTitle">${tr("新建项目", "New project")}</h2>
+          <p id="pnNewProjectCopy" class="pn-modal-copy">${tr("命名项目后，Proofnote 会自动创建同名文档、填入今天的日期，并添加一个“引言”语义小节。", "Name the project and Proofnote will create a matching document, add today’s date, and start it with an editorial Introduction section.")}</p>
+          <label class="pn-new-project-field" for="pnNewProjectName"><span class="pn-new-project-label">${tr("项目名称", "Project name")}</span><input class="pn-new-project-input" id="pnNewProjectName" type="text" autocomplete="off" maxlength="200" required></label>
+          <div class="pn-actions pn-confirm-actions"><button class="btn btn-secondary" id="pnNewProjectCancel" type="button">${tr("取消", "Cancel")}</button><button class="btn btn-primary" id="pnCreateProject" type="button">${tr("创建项目", "Create project")}</button></div>
+        </section>
+      </div>
       <div class="pn-outline-menu" id="pnOutlineMenu" role="menu" aria-label="${tr("大纲结构操作", "Outline structure actions")}" hidden></div>
       <div class="pn-undo-toast" id="pnUndoToast" role="status" hidden><span id="pnUndoCopy"></span><button class="pn-undo-button" id="pnUndoButton" type="button">${tr("撤销", "Undo")}</button></div>`;
     document.body.appendChild(app);
     els = {
-      app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), templates: app.querySelector("#pnTemplates"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
-      outline: app.querySelector("#pnOutline"), canvasPane: app.querySelector(".pn-canvas-pane"), docPage: app.querySelector("#pnDocPage"), canvas: app.querySelector("#pnCanvas"), inspector: app.querySelector("#pnInspector"), inspectorTopLabel: app.querySelector("#pnInspectorTopLabel"), pageHeader: app.querySelector("#pnPageHeader"), footer: app.querySelector("#pnFooterName"), footerStatus: app.querySelector("#pnFooterStatus"), modal: app.querySelector("#pnImportModal"), confirmModal: app.querySelector("#pnConfirmModal"), confirmTitle: app.querySelector("#pnConfirmTitle"), confirmCopy: app.querySelector("#pnConfirmCopy"), confirmCancel: app.querySelector("#pnConfirmCancel"), confirmAccept: app.querySelector("#pnConfirmAccept"),
+      app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), templates: app.querySelector("#pnTemplates"), documents: app.querySelector("#pnDocuments"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
+      outline: app.querySelector("#pnOutline"), canvasPane: app.querySelector(".pn-canvas-pane"), docPage: app.querySelector("#pnDocPage"), canvas: app.querySelector("#pnCanvas"), inspector: app.querySelector("#pnInspector"), inspectorTopLabel: app.querySelector("#pnInspectorTopLabel"), pageHeader: app.querySelector("#pnPageHeader"), footer: app.querySelector("#pnFooterName"), footerStatus: app.querySelector("#pnFooterStatus"), modal: app.querySelector("#pnImportModal"), confirmModal: app.querySelector("#pnConfirmModal"), confirmTitle: app.querySelector("#pnConfirmTitle"), confirmCopy: app.querySelector("#pnConfirmCopy"), confirmCancel: app.querySelector("#pnConfirmCancel"), confirmAccept: app.querySelector("#pnConfirmAccept"), newProjectModal: app.querySelector("#pnNewProjectModal"), newProjectName: app.querySelector("#pnNewProjectName"), newProjectCancel: app.querySelector("#pnNewProjectCancel"), newProjectCreate: app.querySelector("#pnCreateProject"),
       importText: app.querySelector("#pnImportText"), importFile: app.querySelector("#pnImportFile"), importReport: app.querySelector("#pnImportReport"),
       outlineMenu: app.querySelector("#pnOutlineMenu"), undoToast: app.querySelector("#pnUndoToast"), undoCopy: app.querySelector("#pnUndoCopy"), undoButton: app.querySelector("#pnUndoButton")
     };
@@ -286,6 +306,7 @@
       closeOutlineMenu();
       if (!els.modal.hidden) closeImport();
       if (!els.confirmModal.hidden) closeConfirm();
+      if (!els.newProjectModal.hidden) closeNewProject();
     });
     app.querySelector("#pnTemplatesTab").addEventListener("click", () => setSidebarTab("templates"));
     app.querySelector("#pnOutlineTab").addEventListener("click", () => setSidebarTab("outline"));
@@ -302,6 +323,15 @@
       if (handler) handler();
     });
     els.confirmModal.addEventListener("click", (event) => { if (event.target === els.confirmModal) closeConfirm(); });
+    els.newProjectCancel.addEventListener("click", closeNewProject);
+    els.newProjectCreate.addEventListener("click", createNewProject);
+    els.newProjectModal.addEventListener("click", (event) => { if (event.target === els.newProjectModal) closeNewProject(); });
+    els.newProjectName.addEventListener("input", () => els.newProjectName.removeAttribute("aria-invalid"));
+    els.newProjectName.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      createNewProject();
+    });
     els.undoButton.addEventListener("click", undoLastStructuralDelete);
     app.querySelector("#pnConfirmImport").addEventListener("click", importFromDialog);
     els.importFile.addEventListener("change", readImportFile);
@@ -461,9 +491,11 @@
   }
   function scheduleSave() {
     clearTimeout(saveTimer);
+    if (!hasUnsavedChanges) return;
     saveTimer = setTimeout(async () => {
       try {
-        const backend = await Store.saveCurrent(state);
+        const backend = await saveActiveDocument();
+        if (backend === "unchanged") return;
         if (backend === "failed") {
           setStatus(tr("自动保存失败；请立即导出文档备份。", "Autosave failed — export a backup now."), "error");
           return;
@@ -473,6 +505,29 @@
         setStatus(tr("自动保存失败；请立即导出文档备份。", "Autosave failed — export a backup now."), "error");
       }
     }, 350);
+  }
+  async function saveActiveDocument() {
+    if (!state) return "failed";
+    if (currentDocumentId && !hasUnsavedChanges) return "unchanged";
+    if (!currentDocumentId) {
+      const created = await Store.createDocument(state);
+      if (!created || !created.record) return "failed";
+      currentDocumentId = created.record.id;
+      documents = [created.record].concat(documents.filter((record) => record.id !== currentDocumentId));
+      renderDocumentLibrary();
+      if (created.backend !== "failed") hasUnsavedChanges = false;
+      return created.backend;
+    }
+    const backend = await Store.saveDocument(currentDocumentId, state);
+    if (backend !== "failed") {
+      hasUnsavedChanges = false;
+      await refreshDocuments();
+    }
+    return backend;
+  }
+  async function saveActiveDocumentNow() {
+    clearTimeout(saveTimer);
+    try { return await saveActiveDocument(); } catch (_) { return "failed"; }
   }
   async function refreshTemplates() {
     const custom = await Store.listTemplates();
@@ -486,6 +541,10 @@
     });
     renderTemplateLibrary();
   }
+  async function refreshDocuments() {
+    documents = await Store.listDocuments();
+    renderDocumentLibrary();
+  }
   function currentTemplateId() {
     if (templateById(selectedTemplateId)) return selectedTemplateId;
     const name = state && state.metadata ? String(state.metadata.templateName || "").trim() : "";
@@ -498,7 +557,7 @@
     if (!selectedTemplateId && activeId) selectedTemplateId = activeId;
     els.templates.innerHTML = "";
     let customLabelAdded = false;
-    templates.forEach((template) => {
+    templates.filter((template) => !template.template.builtIn || template.template.id === "proof-note").forEach((template) => {
       if (!template.template.builtIn && !customLabelAdded) {
         els.templates.appendChild(element("div", { class: "pn-template-group-label" }, tr("我的模板", "My templates")));
         customLabelAdded = true;
@@ -512,39 +571,221 @@
       els.templates.appendChild(item);
     });
   }
-  function templateById(templateId) { return templates.find((template) => template.template.id === templateId); }
-  function chooseNewDocument() {
-    const blank = templateById("blank-document");
-    if (!blank) return;
-    openConfirm({
-      title: tr("新建空白文档？", "Start a blank document?"),
-      message: tr("这会替换当前文档内容。", "This replaces the current document."),
-      confirmLabel: tr("新建并替换", "Replace document"),
-      onConfirm: () => {
-        clearStructuralUndo();
-        selectedTemplateId = "blank-document";
-        state = Model.normalizeDocument(blank.document);
-        state.metadata.name = tr("未命名文档", "Untitled document");
-        renderAll();
-        root.requestAnimationFrame(syncCanvasScale);
-        scheduleSave();
+  function documentName(record) {
+    const metadata = record && record.document && record.document.metadata || {};
+    const portableName = String(metadata.name || "").trim();
+    const templateName = String(metadata.templateName || "").trim();
+    const title = record && record.document && Array.isArray(record.document.blocks)
+      ? record.document.blocks.find((block) => block && block.type === "title") : null;
+    const titleName = String(title && title.content || "").trim();
+    // Built-in templates historically used their template name as metadata.
+    // In a library that makes every new note look identical, so prefer the
+    // actual document title until the author explicitly renames the file.
+    if (titleName && (!portableName || portableName === templateName)) return titleName;
+    return portableName || titleName || tr("未命名文档", "Untitled document");
+  }
+  function renderDocumentLibrary() {
+    if (!els.documents) return;
+    els.documents.innerHTML = "";
+    if (!documents.length) {
+      els.documents.appendChild(element("p", { class: "pn-library-empty" }, tr("还没有其他文档。", "No other documents yet.")));
+      return;
+    }
+    documents.slice(0, 12).forEach((record) => {
+      const row = element("div", { class: "pn-document-item" + (record.id === currentDocumentId ? " is-active" : ""), role: "listitem" });
+      if (renamingDocumentId === record.id) {
+        const rename = element("input", { class: "pn-document-rename", type: "text", value: documentName(record), "aria-label": tr("重命名文档", "Rename document") });
+        const save = () => finishDocumentRename(record.id, rename.value);
+        rename.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") { event.preventDefault(); save(); }
+          if (event.key === "Escape") { event.preventDefault(); renamingDocumentId = ""; renderDocumentLibrary(); }
+        });
+        row.append(rename, button(tr("保存", "Save"), "pn-document-rename-save", save), button(tr("取消", "Cancel"), "pn-document-rename-cancel", () => { renamingDocumentId = ""; renderDocumentLibrary(); }));
+        els.documents.appendChild(row);
+        root.requestAnimationFrame(() => rename.focus());
+        return;
       }
+      const open = button(documentName(record), "pn-document-open", () => openLibraryDocument(record.id), documentName(record));
+      open.setAttribute("aria-current", String(record.id === currentDocumentId));
+      const actions = element("details", { class: "pn-document-more" });
+      actions.appendChild(element("summary", { class: "pn-document-more-trigger", "aria-label": tr("文档操作", "Document actions") }, "•••"));
+      const menu = element("div", { class: "pn-document-more-menu" });
+      menu.append(
+        button(tr("重命名", "Rename"), "pn-document-more-item", () => { renamingDocumentId = record.id; renderDocumentLibrary(); }),
+        button(tr("制作副本", "Duplicate"), "pn-document-more-item", () => duplicateLibraryDocument(record.id)),
+        button(tr("删除文档", "Delete document"), "pn-document-more-item pn-document-danger", () => requestDeleteLibraryDocument(record.id))
+      );
+      actions.appendChild(menu);
+      row.append(open, actions);
+      els.documents.appendChild(row);
     });
   }
-  function useSelectedTemplate(templateId) {
+  function templateById(templateId) { return templates.find((template) => template.template.id === templateId); }
+  async function activateDocument(record, options) {
+    if (!record || !record.document) return;
+    clearStructuralUndo();
+    currentDocumentId = record.id;
+    selectedTemplateId = "";
+    state = Model.normalizeDocument(record.document, { allowRemoteImages: true });
+    hasUnsavedChanges = false;
+    renderAll();
+    await refreshDocuments();
+    root.requestAnimationFrame(syncCanvasScale);
+    if (!options || options.status !== false) setStatus(tr("已打开文档", "Document opened"), "saved");
+  }
+  function localToday() {
+    const date = new Date();
+    date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+    return date.toISOString().slice(0, 10);
+  }
+  function openNewProject() {
+    els.newProjectName.value = "";
+    els.newProjectName.removeAttribute("aria-invalid");
+    els.newProjectModal.hidden = false;
+    root.requestAnimationFrame(() => els.newProjectName.focus());
+  }
+  function closeNewProject() {
+    els.newProjectModal.hidden = true;
+    els.newProjectName.removeAttribute("aria-invalid");
+  }
+  function uniqueLibraryDocumentName(requestedName) {
+    const name = String(requestedName || "").trim();
+    const normalise = (value) => String(value || "").trim().toLocaleLowerCase();
+    const occupied = new Set(documents.map((record) => normalise(documentName(record))).filter(Boolean));
+    if (!occupied.has(normalise(name))) return name;
+    let suffix = 1;
+    let candidate = name + "(" + suffix + ")";
+    while (occupied.has(normalise(candidate))) {
+      suffix += 1;
+      candidate = name + "(" + suffix + ")";
+    }
+    return candidate;
+  }
+  async function createNewProject() {
+    const requestedName = String(els.newProjectName.value || "").trim();
+    if (!requestedName) {
+      els.newProjectName.setAttribute("aria-invalid", "true");
+      els.newProjectName.focus();
+      return;
+    }
+    const saved = await saveActiveDocumentNow();
+    if (saved === "failed") {
+      setStatus(tr("自动保存失败；请导出文档备份后再新建。", "Autosave failed — export a backup before creating a document."), "error");
+      return;
+    }
+    await refreshDocuments();
+    const name = uniqueLibraryDocumentName(requestedName);
+    const project = Model.blankDocument({
+      name,
+      documentType: "Project",
+      date: localToday(),
+      proofMetadata: { fields: ["date"] },
+      runningHeader: { left: name, right: "Project" },
+      headerSubtitle: { visible: true },
+      blocks: [
+        Model.createBlock("title", { content: name }),
+        Model.createBlock("subtitle", { content: "A concise statement of the result." }),
+        Model.createBlock("semantic", { kind: "introduction", appearance: "editorial", title: "Introduction", content: "" })
+      ]
+    });
+    const created = await Store.createDocument(project);
+    if (!created || !created.record || created.backend === "failed") {
+      setStatus(tr("新建项目失败。", "Could not create project."), "error");
+      return;
+    }
+    closeNewProject();
+    await activateDocument(created.record, { status: false });
+    setStatus(tr("已新建项目", "New project created"), "saved");
+  }
+  function chooseNewDocument() { openNewProject(); }
+  async function useSelectedTemplate(templateId) {
     const template = templateById(templateId);
     if (!template) return;
+    const saved = await saveActiveDocumentNow();
+    if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再继续。", "Autosave failed — export a backup before continuing."), "error"); return; }
+    const document = Model.normalizeDocument(template.document);
+    const title = document.blocks.find((block) => block.type === "title");
+    document.metadata.name = String(title && title.content || "").trim() || template.template.name;
+    const created = await Store.createDocument(document);
+    if (!created || !created.record || created.backend === "failed") { setStatus(tr("无法从模板创建文档。", "Could not create a document from this template."), "error"); return; }
+    selectedTemplateId = template.template.id;
+    await activateDocument(created.record, { status: false });
+    selectedTemplateId = template.template.id;
+    renderTemplateLibrary();
+    setStatus(tr("已从模板新建文档", "Document created from template"), "saved");
+  }
+  async function openLibraryDocument(id) {
+    if (!id || id === currentDocumentId) return;
+    const saved = await saveActiveDocumentNow();
+    if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再切换。", "Autosave failed — export a backup before switching documents."), "error"); return; }
+    const opened = await Store.openDocument(id);
+    if (!opened || !opened.record || opened.backend === "failed") { setStatus(tr("无法打开文档。", "Could not open document."), "error"); return; }
+    await activateDocument(opened.record);
+  }
+  async function finishDocumentRename(id, name) {
+    clearTimeout(saveTimer);
+    const renamed = await Store.renameDocument(id, name);
+    if (!renamed || !renamed.record || renamed.backend === "failed") { setStatus(tr("重命名失败。", "Could not rename document."), "error"); return; }
+    renamingDocumentId = "";
+    if (id === currentDocumentId) {
+      state.metadata.name = renamed.record.document.metadata.name;
+      state.metadata.updatedAt = renamed.record.document.metadata.updatedAt;
+      renderDocumentChrome();
+    }
+    await refreshDocuments();
+    setStatus(tr("文档已重命名", "Document renamed"), "saved");
+  }
+  async function duplicateLibraryDocument(id) {
+    if (id === currentDocumentId) {
+      const saved = await saveActiveDocumentNow();
+      if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再复制。", "Autosave failed — export a backup before duplicating."), "error"); return; }
+    }
+    const source = documents.find((record) => record.id === id);
+    const copiedName = documentName(source) + tr(" 副本", " copy");
+    const duplicate = await Store.duplicateDocument(id, copiedName);
+    if (!duplicate || !duplicate.record || duplicate.backend === "failed") { setStatus(tr("复制文档失败。", "Could not duplicate document."), "error"); return; }
+    await activateDocument(duplicate.record, { status: false });
+    setStatus(tr("已创建文档副本", "Document duplicated"), "saved");
+  }
+  async function openRemainingDocumentAfterDeletion() {
+    // Deleting the active document must never leave its in-memory contents
+    // detached from a local record. Otherwise opening another document would
+    // first autosave that deleted state as an unintended extra document.
+    currentDocumentId = "";
+    hasUnsavedChanges = false;
+    documents = await Store.listDocuments();
+    const next = documents[0];
+    if (next) {
+      const opened = await Store.openDocument(next.id);
+      if (!opened || !opened.record || opened.backend === "failed") return false;
+      await activateDocument(opened.record, { status: false });
+      return true;
+    }
+
+    // A completely empty library still needs an editable starting document.
+    const created = await Store.createDocument(Model.blankDocument());
+    if (!created || !created.record || created.backend === "failed") return false;
+    await activateDocument(created.record, { status: false });
+    return true;
+  }
+  function requestDeleteLibraryDocument(id) {
+    const record = documents.find((item) => item.id === id);
+    if (!record) return;
     openConfirm({
-      title: tr("使用此模板？", "Use this template?"),
-      message: tr("应用“" + template.template.name + "”会替换当前文档。", "Applying “" + template.template.name + "” replaces the current document."),
-      confirmLabel: tr("使用模板", "Use template"),
-      onConfirm: () => {
-        clearStructuralUndo();
-        selectedTemplateId = template.template.id;
-        state = Model.normalizeDocument(template.document);
-        state.metadata.name = template.template.name;
-        renderAll();
-        scheduleSave();
+      title: tr("删除此文档？", "Delete this document?"),
+      message: tr("“" + documentName(record) + "”将从此设备移除。", "“" + documentName(record) + "” will be removed from this device."),
+      confirmLabel: tr("删除文档", "Delete document"),
+      onConfirm: async () => {
+        const backend = await Store.deleteDocument(id);
+        if (backend === "failed") { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
+        if (id === currentDocumentId) {
+          const opened = await openRemainingDocumentAfterDeletion();
+          if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
+          setStatus(tr("文档已删除", "Document deleted"), "saved");
+        } else {
+          await refreshDocuments();
+          setStatus(tr("文档已删除", "Document deleted"), "saved");
+        }
       }
     });
   }
@@ -587,6 +828,14 @@
         if (!title) { semanticLevel = 0; return; }
         level = Math.max(0, Number(block.level || 1) - 1);
         semanticLevel = level + 1;
+      } else if (block.type === "semantic" && block.kind === "section") {
+        title = outlineTitle(block);
+        // A neutral Section semantic block is a real top-level chapter: it
+        // shares the editorial appearance of Introduction without inheriting
+        // that domain-specific meaning, and can still own subsections.
+        if (!title) { semanticLevel = 0; return; }
+        level = 0;
+        semanticLevel = 1;
       } else if (block.type === "semantic") {
         title = outlineTitle(block);
         if (!title) return;
@@ -667,7 +916,12 @@
   }
   function addSectionAfter(blockId) {
     const index = getSiblingInsertionIndex(blockId);
-    insertStructuralBlock(index, Model.createBlock("heading", { level: 1, content: tr("未命名章节", "Untitled section") }), true);
+    insertStructuralBlock(index, Model.createBlock("semantic", {
+      kind: "section",
+      appearance: "editorial",
+      title: tr("未命名章节", "Untitled section"),
+      content: ""
+    }), true);
   }
   function addSubsection(blockId, placement) {
     const index = placement === "after" ? getSiblingInsertionIndex(blockId) : getChildInsertionIndex(blockId);
@@ -757,16 +1011,55 @@
   function addOutlineMenuRule(menu) { menu.appendChild(element("div", { class: "pn-outline-menu-rule", "aria-hidden": "true" })); }
   function addContentMenu(menu, node) {
     const wrap = element("div", { class: "pn-outline-menu-submenu-wrap" });
-    const trigger = button(tr("添加内容", "Add content"), "pn-outline-menu-item pn-outline-menu-submenu-trigger", () => {});
-    trigger.setAttribute("aria-haspopup", "menu");
-    trigger.appendChild(element("span", { class: "pn-outline-menu-arrow", "aria-hidden": "true" }, "›"));
     const submenu = element("div", { class: "pn-outline-menu pn-outline-menu-submenu", role: "menu", "aria-label": tr("添加内容", "Add content") });
+    let submenuOpen = false;
+    let trigger = null;
+    const setSubmenuOpen = (next, focusFirstItem) => {
+      submenuOpen = Boolean(next);
+      wrap.classList.toggle("is-open", submenuOpen);
+      trigger.setAttribute("aria-expanded", String(submenuOpen));
+      if (!submenuOpen || !focusFirstItem) return;
+      root.requestAnimationFrame(() => {
+        const firstItem = submenu.querySelector('[role="menuitem"]');
+        if (firstItem) firstItem.focus();
+      });
+    };
+    trigger = button(tr("添加内容", "Add content"), "pn-outline-menu-item pn-outline-menu-submenu-trigger", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      // Opening this is an explicit action, not a hover toggle. Pointer focus
+      // happens before click in browsers; toggling here would immediately
+      // close a submenu that focus had just revealed.
+      setSubmenuOpen(true);
+    });
+    trigger.setAttribute("aria-haspopup", "menu");
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.appendChild(element("span", { class: "pn-outline-menu-arrow", "aria-hidden": "true" }, "›"));
     [
       ["paragraph", tr("正文", "Text")], ["equation", tr("公式", "Equation")], ["table", tr("表格", "Table")],
       ["code", tr("代码", "Code")], ["image", tr("图片", "Image")], ["list", tr("列表", "List")],
       ["quote", tr("引用", "Quote")], ["callout", tr("提示", "Callout")], ["semantic", tr("语义模块", "Semantic block")]
     ].forEach(([type, name]) => addOutlineMenuButton(submenu, name, "add-content-" + type, () => addContentToSection(node.id, type)));
     wrap.append(trigger, submenu);
+    // The chooser must not disappear while the pointer crosses from the
+    // parent menu into it. Keep it open until a command, Escape, or an
+    // outside click closes the entire structural menu.
+    wrap.addEventListener("focusin", (event) => {
+      // :focus-within keeps the submenu available when the trigger receives
+      // focus. Once a choice itself receives focus, retain the explicit state.
+      if (event.target !== trigger) setSubmenuOpen(true);
+    });
+    wrap.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setSubmenuOpen(true, true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setSubmenuOpen(false);
+        trigger.focus();
+      }
+    });
     menu.appendChild(wrap);
   }
   function populateOutlineMenu(node) {
@@ -906,7 +1199,7 @@
     });
   }
   function selectProofMetadata(options) {
-    if (!isProofNoteDocument()) return;
+    if (!hasDocumentMetadataHeader()) return;
     selectedBlockId = PROOF_METADATA_SELECTION;
     activeOutlineBlockId = "";
     insertionIndex = null;
@@ -986,6 +1279,7 @@
   function changed(options) {
     const changes = changeOptions(options);
     state.metadata.updatedAt = new Date().toISOString();
+    hasUnsavedChanges = true;
     if (changes.structure) renderCanvas();
     if (changes.outline) renderOutline();
     if (changes.inspector) renderInspector();
@@ -1015,14 +1309,44 @@
   function isProofNoteDocument() {
     return Boolean(state && state.metadata && String(state.metadata.templateName || "").trim() === "Proof Note");
   }
+  function isProjectDocument() {
+    return Boolean(state && state.metadata && state.metadata.documentType === "Project");
+  }
+  function projectRunningHeader() {
+    const metadata = state && state.metadata ? state.metadata : {};
+    const header = metadata.runningHeader && typeof metadata.runningHeader === "object" ? metadata.runningHeader : {};
+    const has = (key) => Object.prototype.hasOwnProperty.call(header, key);
+    return {
+      left: has("left") ? String(header.left || "") : String(metadata.name || tr("未命名文档", "Untitled document")),
+      right: has("right") ? String(header.right || "") : "Project"
+    };
+  }
+  function updateProjectRunningHeader(side, value) {
+    const current = projectRunningHeader();
+    state.metadata.runningHeader = {
+      left: side === "left" ? value : current.left,
+      right: side === "right" ? value : current.right
+    };
+    state.metadata.updatedAt = new Date().toISOString();
+    hasUnsavedChanges = true;
+    scheduleSave();
+  }
+  function hasDocumentMetadataHeader() {
+    return isProofNoteDocument() || isProjectDocument();
+  }
   function semanticAppearance(block) {
     if (block && (block.appearance === "editorial" || block.appearance === "card")) return block.appearance;
-    return isProofNoteDocument() ? "editorial" : "card";
+    // Earlier Projects created an Introduction semantic block before it had
+    // an explicit presentation. Treat that one legacy default as editorial,
+    // while an explicit Card choice remains fully respected.
+    return isProofNoteDocument() || (isProjectDocument() && block && block.type === "semantic" && block.kind === "introduction")
+      ? "editorial" : "card";
   }
   function isEditorialPrimary(block) {
-    if (!isProofNoteDocument()) return false;
-    if (block.type === "heading") return block.level === 1;
-    return block.type === "semantic" && semanticAppearance(block) === "editorial" && ["problem", "result", "theorem"].includes(block.kind);
+    if (block.type === "heading") return isProofNoteDocument() && block.level === 1;
+    if (block.type !== "semantic" || semanticAppearance(block) !== "editorial") return false;
+    if (block.kind === "section") return true;
+    return (isProofNoteDocument() || isProjectDocument()) && ["introduction", "problem", "result", "theorem"].includes(block.kind);
   }
   function editorialSectionNumber(index) {
     let number = 0;
@@ -1057,6 +1381,28 @@
   }
   function enableProofMetadata() {
     state.metadata.proofMetadata = { fields: PROOF_METADATA_FIELDS.slice() };
+    changed({ structure: true, inspector: true, chrome: true });
+  }
+  function headerTitleIndex() {
+    return state ? state.blocks.findIndex((block) => block.type === "title") : -1;
+  }
+  function headerSubtitleIndex() {
+    const titleIndex = headerTitleIndex();
+    if (titleIndex < 0 || !state) return -1;
+    const subtitleIndex = state.blocks.findIndex((block) => block.type === "subtitle");
+    return subtitleIndex === titleIndex + 1 ? subtitleIndex : -1;
+  }
+  function headerSubtitleVisible() {
+    const display = state && state.metadata && state.metadata.headerSubtitle;
+    return headerSubtitleIndex() >= 0 && !(display && display.visible === false);
+  }
+  function setHeaderSubtitleVisible(visible) {
+    if (!state || !hasDocumentMetadataHeader()) return;
+    const titleIndex = headerTitleIndex();
+    if (visible && titleIndex >= 0 && headerSubtitleIndex() < 0) {
+      state.blocks.splice(titleIndex + 1, 0, Model.createBlock("subtitle", { content: "A concise statement of the result." }));
+    }
+    state.metadata.headerSubtitle = { visible: Boolean(visible) };
     changed({ structure: true, inspector: true, chrome: true });
   }
   function renderProofMetadata(options) {
@@ -1108,14 +1454,14 @@
     return metadata;
   }
   function proofHeaderRange() {
-    if (!isProofNoteDocument()) return null;
-    const titleIndex = state.blocks.findIndex((block) => block.type === "title");
+    if (!hasDocumentMetadataHeader()) return null;
+    const titleIndex = headerTitleIndex();
     const subtitleIndex = state.blocks.findIndex((block) => block.type === "subtitle");
     if (titleIndex < 0) return null;
     // A template may intentionally omit its subtitle, but unrelated content
     // must never be silently pulled into the masthead by a non-adjacent block.
     if (subtitleIndex >= 0 && subtitleIndex !== titleIndex + 1) return null;
-    return { titleIndex, subtitleIndex, endIndex: subtitleIndex >= 0 ? subtitleIndex : titleIndex };
+    return { titleIndex, subtitleIndex, subtitleVisible: headerSubtitleVisible(), endIndex: subtitleIndex >= 0 ? subtitleIndex : titleIndex };
   }
   function renderProofHeader(range) {
     const header = element("section", { class: "pn-canvas-block pn-canvas-proof-header", "aria-label": tr("文档标题区", "Document header"), tabindex: "0" });
@@ -1130,7 +1476,7 @@
     const titleContent = element("div");
     buildCanvasFields(titleContent, title, range.titleIndex);
     content.appendChild(titleContent);
-    if (range.subtitleIndex >= 0) {
+    if (range.subtitleIndex >= 0 && range.subtitleVisible) {
       const subtitle = state.blocks[range.subtitleIndex];
       const subtitleContent = element("div");
       buildCanvasFields(subtitleContent, subtitle, range.subtitleIndex);
@@ -1151,11 +1497,12 @@
   function renderCanvas() {
     els.canvas.innerHTML = "";
     els.canvas.classList.toggle("pn-proofnote-document", isProofNoteDocument());
+    els.canvas.classList.toggle("pn-project-document", isProjectDocument());
     const headerRange = proofHeaderRange();
     // Older imported Proof Note documents can place title and subtitle apart.
     // Preserve the metadata in that unusual ordering instead of dropping it
     // simply because those blocks cannot safely form one visual header.
-    const fallbackMetadataIndex = !headerRange && isProofNoteDocument()
+    const fallbackMetadataIndex = !headerRange && hasDocumentMetadataHeader()
       ? state.blocks.findIndex((block) => block.type === "subtitle")
       : -1;
     state.blocks.forEach((block, index) => {
@@ -1190,7 +1537,10 @@
     buildCanvasFields(content, block, index);
     canvasBlock.appendChild(content);
     canvasBlock.addEventListener("pointerdown", (event) => {
-      selectBlock(block.id, { openInspector: !event.target.closest("input, textarea, select") });
+      // A control inside a block performs its own focused action. In
+      // particular, copying code should not turn a lightweight confirmation
+      // into an unexpected Inspector transition.
+      selectBlock(block.id, { openInspector: !event.target.closest("input, textarea, select, button") });
     });
     canvasBlock.addEventListener("click", (event) => {
       if (!event.target.closest("input, textarea, select, button")) selectBlock(block.id);
@@ -1226,7 +1576,16 @@
     }
     if (block.type === "equation") {
       body.className = "pn-equation pn-canvas-equation";
-      body.appendChild(canvasField(block, "content", { fieldClass: "pn-canvas-equation-field", controlClass: "pn-canvas-equation-input", placeholder: "\\\\[ … \\]" }));
+      const field = canvasField(block, "content", { fieldClass: "pn-canvas-equation-field", controlClass: "pn-canvas-equation-input", placeholder: "\\\\[ … \\]" });
+      const preview = element("div", { class: "pn-equation-preview", "aria-live": "polite" });
+      const refreshPreview = () => {
+        const value = String(block.content || "").trim();
+        preview.hidden = !value;
+        preview.innerHTML = value ? math(value) : "";
+      };
+      field.querySelector("textarea, input").addEventListener("input", refreshPreview);
+      refreshPreview();
+      body.append(field, preview);
       return;
     }
     if (block.type === "semantic" && semanticAppearance(block) === "editorial") {
@@ -1248,6 +1607,14 @@
       body.className = "pn-code pn-canvas-code";
       body.appendChild(element("span", { class: "pn-code-language" }, block.language || "CODE"));
       body.appendChild(canvasField(block, "content", { fieldClass: "pn-canvas-code-field", controlClass: "pn-canvas-code-input", rows: 6, placeholder: label("粘贴或输入代码", "Paste or write code") }));
+      const codeCopy = button("", "pn-code-copy", async () => {
+        const copied = await copyBlockText(block.content);
+        if (!copied) return;
+        setCodeCopyButtonState(codeCopy, true);
+        root.setTimeout(() => setCodeCopyButtonState(codeCopy, false), 1350);
+      });
+      setCodeCopyButtonState(codeCopy, false);
+      body.appendChild(codeCopy);
       return;
     }
     if (block.type === "quote") {
@@ -1260,7 +1627,7 @@
     }
     if (block.type === "divider") { body.appendChild(element("hr", { class: "pn-divider" })); return; }
     if (block.type === "page-break") { body.appendChild(element("div", { class: "pn-page-break pn-canvas-page-break" }, label("分页符", "Page break"))); return; }
-    if (block.type === "image") { body.innerHTML = renderImage(block); return; }
+    if (block.type === "image") { buildCanvasImage(body, block); return; }
     if (block.type === "table") { buildCanvasTable(body, block); return; }
     if (block.type === "list") { buildCanvasList(body, block); return; }
     if (block.type === "key-value" || block.type === "stats") { buildCanvasData(body, block); return; }
@@ -1293,14 +1660,85 @@
     body.appendChild(canvasField(block, "content", { fieldClass: "pn-editorial-detail-body", controlClass: "pn-editorial-detail-body-input", placeholder: label("开始输入…", "Start writing…") }));
     if (block.summary) body.appendChild(canvasField(block, "summary", { fieldClass: "pn-editorial-detail-summary", controlClass: "pn-editorial-detail-summary-input", placeholder: label("添加备注…", "Add note…") }));
   }
+  function focusCanvasControl(blockId, selector) {
+    root.requestAnimationFrame(() => {
+      const canvasBlock = document.getElementById("pn-block-" + blockId);
+      const control = canvasBlock && canvasBlock.querySelector(selector);
+      if (!control) return;
+      control.focus();
+      if (typeof control.setSelectionRange === "function") control.setSelectionRange(0, 0);
+    });
+  }
+  function reachedCollectionLimit(limit, message) {
+    if (limit === undefined || limit === null) return false;
+    if (Number.isFinite(limit) && limit > 0) return false;
+    setStatus(message, "warning");
+    return true;
+  }
+  function collectionTools(actions) {
+    const tools = element("div", { class: "pn-collection-tools", "aria-label": tr("内容操作", "Content actions") });
+    actions.forEach(([text, className, handler]) => tools.appendChild(button(text, "pn-collection-action " + (className || ""), handler)));
+    return tools;
+  }
+  function addListItem(block, index, initialValue) {
+    if (reachedCollectionLimit(Model.LIMITS.maxListItems - block.items.length, tr("列表最多可包含 1000 项。", "A list can contain at most 1,000 items."))) return;
+    const nextIndex = Math.max(0, Math.min(block.items.length, index));
+    block.items.splice(nextIndex, 0, initialValue || "");
+    changed({ structure: true, inspector: true });
+    focusCanvasControl(block.id, '.pn-canvas-list-input[data-item-index="' + nextIndex + '"]');
+  }
+  function removeListItem(block, index) {
+    if (block.items.length <= 1) {
+      block.items[0] = "";
+      changed();
+      focusCanvasControl(block.id, '.pn-canvas-list-input[data-item-index="0"]');
+      return;
+    }
+    block.items.splice(index, 1);
+    const nextIndex = Math.max(0, Math.min(index - 1, block.items.length - 1));
+    changed({ structure: true, inspector: true });
+    focusCanvasControl(block.id, '.pn-canvas-list-input[data-item-index="' + nextIndex + '"]');
+  }
   function buildCanvasList(body, block) {
     const list = element(block.ordered ? "ol" : "ul", { class: "pn-list pn-canvas-list" });
     block.items.forEach((item, itemIndex) => {
-      const row = element("li");
-      row.appendChild(inputField("", item, (value) => { block.items[itemIndex] = value; changed(); }, { multiline: true, rows: 1, fieldClass: "pn-canvas-list-field", controlClass: "pn-canvas-list-input", autoGrow: true, ariaLabel: tr("列表项目", "List item") }));
+      const row = element("li", { class: "pn-canvas-list-row" });
+      const field = inputField("", item, (value) => { block.items[itemIndex] = value; changed(); }, { multiline: true, rows: 1, fieldClass: "pn-canvas-list-field", controlClass: "pn-canvas-list-input", autoGrow: true, ariaLabel: tr("列表项目", "List item") });
+      const control = field.querySelector("textarea, input");
+      control.dataset.itemIndex = String(itemIndex);
+      control.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          const start = Number.isFinite(control.selectionStart) ? control.selectionStart : String(block.items[itemIndex] || "").length;
+          const value = String(block.items[itemIndex] || "");
+          block.items[itemIndex] = value.slice(0, start);
+          addListItem(block, itemIndex + 1, value.slice(start));
+        } else if (event.key === "Backspace" && !control.value && control.selectionStart === 0) {
+          event.preventDefault();
+          removeListItem(block, itemIndex);
+        }
+      });
+      row.append(field, button("×", "pn-collection-remove", () => removeListItem(block, itemIndex), tr("删除此项", "Remove item")));
       list.appendChild(row);
     });
-    body.appendChild(list);
+    body.append(list, collectionTools([[tr("＋ 添加项目", "+ Add item"), "", () => addListItem(block, block.items.length, "")]]));
+  }
+  function dataItemDefault(type) {
+    return type === "key-value" ? { label: "", value: "" } : { kicker: "", value: "", body: "" };
+  }
+  function addDataItem(block) {
+    if (reachedCollectionLimit(Model.LIMITS.maxDataItems - block.items.length, tr("此内容块最多可包含 1000 项。", "This block can contain at most 1,000 items."))) return;
+    block.items.push(dataItemDefault(block.type));
+    changed({ structure: true, inspector: true });
+  }
+  function removeDataItem(block, index) {
+    if (block.items.length <= 1) {
+      block.items[0] = dataItemDefault(block.type);
+      changed({ structure: true, inspector: true });
+      return;
+    }
+    block.items.splice(index, 1);
+    changed({ structure: true, inspector: true });
   }
   function buildCanvasData(body, block) {
     if (block.type === "key-value") {
@@ -1310,9 +1748,9 @@
         const term = element("dt"); const description = element("dd");
         term.appendChild(inputField("", item.label, (value) => { item.label = value; changed(); }, { multiline: false, fieldClass: "pn-canvas-key", controlClass: "pn-canvas-key-input", ariaLabel: tr("名称", "Label") }));
         description.appendChild(inputField("", item.value, (value) => { item.value = value; changed(); }, { multiline: false, fieldClass: "pn-canvas-value", controlClass: "pn-canvas-value-input", ariaLabel: tr("内容", "Value") }));
-        row.append(term, description); list.appendChild(row);
+        row.append(term, description, button("×", "pn-collection-remove", () => removeDataItem(block, itemIndex), tr("删除此项", "Remove item"))); list.appendChild(row);
       });
-      body.appendChild(list); return;
+      body.append(list, collectionTools([[tr("＋ 添加项目", "+ Add item"), "", () => addDataItem(block)]])); return;
     }
     const cards = element("div", { class: "pn-stats pn-canvas-stats" });
     block.items.forEach((item, itemIndex) => {
@@ -1320,31 +1758,134 @@
       card.appendChild(inputField("", item.kicker, (value) => { item.kicker = value; changed(); }, { multiline: false, fieldClass: "pn-canvas-stat-kicker", controlClass: "pn-canvas-stat-kicker-input", ariaLabel: tr("标签", "Kicker") }));
       card.appendChild(inputField("", item.value, (value) => { item.value = value; changed(); }, { multiline: false, fieldClass: "pn-canvas-stat-value", controlClass: "pn-canvas-stat-value-input", ariaLabel: tr("数值", "Value") }));
       card.appendChild(inputField("", item.body, (value) => { item.body = value; changed(); }, { multiline: true, rows: 1, fieldClass: "pn-canvas-stat-body", controlClass: "pn-canvas-stat-body-input", autoGrow: true, ariaLabel: tr("说明", "Description") }));
+      card.appendChild(button("×", "pn-collection-remove", () => removeDataItem(block, itemIndex), tr("删除此项", "Remove item")));
       cards.appendChild(card);
     });
-    body.appendChild(cards);
+    body.append(cards, collectionTools([[tr("＋ 添加项目", "+ Add item"), "", () => addDataItem(block)]]));
+  }
+  function tableHasHeader(block) { return block.header !== false; }
+  function tableColumnCount(block) { return Array.isArray(block.columns) && block.columns.length ? block.columns.length : 1; }
+  function addTableRow(block) {
+    if (reachedCollectionLimit(Model.LIMITS.maxTableRows - block.rows.length, tr("表格最多可包含 500 行。", "A table can contain at most 500 rows."))) return;
+    block.rows.push(Array.from({ length: tableColumnCount(block) }, () => ""));
+    changed({ structure: true, inspector: true });
+    focusCanvasControl(block.id, '.pn-canvas-table-input[data-row-index="' + (block.rows.length - 1) + '"][data-column-index="0"]');
+  }
+  function removeTableRow(block, rowIndex) {
+    if (block.rows.length <= 1) {
+      block.rows[0] = Array.from({ length: tableColumnCount(block) }, () => "");
+    } else block.rows.splice(rowIndex, 1);
+    changed({ structure: true, inspector: true });
+  }
+  function addTableColumn(block) {
+    if (reachedCollectionLimit(Model.LIMITS.maxTableColumns - tableColumnCount(block), tr("表格最多可包含 50 列。", "A table can contain at most 50 columns."))) return;
+    const columnIndex = tableColumnCount(block);
+    block.columns.push(tableHasHeader(block) ? tr("列 " + (columnIndex + 1), "Column " + (columnIndex + 1)) : "");
+    block.rows.forEach((row) => row.push(""));
+    changed({ structure: true, inspector: true });
+  }
+  function removeTableColumn(block, columnIndex) {
+    if (tableColumnCount(block) <= 1) {
+      setStatus(tr("表格至少需要一列。", "A table needs at least one column."), "warning");
+      return;
+    }
+    block.columns.splice(columnIndex, 1);
+    block.rows.forEach((row) => row.splice(columnIndex, 1));
+    changed({ structure: true, inspector: true });
+  }
+  function setTableHeader(block, visible) {
+    const isVisible = tableHasHeader(block);
+    if (visible === isVisible) return;
+    if (visible) {
+      const firstRow = block.rows.shift() || Array.from({ length: tableColumnCount(block) }, () => "");
+      block.columns = Array.from({ length: tableColumnCount(block) }, (_, index) => String(firstRow[index] || ""));
+      block.header = true;
+    } else {
+      block.rows.unshift(block.columns.slice());
+      block.columns = block.columns.map(() => "");
+      block.header = false;
+    }
+    changed({ structure: true, inspector: true });
+  }
+  function imageFilePicker(block, labelText) {
+    const file = element("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
+    const choose = button(labelText || tr("选择本地图片", "Choose local image"), "pn-add-inline", () => file.click());
+    file.addEventListener("change", () => {
+      const image = file.files && file.files[0];
+      if (!image) return;
+      if (image.size > MAX_LOCAL_IMAGE_BYTES) {
+        setStatus(tr("图片超过 10MB 上限。", "Image exceeds the 10 MB limit."), "error");
+        file.value = "";
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        block.src = String(reader.result || "");
+        delete block.remoteApproved;
+        if (!block.alt) block.alt = image.name.replace(/\.[^.]+$/, "");
+        changed({ structure: true, inspector: true });
+      };
+      reader.readAsDataURL(image);
+    });
+    const picker = element("div", { class: "pn-image-picker" });
+    picker.append(choose, file);
+    return picker;
+  }
+  function buildCanvasImage(body, block) {
+    const source = safeImageSource(block);
+    if (source) {
+      const figure = element("figure", { class: "pn-image pn-canvas-image" });
+      figure.appendChild(element("img", { src: source, alt: block.alt || "", referrerpolicy: "no-referrer" }));
+      const caption = canvasField(block, "caption", {
+        multiline: false,
+        fieldClass: "pn-canvas-image-caption",
+        controlClass: "pn-canvas-image-caption-input",
+        placeholder: tr("添加图片说明…", "Add a caption…")
+      });
+      figure.appendChild(caption);
+      body.append(figure, imageFilePicker(block, tr("替换图片", "Replace image")));
+      return;
+    }
+    const remote = /^https:\/\//i.test(String(block.src || "").trim());
+    body.appendChild(element("div", { class: "pn-image-empty" }, remote
+      ? tr("远程图片等待确认加载。", "Remote image awaits approval to load.")
+      : tr("选择一张本地图片，或在检查器中添加安全的图片 URL。", "Choose a local image, or add a safe image URL in Inspector.")));
+    body.appendChild(imageFilePicker(block, tr("选择本地图片", "Choose local image")));
   }
   function buildCanvasTable(body, block) {
     const wrap = element("div", { class: "pn-table-wrap pn-canvas-table-wrap" });
     const table = element("table", { class: "pn-table pn-canvas-table" });
-    const head = element("thead"); const headRow = element("tr");
-    block.columns.forEach((column, columnIndex) => {
-      const cell = element("th");
-      cell.appendChild(inputField("", column, (value) => { block.columns[columnIndex] = value; changed(); }, { multiline: false, fieldClass: "pn-canvas-table-field", controlClass: "pn-canvas-table-input", ariaLabel: tr("列名", "Column") }));
-      headRow.appendChild(cell);
-    });
-    head.appendChild(headRow); table.appendChild(head);
+    if (tableHasHeader(block)) {
+      const head = element("thead"); const headRow = element("tr");
+      block.columns.forEach((column, columnIndex) => {
+        const cell = element("th", { class: "pn-canvas-table-head-cell" });
+        const field = inputField("", column, (value) => { block.columns[columnIndex] = value; changed(); }, { multiline: false, fieldClass: "pn-canvas-table-field", controlClass: "pn-canvas-table-input", ariaLabel: tr("列名", "Column") });
+        field.querySelector("textarea, input").dataset.columnIndex = String(columnIndex);
+        cell.append(field, button("×", "pn-table-column-remove", () => removeTableColumn(block, columnIndex), tr("删除此列", "Remove column")));
+        headRow.appendChild(cell);
+      });
+      head.appendChild(headRow); table.appendChild(head);
+    }
     const tableBody = element("tbody");
     block.rows.forEach((row, rowIndex) => {
       const rowEl = element("tr");
       block.columns.forEach((_, columnIndex) => {
         const cell = element("td");
-        cell.appendChild(inputField("", row[columnIndex], (value) => { row[columnIndex] = value; changed(); }, { multiline: true, rows: 1, fieldClass: "pn-canvas-table-field", controlClass: "pn-canvas-table-input", autoGrow: true, ariaLabel: tr("单元格", "Cell") }));
+        const field = inputField("", row[columnIndex], (value) => { row[columnIndex] = value; changed(); }, { multiline: true, rows: 1, fieldClass: "pn-canvas-table-field", controlClass: "pn-canvas-table-input", autoGrow: true, ariaLabel: tr("单元格", "Cell") });
+        const control = field.querySelector("textarea, input");
+        control.dataset.rowIndex = String(rowIndex);
+        control.dataset.columnIndex = String(columnIndex);
+        cell.appendChild(field);
+        if (columnIndex === tableColumnCount(block) - 1) cell.appendChild(button("×", "pn-table-row-remove", () => removeTableRow(block, rowIndex), tr("删除此行", "Remove row")));
         rowEl.appendChild(cell);
       });
       tableBody.appendChild(rowEl);
     });
-    table.appendChild(tableBody); wrap.appendChild(table); body.appendChild(wrap);
+    table.appendChild(tableBody); wrap.appendChild(table);
+    body.append(wrap, collectionTools([
+      [tr("＋ 添加行", "+ Add row"), "", () => addTableRow(block)],
+      [tr("＋ 添加列", "+ Add column"), "", () => addTableColumn(block)]
+    ]));
   }
   function renderInsertAffordance(index, isLast) {
     const point = element("div", { class: "pn-insert-point" + (isLast ? " pn-insert-last" : "") });
@@ -1394,6 +1935,99 @@
     selectedBlockId = next ? next.id : "";
     changed({ structure: true, outline: true, inspector: true });
   }
+  function copyWithLegacyClipboard(text) {
+    const fallback = element("textarea", { "aria-hidden": "true", tabindex: "-1" });
+    fallback.value = text;
+    fallback.style.position = "fixed";
+    fallback.style.opacity = "0";
+    fallback.style.pointerEvents = "none";
+    document.body.appendChild(fallback);
+    try {
+      fallback.select();
+      return Boolean(document.execCommand && document.execCommand("copy"));
+    } finally {
+      fallback.remove();
+    }
+  }
+  function codeCopyIcon(copied) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "pn-code-copy-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.8");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    const line = (d) => {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    };
+    if (copied) line("m5 12 4 4L19 6");
+    else {
+      line("M8 6.5h7.5l3 3v10.5H8z");
+      line("M15.5 6.5v3h3");
+      line("M5.5 9.5v10h10");
+    }
+    return svg;
+  }
+  function setCodeCopyButtonState(control, copied) {
+    const isCopied = Boolean(copied);
+    control.classList.toggle("is-copied", isCopied);
+    control.setAttribute("aria-label", isCopied ? tr("代码已复制", "Code copied") : tr("复制代码", "Copy code"));
+    control.title = isCopied ? tr("代码已复制", "Code copied") : tr("复制代码", "Copy code");
+    control.replaceChildren(codeCopyIcon(isCopied));
+  }
+  async function copyBlockText(value) {
+    const text = String(value || "");
+    if (!text) {
+      setStatus(tr("没有可复制的内容。", "There is nothing to copy."), "warning");
+      return false;
+    }
+    try {
+      let copied = false;
+      if (root.navigator && root.navigator.clipboard && root.navigator.clipboard.writeText) {
+        try {
+          await root.navigator.clipboard.writeText(text);
+          copied = true;
+        } catch (_) {
+          // The API can exist while permission is denied. Try the compatible
+          // path before asking the author to copy the code manually.
+        }
+      }
+      if (!copied) copied = copyWithLegacyClipboard(text);
+      if (!copied) throw new Error("copy failed");
+      setStatus(tr("已复制代码。", "Code copied."), "saved");
+      return true;
+    } catch (_) {
+      setStatus(tr("无法复制；请手动复制。", "Could not copy; please copy manually."), "warning");
+      return false;
+    }
+  }
+  function inspectorActionRow(labelText, actions) {
+    const row = element("div", { class: "pn-inspector-property pn-inspector-action-row" });
+    row.appendChild(element("span", { class: "pn-inspector-property-label" }, labelText));
+    const controls = element("span", { class: "pn-inspector-property-controls" });
+    actions.forEach(([text, handler, danger]) => controls.appendChild(button(text, "pn-inspector-mini-action" + (danger ? " pn-danger" : ""), handler)));
+    row.appendChild(controls);
+    return row;
+  }
+  function buildTableInspector(panel, block) {
+    const label = (zh, en) => tr(zh, en);
+    const appearance = element("section", { class: "pn-inspector-group", "aria-label": label("表格", "Table") });
+    appearance.appendChild(element("div", { class: "pn-inspector-group-title" }, label("表格", "Table")));
+    appearance.appendChild(inspectorToggle(label("显示表头", "Header row"), tableHasHeader(block), (visible) => setTableHeader(block, visible)));
+    appearance.appendChild(inspectorActionRow(label("行", "Rows"), [
+      [label("添加", "Add"), () => addTableRow(block)],
+      [label("删除末行", "Remove last"), () => removeTableRow(block, block.rows.length - 1)]
+    ]));
+    appearance.appendChild(inspectorActionRow(label("列", "Columns"), [
+      [label("添加", "Add"), () => addTableColumn(block)],
+      [label("删除末列", "Remove last"), () => removeTableColumn(block, tableColumnCount(block) - 1)]
+    ]));
+    panel.appendChild(appearance);
+  }
   function renderInspector() {
     if (!els.inspector) return;
     els.inspector.innerHTML = "";
@@ -1431,7 +2065,7 @@
     });
     type.classList.add("pn-inspector-field"); structure.appendChild(type);
     const label = (zh, en) => tr(zh, en);
-    if (block.type === "title" && isProofNoteDocument() && !proofMetadataFields().length) {
+    if (block.type === "title" && hasDocumentMetadataHeader() && !proofMetadataFields().length) {
       const metadata = element("section", { class: "pn-inspector-group", "aria-label": tr("文档元数据", "Document metadata") });
       metadata.appendChild(element("div", { class: "pn-inspector-group-title" }, tr("文档元数据", "Document metadata")));
       const row = element("div", { class: "pn-inspector-property" });
@@ -1444,7 +2078,7 @@
       structure.appendChild(selectField(label("层级", "Level"), String(block.level), [["1", "H1"], ["2", "H2"], ["3", "H3"]], (value) => { block.level = Number(value); block.preset = "heading-" + value; changed({ structure: true, outline: true, inspector: true }); }));
     }
     if (block.type === "semantic") {
-      structure.appendChild(selectField(label("语义类型", "Semantic type"), block.kind, [["problem", label("问题", "Problem")], ["theorem", "Theorem"], ["proof", "Proof"], ["result", label("结果", "Result")], ["verification", label("验证", "Verification")]], (value) => { block.kind = value; block.preset = "semantic-" + value; changed({ structure: true, outline: true, inspector: true }); }));
+      structure.appendChild(selectField(label("语义类型", "Semantic type"), block.kind, [["section", label("章节", "Section")], ["introduction", label("引言", "Introduction")], ["problem", label("问题", "Problem")], ["theorem", "Theorem"], ["proof", "Proof"], ["result", label("结果", "Result")], ["verification", label("验证", "Verification")]], (value) => { block.kind = value; block.preset = "semantic-" + value; changed({ structure: true, outline: true, inspector: true }); }));
       const appearance = element("section", { class: "pn-inspector-group", "aria-label": label("外观", "Appearance") });
       appearance.appendChild(element("div", { class: "pn-inspector-group-title" }, label("外观", "Appearance")));
       appearance.appendChild(selectField(label("呈现方式", "Presentation"), semanticAppearance(block), [["editorial", label("出版式", "Editorial")], ["card", label("卡片", "Card")]], (value) => { block.appearance = value; changed({ structure: true, inspector: true }); }));
@@ -1460,6 +2094,7 @@
     if (block.type === "quote") structure.appendChild(inputField(label("出处", "Citation"), block.citation, (value) => update(block, "citation", value, { structure: true }), { placeholder: "—" }));
     if (block.type === "image") buildImageInspector(structure, block);
     if (block.type === "list") structure.appendChild(selectField(label("列表类型", "List type"), block.ordered ? "ordered" : "unordered", [["unordered", label("项目符号", "Bullets")], ["ordered", label("编号", "Numbered")]], (value) => { block.ordered = value === "ordered"; changed({ structure: true, inspector: true }); }));
+    if (block.type === "table") buildTableInspector(els.inspector, block);
     const page = element("section", { class: "pn-inspector-group pn-inspector-page", "aria-label": label("页面", "Page") });
     page.appendChild(element("div", { class: "pn-inspector-group-title" }, label("页面", "Page")));
     const flow = element("div", { class: "pn-inspector-property" });
@@ -1486,6 +2121,7 @@
     els.inspector.appendChild(context);
     const display = element("section", { class: "pn-inspector-group", "aria-label": tr("显示", "Display") });
     display.appendChild(element("div", { class: "pn-inspector-group-title" }, tr("显示", "Display")));
+    display.appendChild(inspectorToggle(tr("显示副标题", "Show subtitle"), headerSubtitleVisible(), setHeaderSubtitleVisible));
     const active = new Set(proofMetadataFields());
     [
       ["author", tr("作者", "Author")],
@@ -1507,21 +2143,14 @@
         changed({ structure: true, inspector: true });
       }));
     }
-    const file = element("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
-    const choose = button(label("选择本地图片", "Choose local image"), "pn-add-inline", () => file.click());
-    file.addEventListener("change", () => {
-      const image = file.files && file.files[0];
-      if (!image) return;
-      if (image.size > MAX_LOCAL_IMAGE_BYTES) {
-        setStatus(tr("图片超过 10MB 上限。", "Image exceeds the 10 MB limit."), "error");
-        file.value = "";
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => { block.src = String(reader.result || ""); delete block.remoteApproved; if (!block.alt) block.alt = image.name.replace(/\.[^.]+$/, ""); changed({ structure: true, inspector: true }); };
-      reader.readAsDataURL(image);
-    });
-    panel.append(choose, file);
+    panel.appendChild(imageFilePicker(block, label("选择本地图片", "Choose local image")));
+    if (block.src || block.alt || block.caption) panel.appendChild(button(label("移除图片", "Remove image"), "pn-add-inline pn-danger", () => {
+      block.src = "";
+      block.alt = "";
+      block.caption = "";
+      delete block.remoteApproved;
+      changed({ structure: true, inspector: true });
+    }));
   }
 
   function safeImageSource(block) {
@@ -1557,7 +2186,10 @@
   function renderTable(block) {
     const columns = block.columns || [];
     const rows = block.rows || [];
-    return "<div class=\"pn-table-wrap\"><table class=\"pn-table\"><thead><tr>" + columns.map((column) => "<th>" + inline(column) + "</th>").join("") + "</tr></thead><tbody>" + rows.map((row) => "<tr>" + columns.map((_, index) => "<td>" + inline(row[index] || "") + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>";
+    const header = block.header !== false
+      ? "<thead><tr>" + columns.map((column) => "<th>" + inline(column) + "</th>").join("") + "</tr></thead>"
+      : "";
+    return "<div class=\"pn-table-wrap\"><table class=\"pn-table\">" + header + "<tbody>" + rows.map((row) => "<tr>" + columns.map((_, index) => "<td>" + inline(row[index] || "") + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>";
   }
   function renderImage(block) {
     const source = safeImageSource(block);
@@ -1621,14 +2253,35 @@
       const left = element("span", { class: "pn-running-brand" }, "Proofnote");
       const right = element("span", { class: "pn-running-type" }, state.metadata.documentType || "Solution Note");
       els.pageHeader.replaceChildren(left, right);
+      els.pageHeader.classList.remove("pn-project-running");
       els.pageHeader.classList.add("pn-proofnote-running");
       els.pageHeader.hidden = false;
       els.footer.textContent = tr("笔记 ", "Note ") + (state.metadata.noteNumber || "—");
       els.footerStatus.textContent = state.metadata.status || "";
       return;
     }
+    if (isProjectDocument()) {
+      const header = projectRunningHeader();
+      const control = (side, value) => {
+        const input = element("input", {
+          type: "text",
+          class: "pn-running-input pn-running-" + side,
+          "aria-label": side === "left" ? tr("页眉左侧标题", "Left running title") : tr("页眉右侧标题", "Right running title")
+        });
+        input.value = value;
+        input.addEventListener("input", () => updateProjectRunningHeader(side, input.value));
+        return input;
+      };
+      els.pageHeader.replaceChildren(control("left", header.left), control("right", header.right));
+      els.pageHeader.classList.remove("pn-proofnote-running");
+      els.pageHeader.classList.add("pn-project-running");
+      els.pageHeader.hidden = false;
+      els.footer.textContent = state.metadata.name || tr("未命名文档", "UNTITLED DOCUMENT");
+      els.footerStatus.textContent = "";
+      return;
+    }
     els.pageHeader.textContent = templateLabel ? templateLabel.toUpperCase() : "";
-    els.pageHeader.classList.remove("pn-proofnote-running");
+    els.pageHeader.classList.remove("pn-proofnote-running", "pn-project-running");
     els.pageHeader.hidden = !templateLabel;
     els.footer.textContent = state.metadata.name || tr("未命名文档", "UNTITLED DOCUMENT");
     els.footerStatus.textContent = "";
@@ -1679,7 +2332,7 @@ Required envelope:
 
 Use ordered blocks. Supported block types: title, subtitle, heading (with level 1, 2, or 3), paragraph, equation, code, table, image, quote, divider, page-break, callout, semantic, list, key-value, and stats.
 
-Use semantic.kind only as problem, theorem, proof, result, or verification. Use callout.kind only as note, tip, warning, or info. A semantic block may optionally use appearance "editorial" or "card"; otherwise the selected template decides. Do not add CSS, fonts, font sizes, colours, margins, coordinates, or HTML. Proofnote owns the visual presets.
+Use semantic.kind only as section, introduction, problem, theorem, proof, result, or verification. Use callout.kind only as note, tip, warning, or info. A semantic block may optionally use appearance "editorial" or "card"; otherwise the selected template decides. Do not add CSS, fonts, font sizes, colours, margins, coordinates, or HTML. Proofnote owns the visual presets.
 
 For LaTeX inside prose, return valid JSON: escape every literal backslash. For example, JSON source must contain "\\\\(x \\\\le \\\\sqrt{2}\\\\)" for inline math. Preserve code as code, using only normal JSON escaping.`;
   async function copyAiInstructions() {
@@ -1715,9 +2368,9 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
   // editorial treatment. These rules are shared by the downloaded standalone
   // HTML and the interactive canvas equivalents in document-editor.css.
   const EXPORT_PROOFNOTE_EDITORIAL_CSS = `
-    .pn-proofnote-document .pn-export-running{display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--line);font:600 10px/1 var(--heading);letter-spacing:.14em;text-transform:uppercase;color:rgba(32,31,29,.5)}
-    .pn-proofnote-document .pn-running-brand{color:var(--accent)}
-    .pn-proofnote-document .pn-document-title{margin:29.333px 0 13.333px;padding-bottom:0;border-bottom:0}.pn-proofnote-document .pn-document-subtitle{margin:0;padding-bottom:24px;border-bottom:1px solid var(--line)}
+    .pn-proofnote-document .pn-export-running,.pn-project-running{display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--line);font:600 10px/1 var(--heading);letter-spacing:.14em;text-transform:uppercase;color:rgba(32,31,29,.5)}
+    .pn-proofnote-document .pn-running-brand,.pn-project-running .pn-running-brand{color:var(--accent)}
+    .pn-proofnote-document .pn-document-title,.pn-project-document .pn-document-title{margin:29.333px 0 13.333px;padding-bottom:0;border-bottom:0}.pn-proofnote-document .pn-document-subtitle,.pn-project-document .pn-document-subtitle{margin:0;padding-bottom:24px;border-bottom:1px solid var(--line)}
     .pn-proof-metadata{margin:13.333px 0 26.667px}.pn-proof-metadata-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13.333px 21.333px;margin:0}.pn-proof-metadata-item dt,.pn-proof-source dt{margin:0 0 2.667px;font:600 var(--pn-doc-label-size)/1.2 var(--heading);letter-spacing:.12em;text-transform:uppercase;color:rgba(32,31,29,.54)}.pn-proof-metadata-item dd,.pn-proof-source dd{margin:0;font:var(--pn-doc-meta-size)/1.45 var(--body)}.pn-proof-metadata-status dd{font-family:var(--heading);font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#8c6228}.pn-proof-source{margin:12px 0 0}
     .pn-editorial-section{margin:0 0 28px;break-inside:avoid;page-break-inside:avoid}.pn-editorial-section-head{display:flex;align-items:baseline;gap:13.333px;margin-bottom:13.333px;padding-bottom:8px;border-bottom:1px solid var(--line)}.pn-editorial-section-number{flex:none;font:600 12px/1 var(--heading);letter-spacing:.12em;font-feature-settings:'tnum';color:var(--accent)}.pn-editorial-section-head h2{margin:0;font:400 var(--pn-doc-section-1-size)/1.15 var(--heading);letter-spacing:-.015em}.pn-editorial-section p{margin:0 0 13.333px}.pn-editorial-section-summary,.pn-editorial-detail-summary{margin-top:5.333px!important;font-style:italic;color:rgba(32,31,29,.72)}
     .pn-editorial-detail{margin:0 0 16px;break-inside:avoid;page-break-inside:avoid}.pn-editorial-detail .pn-component-label{margin-bottom:4px;color:rgba(32,31,29,.55)}.pn-editorial-detail h3{margin:0 0 4px;font:400 18.667px/1.2 var(--heading)}.pn-editorial-detail p{margin:0 0 13.333px}
@@ -1729,11 +2382,20 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
   const EXPORT_POLISH_CSS = `.pn-semantic{border-color:#fde6c8;background:#fff9f1}`;
   function renderStandaloneDocument() {
     const proofNote = isProofNoteDocument();
+    const project = isProjectDocument();
+    const documentMetadata = hasDocumentMetadataHeader();
+    const subtitleVisible = headerSubtitleVisible();
+    const hiddenSubtitleIndex = documentMetadata && !subtitleVisible ? headerSubtitleIndex() : -1;
+    const metadataAfter = documentMetadata && subtitleVisible ? "subtitle" : "title";
     const blocks = state.blocks.map((block, index) => {
-      const rendered = renderBlock(block, index);
-      return rendered + (proofNote && block.type === "subtitle" ? proofMetadataHtml() : "");
+      const rendered = index === hiddenSubtitleIndex ? "" : renderBlock(block, index);
+      return rendered + (documentMetadata && block.type === metadataAfter ? proofMetadataHtml() : "");
     }).join("\n");
-    if (!proofNote) return "<article class=\"pn-document\">" + blocks + "</article>";
+    if (!proofNote) {
+      const header = project ? projectRunningHeader() : null;
+      const running = header ? "<div class=\"pn-export-running pn-project-running\"><span class=\"pn-running-brand\">" + escapeHtml(header.left) + "</span><span class=\"pn-running-type\">" + escapeHtml(header.right) + "</span></div>" : "";
+      return "<article class=\"pn-document" + (project ? " pn-project-document" : "") + "\">" + running + blocks + "</article>";
+    }
     const type = escapeHtml(state.metadata.documentType || "Solution Note");
     const note = escapeHtml(state.metadata.noteNumber || "—");
     const status = escapeHtml(state.metadata.status || "");
@@ -1779,20 +2441,23 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       const template = Model.normalizeTemplate(raw);
       const backend = await Store.saveTemplate(template);
       if (backend === "failed") { els.importReport.textContent = tr("模板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."); return; }
-      selectedTemplateId = template.template.id;
       await refreshTemplates();
-      next = Model.normalizeDocument(template.document);
-      warnings = validation.warnings.concat([tr("模板已保存到此设备。", "Template saved on this device.")]);
+      closeImport();
+      setStatus(validation.warnings.length ? tr("模板已保存；有 " + validation.warnings.length + " 条可恢复提示。", "Template saved with " + validation.warnings.length + " recoverable notice(s).") : tr("模板已保存到此设备。", "Template saved on this device."), validation.warnings.length ? "warning" : "saved");
+      return;
     } else {
       const validation = Model.validateDocumentRaw(raw);
       if (validation.errors.length) { els.importReport.textContent = tr("Document 校验失败：", "Document validation failed: ") + validation.errors.map((item) => item.path + " — " + item.message).join("; "); return; }
       warnings = validation.warnings;
       next = Model.normalizeDocument(raw);
     }
-    clearStructuralUndo();
-    state = next;
-    closeImport(); renderAll(); scheduleSave();
-    setStatus(warnings.length ? tr("已导入；有 " + warnings.length + " 条可恢复提示。", "Imported with " + warnings.length + " recoverable notice(s).") : tr("文档已导入", "Document imported"), warnings.length ? "warning" : "saved");
+    const saved = await saveActiveDocumentNow();
+    if (saved === "failed") { els.importReport.textContent = tr("当前文档无法保存；请先导出备份。", "The current document could not be saved; export a backup first."); return; }
+    const created = await Store.createDocument(next);
+    if (!created || !created.record || created.backend === "failed") { els.importReport.textContent = tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."); return; }
+    closeImport();
+    await activateDocument(created.record, { status: false });
+    setStatus(warnings.length ? tr("已导入为新文档；有 " + warnings.length + " 条可恢复提示。", "Imported as a new document with " + warnings.length + " recoverable notice(s).") : tr("已导入为新文档", "Imported as a new document"), warnings.length ? "warning" : "saved");
   }
   async function initialise() {
     mount();
@@ -1805,17 +2470,19 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     setDetailOpen(false);
     try { setSidebarTab(root.localStorage.getItem("proofnote-document:sidebar-tab") || "outline"); } catch (_) { setSidebarTab("outline"); }
     await refreshTemplates();
-    const stored = await Store.loadCurrent();
-    if (stored && stored.format === Model.FORMAT) state = Model.normalizeDocument(stored, { allowRemoteImages: true });
-    else {
-      let legacy = null;
-      try { legacy = JSON.parse(root.localStorage.getItem("solution-note-generator:v1") || "null"); } catch (_) {}
-      const proofTemplate = templateById("proof-note");
-      state = legacy ? Model.migrateSolutionNote(legacy) : Model.normalizeDocument(proofTemplate.document);
-    }
+    let legacy = null;
+    try { legacy = JSON.parse(root.localStorage.getItem("solution-note-generator:v1") || "null"); } catch (_) {}
+    const proofTemplate = templateById("proof-note");
+    const seed = legacy ? Model.migrateSolutionNote(legacy) : Model.normalizeDocument(proofTemplate.document);
+    const library = await Store.initialiseDocumentLibrary(seed);
+    currentDocumentId = library && library.record ? library.record.id : "";
+    state = library && library.record && library.record.document
+      ? Model.normalizeDocument(library.record.document, { allowRemoteImages: true })
+      : seed;
+    hasUnsavedChanges = false;
+    await refreshDocuments();
     renderAll();
-    scheduleSave();
-    setStatus(tr("已自动保存到此设备", "Saved on this device"), "saved");
+    setStatus(tr("已保存到此设备", "Saved on this device"), "saved");
   }
   initialise().catch((error) => { console.error("Proofnote Document editor could not start", error); });
 })(window, document);
