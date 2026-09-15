@@ -47,12 +47,16 @@ check("document-header-subtitle-warns-on-non-boolean-display", malformedHeaderSu
 const heading = Model.createBlock("heading", { level: 3, content: "Details" });
 const introduction = Model.createBlock("semantic", { kind: "introduction", title: "Introduction" });
 const section = Model.createBlock("semantic", { kind: "section", appearance: "editorial", title: "Untitled section" });
+const hiddenSectionBody = Model.createBlock("semantic", { kind: "section", appearance: "editorial", title: "Hidden body", content: "Keep this text", bodyVisible: false });
 const theorem = Model.createBlock("semantic", { kind: "theorem", content: "Claim" });
 const editorialTheorem = Model.createBlock("semantic", { kind: "theorem", appearance: "editorial", content: "Claim" });
 const tableWithNoHeader = Model.createBlock("table", { header: false, columns: ["A"], rows: [["1"]] });
 check("document-heading-preset", heading.type === "heading" && heading.level === 3 && heading.preset === "heading-3", JSON.stringify(heading));
 check("document-introduction-is-a-semantic-kind", introduction.type === "semantic" && introduction.kind === "introduction" && introduction.preset === "semantic-introduction", JSON.stringify(introduction));
 check("document-section-is-a-neutral-semantic-kind", section.type === "semantic" && section.kind === "section" && section.appearance === "editorial" && section.preset === "semantic-section", JSON.stringify(section));
+check("document-semantic-body-visibility-is-portable", hiddenSectionBody.bodyVisible === false && hiddenSectionBody.content === "Keep this text", JSON.stringify(hiddenSectionBody));
+const malformedSemanticBodyVisibility = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad body visibility" }, blocks: [{ id: "section_visibility", type: "semantic", kind: "section", bodyVisible: "no" }] });
+check("document-semantic-body-visibility-warns-on-non-boolean", malformedSemanticBodyVisibility.warnings.some((warning) => warning.path === "blocks[0].bodyVisible"), JSON.stringify(malformedSemanticBodyVisibility));
 check("document-semantic-preset", theorem.type === "semantic" && theorem.kind === "theorem" && theorem.preset === "semantic-theorem", JSON.stringify(theorem));
 check("document-semantic-appearance-is-separate", editorialTheorem.type === "semantic" && editorialTheorem.kind === "theorem" && editorialTheorem.appearance === "editorial" && editorialTheorem.preset === "semantic-theorem", JSON.stringify(editorialTheorem));
 check("document-table-header-is-a-portable-display-option", tableWithNoHeader.header === false && Model.createBlock("table").header === true, JSON.stringify(tableWithNoHeader));

@@ -282,7 +282,8 @@ body.pn-sidebar-resizing { cursor: col-resize; user-select: none; }
 .pn-canvas-heading-1 .pn-canvas-heading-input { font-size: var(--pn-doc-section-1-size); line-height: 1.18; }
 .pn-canvas-heading-2 .pn-canvas-heading-input { font-size: var(--pn-doc-section-2-size); line-height: 1.24; }
 .pn-canvas-heading-3 .pn-canvas-heading-input { font-size: var(--pn-doc-section-3-size); line-height: 1.3; font-weight: 600; }
-.pn-canvas-paragraph { margin: 0 0 11pt; }
+.pn-canvas-block.pn-canvas-paragraph { margin: 0 -10px 11pt; }
+.pn-canvas-paragraph-content { margin: 0; }
 .pn-canvas-paragraph-input { display: block; min-height: 1.6em; font: var(--pn-doc-body-size)/var(--pn-doc-body-leading) var(--pn-doc-body); }
 .pn-equation { overflow-x: auto; margin: 12pt 0; }
 .pn-canvas-equation-input { display: block; min-height: 2.8em; padding: 9pt 0 !important; font: 10pt/1.55 ui-monospace, Menlo, Consolas, monospace; }

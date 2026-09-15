@@ -11,10 +11,20 @@
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Equation", "公式"], ["code", "Code", "代码"],
     ["table", "Table", "表格"], ["image", "Image", "图片"], ["quote", "Quote", "引用"],
-    ["divider", "Divider", "分隔线"], ["page-break", "Page break", "分页"], ["callout", "Callout", "提示框"],
+    ["divider", "Divider", "分隔线"], ["page-break", "Page break", "分页"], ["callout", "Tips", "提示"],
     ["semantic", "Semantic block", "语义模块"], ["list", "List", "列表"], ["key-value", "Key–value", "键值列表"], ["stats", "Stats", "统计卡片"]
   ];
   const TYPE_LABEL = Object.fromEntries(TYPE_OPTIONS.map(([type, en, zh]) => [type, { en, zh }]));
+  // The inline/page-bottom picker is intentionally a focused authoring menu,
+  // not a catalogue of every block the document format can represent.  Title
+  // and subtitle belong to the document masthead; the remaining hidden types
+  // stay supported for imported documents and Inspector conversions.
+  const INSERTABLE_BLOCK_TYPES = [
+    // "section" is a picker action, rather than a document-model block type:
+    // it creates Proofnote's numbered editorial semantic section.
+    "section", "paragraph", "equation", "code", "table", "quote",
+    "divider", "page-break", "callout", "semantic", "list"
+  ];
   const OUTLINE_SEMANTIC_LABEL = {
     section: { zh: "章节", en: "Section" },
     introduction: { zh: "引言", en: "Introduction" },
@@ -90,6 +100,9 @@
     }
   }
   function optionText(type) { const item = TYPE_LABEL[type] || TYPE_LABEL.paragraph; return english() ? item.en : item.zh; }
+  function insertionOptionText(type) {
+    return type === "section" ? tr("章节", "Section") : optionText(type);
+  }
   function blockTitle(block, index) {
     if (block.type === "heading") return block.content || tr("未命名章节", "Untitled heading");
     if (block.type === "title" || block.type === "subtitle") return block.content || optionText(block.type);
@@ -574,9 +587,26 @@
     const snapshot = saveSnapshot();
     return snapshot ? queueDocumentSave(snapshot) : { backend: "failed", current: false };
   }
-  async function saveActiveDocumentNow() {
+  async function flushCurrentDocumentUntilClean() {
     clearTimeout(saveTimer);
-    try { return (await saveActiveDocument()).backend; } catch (_) { return "failed"; }
+    let documentId = currentDocumentId;
+    try {
+      // A transition must not proceed after merely *one* successful write.
+      // If the author edits while that write is in flight, queue and await the
+      // newer snapshot too. This is deliberately a loop instead of trusting
+      // an older completion's backend label.
+      while (state) {
+        const result = await saveActiveDocument();
+        if (result.backend === "failed") return result;
+        if (!documentId && currentDocumentId) documentId = currentDocumentId;
+        if (currentDocumentId !== documentId) return { backend: "failed", current: false };
+        if (result.current && !hasUnsavedChanges) return result;
+      }
+    } catch (_) {}
+    return { backend: "failed", current: false };
+  }
+  async function saveActiveDocumentNow() {
+    return (await flushCurrentDocumentUntilClean()).backend;
   }
   async function refreshTemplates() {
     const custom = await Store.listTemplates();
@@ -933,7 +963,7 @@
     const range = getSectionRange(blockId);
     return range ? range.end : -1;
   }
-  function getChildInsertionIndex(blockId) {
+  function getDirectContentInsertionIndex(blockId) {
     const range = getSectionRange(blockId);
     if (!range) return -1;
     // Direct content cannot be appended after a child subtree: doing that
@@ -942,6 +972,10 @@
     // structural child instead.
     const firstChild = range.node.children[0];
     return firstChild ? firstChild.index : range.end;
+  }
+  function getChildSectionInsertionIndex(blockId) {
+    const range = getSectionRange(blockId);
+    return range ? range.end : -1;
   }
   function isPrimaryStructureNode(node) { return node && node.level === 0; }
   function isSecondaryStructureNode(node) { return node && node.level === 1; }
@@ -988,11 +1022,11 @@
     }), true);
   }
   function addSubsection(blockId, placement) {
-    const index = placement === "after" ? getSiblingInsertionIndex(blockId) : getChildInsertionIndex(blockId);
+    const index = placement === "after" ? getSiblingInsertionIndex(blockId) : getChildSectionInsertionIndex(blockId);
     insertStructuralBlock(index, Model.createBlock("heading", { level: 2, content: tr("未命名小节", "Untitled subsection") }), true);
   }
   function addContentToSection(blockId, type) {
-    const index = getChildInsertionIndex(blockId);
+    const index = getDirectContentInsertionIndex(blockId);
     if (index < 0) return;
     const values = type === "semantic" ? { kind: "result", title: "", content: "" } : {};
     insertStructuralBlock(index, Model.createBlock(type, values), false);
@@ -1445,6 +1479,15 @@
     if (block.kind === "section") return true;
     return (isProofNoteDocument() || isProjectDocument()) && ["introduction", "problem", "result", "theorem"].includes(block.kind);
   }
+  function editorialBodyVisible(block) {
+    return !block || block.bodyVisible !== false;
+  }
+  function setEditorialBodyVisible(block, visible) {
+    if (!block || block.type !== "semantic") return;
+    if (visible) delete block.bodyVisible;
+    else block.bodyVisible = false;
+    changed({ structure: true, inspector: true });
+  }
   function editorialSectionNumber(index) {
     let number = 0;
     state.blocks.slice(0, index + 1).forEach((block) => { if (isEditorialPrimary(block)) number += 1; });
@@ -1667,7 +1710,11 @@
       return;
     }
     if (block.type === "paragraph") {
-      body.className = "pn-canvas-paragraph";
+      // Keep the paragraph's inner content class distinct from the outer
+      // `.pn-canvas-paragraph` block. Sharing that name let the inner
+      // spacing rule override the outer canvas gutter and visibly shifted
+      // paragraphs to the right of editorial section bodies.
+      body.className = "pn-canvas-paragraph-content";
       body.appendChild(canvasField(block, "content", { fieldClass: "pn-canvas-paragraph-field", controlClass: "pn-canvas-paragraph-input", placeholder: label("开始输入…", "Start writing…") }));
       return;
     }
@@ -1743,7 +1790,7 @@
       change: { outline: true }
     }));
     body.appendChild(head);
-    if (block.type === "semantic") {
+    if (block.type === "semantic" && editorialBodyVisible(block)) {
       body.appendChild(canvasField(block, "content", { fieldClass: "pn-editorial-section-body", controlClass: "pn-editorial-section-body-input", placeholder: label("开始输入…", "Start writing…") }));
       if (block.summary) body.appendChild(canvasField(block, "summary", { fieldClass: "pn-editorial-section-summary", controlClass: "pn-editorial-section-summary-input", placeholder: label("添加备注…", "Add note…") }));
     }
@@ -1988,7 +2035,7 @@
     const point = element("div", { class: "pn-insert-point" + (isLast ? " pn-insert-last" : "") });
     if (insertionIndex === index) {
       const menu = element("div", { class: "pn-insert-menu", role: "group", "aria-label": tr("选择内容块", "Choose block") });
-      TYPE_OPTIONS.forEach(([type]) => menu.appendChild(button(optionText(type), "pn-insert-choice", () => insertBlock(type, index))));
+      INSERTABLE_BLOCK_TYPES.forEach((type) => menu.appendChild(button(insertionOptionText(type), "pn-insert-choice", () => insertBlock(type, index))));
       point.appendChild(menu);
       point.appendChild(button(tr("取消", "Cancel"), "pn-insert-cancel", () => { insertionIndex = null; renderCanvas(); }));
       return point;
@@ -1998,7 +2045,17 @@
   }
   function insertBlock(type, index) {
     clearStructuralUndo();
-    const block = Model.createBlock(type);
+    // Adding a chapter from the document picker should produce the same
+    // numbered, ruled editorial section used by a new project's Introduction,
+    // never a bare generic H1.
+    const block = type === "section"
+      ? Model.createBlock("semantic", {
+        kind: "section",
+        appearance: "editorial",
+        title: tr("未命名章节", "Untitled section"),
+        content: ""
+      })
+      : Model.createBlock(type);
     state.blocks.splice(index, 0, block);
     selectedBlockId = block.id;
     insertionIndex = null;
@@ -2162,7 +2219,7 @@
     structure.appendChild(element("div", { class: "pn-inspector-group-title" }, tr("结构", "Structure")));
     els.inspector.appendChild(structure);
     const type = selectField(tr("内容块类型", "Block type"), block.type, TYPE_OPTIONS.map(([key]) => [key, optionText(key)]), (value) => {
-      const keep = { id: block.id, content: block.content, title: block.title, summary: block.summary, label: block.label };
+      const keep = { id: block.id, content: block.content, title: block.title, summary: block.summary, label: block.label, bodyVisible: block.bodyVisible };
       state.blocks[index] = Model.createBlock(value, keep);
       selectedBlockId = block.id;
       changed({ structure: true, outline: true, inspector: true });
@@ -2186,6 +2243,7 @@
       const appearance = element("section", { class: "pn-inspector-group", "aria-label": label("外观", "Appearance") });
       appearance.appendChild(element("div", { class: "pn-inspector-group-title" }, label("外观", "Appearance")));
       appearance.appendChild(selectField(label("呈现方式", "Presentation"), semanticAppearance(block), [["editorial", label("出版式", "Editorial")], ["card", label("卡片", "Card")]], (value) => { block.appearance = value; changed({ structure: true, inspector: true }); }));
+      if (isEditorialPrimary(block)) appearance.appendChild(inspectorToggle(label("显示正文", "Show body"), editorialBodyVisible(block), (visible) => setEditorialBodyVisible(block, visible)));
       const advanced = element("details", { class: "pn-inspector-advanced" });
       advanced.open = Boolean(block.label);
       advanced.appendChild(element("summary", {}, label("高级选项", "Advanced")));
@@ -2319,7 +2377,7 @@
   }
   function renderEditorialPrimary(block, index, titleKey) {
     const title = String(block[titleKey] || "") || tr("未命名章节", "Untitled section");
-    const body = block.type === "semantic"
+    const body = block.type === "semantic" && editorialBodyVisible(block)
       ? paragraphs(block.content) + (String(block.summary || "").trim() ? "<p class=\"pn-editorial-section-summary\">" + inline(block.summary) + "</p>" : "")
       : "";
     return "<section class=\"pn-editorial-section pn-editorial-section-" + escapeHtml(block.kind || "heading") + "\"><div class=\"pn-editorial-section-head\"><span class=\"pn-editorial-section-number\">" + editorialSectionNumber(index) + "</span><h2>" + inline(title) + "</h2></div>" + body + "</section>";

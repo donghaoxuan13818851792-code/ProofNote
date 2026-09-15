@@ -156,6 +156,9 @@
         // Leave appearance unset when a template should supply its default;
         // an explicit card/editorial choice is portable with the document.
         if (raw.appearance === "card" || raw.appearance === "editorial") block.appearance = raw.appearance;
+        // Editorial chapters can hide their inline body without discarding
+        // the text that an author may later restore.
+        if (raw.bodyVisible === false) block.bodyVisible = false;
         block.title = string(raw.title);
         block.label = string(raw.label);
         block.content = string(raw.content);
@@ -377,6 +380,7 @@
         if (!SEMANTIC_KINDS.has(block.kind)) warn(path + ".kind", "Unknown semantic kind is treated as Result.");
         ["title", "label", "content", "summary"].forEach((key) => expectString(path + "." + key, block[key]));
         if (block.appearance !== undefined && !["editorial", "card"].includes(block.appearance)) warn(path + ".appearance", "Unknown appearance is ignored.");
+        if (block.bodyVisible !== undefined && typeof block.bodyVisible !== "boolean") warn(path + ".bodyVisible", "Expected a boolean; the body is shown by default.");
       }
       if (block.type === "list") { if (block.ordered !== undefined && typeof block.ordered !== "boolean") warn(path + ".ordered", "Expected a boolean; it will be treated as false."); if (block.items !== undefined) expectStringArray(path + ".items", block.items, LIMITS.maxListItems); }
       if (block.type === "key-value") { if (block.items !== undefined) expectDataItems(path + ".items", block.items, ["label", "value"]); }

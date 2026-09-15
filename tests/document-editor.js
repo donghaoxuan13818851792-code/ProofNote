@@ -260,6 +260,27 @@ async function main() {
       "the standalone export and direct canvas must share Proof Note's editorial rendering language"
     );
     check("editor-inline-insert-points", document.querySelectorAll("#pnCanvas .pn-insert-point").length > 0, "expected inline insertion affordances inside #pnCanvas");
+    check(
+      "editor-paragraphs-keep-the-editorial-canvas-gutter",
+      editorSource.includes('body.className = "pn-canvas-paragraph-content"')
+        && editorCss.includes(".pn-canvas-block.pn-canvas-paragraph { margin: 0 -10px 11pt; }")
+        && editorCss.includes(".pn-canvas-paragraph-content { margin: 0; }"),
+      "a standalone paragraph must share the section body's left edge rather than override the canvas gutter"
+    );
+    check(
+      "editor-bottom-add-block-is-curated",
+      ["section", "paragraph", "equation", "code", "table", "quote", "divider", "page-break", "callout", "semantic", "list"].every((type) => editorSource.includes('"' + type + '"'))
+        && editorSource.includes('kind: "section"')
+        && editorSource.includes('appearance: "editorial"')
+        && !/INSERTABLE_BLOCK_TYPES[^;]*"heading"/.test(editorSource)
+        && !/INSERTABLE_BLOCK_TYPES[^;]*"title"/.test(editorSource)
+        && !/INSERTABLE_BLOCK_TYPES[^;]*"subtitle"/.test(editorSource)
+        && !/INSERTABLE_BLOCK_TYPES[^;]*"image"/.test(editorSource)
+        && !/INSERTABLE_BLOCK_TYPES[^;]*"key-value"/.test(editorSource)
+        && !/INSERTABLE_BLOCK_TYPES[^;]*"stats"/.test(editorSource)
+        && /\["callout", "Tips", "提示"\]/.test(editorSource),
+      "the canvas picker must stay narrower than the document type registry"
+    );
     check("editor-inspector-anchor", Boolean(inspector) && Boolean(detail), "missing contextual #pnInspector or #pnDetail");
     check(
       "editor-global-actions-live-in-top-menu",
@@ -648,6 +669,30 @@ async function main() {
       })
     );
 
+    // Direct content belongs before the first child section, whereas a newly
+    // created subsection belongs at the end of the existing child sequence.
+    const newHeadingIdsBeforeChildInsert = new Set(canvasBlockNodes(document).map((block) => block.dataset.blockId));
+    const methodForChildInsert = findOutlineItem("Method");
+    const methodMoreForChildInsert = methodForChildInsert && methodForChildInsert.closest(".pn-outline-row").querySelector(".pn-outline-more");
+    if (methodMoreForChildInsert) methodMoreForChildInsert.click();
+    await settle(window, () => outlineMenu && !outlineMenu.hidden);
+    const addChildSubsection = outlineMenu && outlineMenu.querySelector('[data-command="add-subsection"]');
+    if (addChildSubsection) addChildSubsection.click();
+    await settle(window, () => canvasBlockNodes(document).some((block) => !newHeadingIdsBeforeChildInsert.has(block.dataset.blockId) && block.classList.contains("pn-canvas-heading")));
+    const childSubsection = canvasBlockNodes(document).find((block) => !newHeadingIdsBeforeChildInsert.has(block.dataset.blockId) && block.classList.contains("pn-canvas-heading"));
+    const blocksAfterChildInsert = canvasBlockNodes(document);
+    const childSubsectionIndex = childSubsection ? blocksAfterChildInsert.indexOf(childSubsection) : -1;
+    const finalEquipmentContent = blocksAfterChildInsert.findIndex((block) => blockHasControlValue(block, "A closing paragraph."));
+    check(
+      "editor-outline-child-subsection-appends-after-existing-children",
+      Boolean(addChildSubsection)
+        && Boolean(childSubsection)
+        && childSubsectionIndex > finalEquipmentContent
+        && editorSource.includes("getDirectContentInsertionIndex")
+        && editorSource.includes("getChildSectionInsertionIndex"),
+      JSON.stringify({ childSubsectionIndex, finalEquipmentContent })
+    );
+
     const methodAfterContent = findOutlineItem("Method");
     const methodAfterContentMore = methodAfterContent && methodAfterContent.closest(".pn-outline-row").querySelector(".pn-outline-more");
     if (methodAfterContentMore) methodAfterContentMore.click();
@@ -667,6 +712,30 @@ async function main() {
         && Array.from(document.querySelectorAll("#pnOutline .pn-outline-item")).some((item) => untitledSectionPattern.test(item.textContent.trim()))
         && editorSource.includes('kind: "section"'),
       editorialSection ? editorialSection.textContent : "missing editorial section"
+    );
+    const editorialSectionId = editorialSection && editorialSection.dataset.blockId;
+    const editorialSectionOutlineItem = editorialSectionId && outline.querySelector('.pn-outline-item[data-block-id="' + editorialSectionId + '"]');
+    if (editorialSectionOutlineItem) editorialSectionOutlineItem.click();
+    await settle(window, () => inspector && Array.from(inspector.querySelectorAll(".pn-inspector-toggle")).some((row) => /Show body|显示正文/.test(row.textContent)));
+    let sectionBodyToggle = Array.from(inspector.querySelectorAll(".pn-inspector-toggle")).find((row) => /Show body|显示正文/.test(row.textContent))?.querySelector("input");
+    if (sectionBodyToggle) sectionBodyToggle.click();
+    await settle(window, () => editorialSectionId && !document.getElementById("pn-block-" + editorialSectionId)?.querySelector(".pn-editorial-section-body-input"));
+    check(
+      "editor-editorial-section-body-can-be-hidden-without-deletion",
+      Boolean(editorialSectionOutlineItem)
+        && Boolean(sectionBodyToggle)
+        && Boolean(editorialSectionId && !document.getElementById("pn-block-" + editorialSectionId)?.querySelector(".pn-editorial-section-body-input"))
+        && editorSource.includes("setEditorialBodyVisible")
+        && editorSource.includes("editorialBodyVisible(block)"),
+      inspector ? inspector.textContent : "missing editorial section body display control"
+    );
+    sectionBodyToggle = Array.from(inspector.querySelectorAll(".pn-inspector-toggle")).find((row) => /Show body|显示正文/.test(row.textContent))?.querySelector("input");
+    if (sectionBodyToggle) sectionBodyToggle.click();
+    await settle(window, () => editorialSectionId && Boolean(document.getElementById("pn-block-" + editorialSectionId)?.querySelector(".pn-editorial-section-body-input")));
+    check(
+      "editor-editorial-section-body-can-be-restored",
+      Boolean(sectionBodyToggle) && Boolean(editorialSectionId && document.getElementById("pn-block-" + editorialSectionId)?.querySelector(".pn-editorial-section-body-input")),
+      editorialSectionId ? document.getElementById("pn-block-" + editorialSectionId)?.textContent : "hidden section body did not return"
     );
 
     // Inspector actions must use the same subtree ranges as the Outline. Move
@@ -808,9 +877,9 @@ async function main() {
       documentLibrary ? documentLibrary.textContent : "current-document deletion should not create a replacement while documents remain"
     );
 
-    // Hold two writes open deliberately. The editor must persist immutable
-    // snapshots in order, and an older completion must not claim the newer
-    // revision has been saved.
+    // Hold the first write open, edit again, then request a document switch.
+    // The transition must wait for the second snapshot rather than treating
+    // the older completion as sufficient and discarding the later edit.
     await new Promise((resolve) => window.setTimeout(resolve, 450));
     const originalSaveDocument = window.ProofnoteStore.saveDocument;
     const deferredSaves = [];
@@ -818,34 +887,41 @@ async function main() {
       deferredSaves.push({ id, document: JSON.parse(JSON.stringify(savedDocument)), resolve });
     });
     const autosaveTitle = document.querySelector("#pnCanvas .pn-document-title input, #pnCanvas .pn-document-title textarea");
+    const originalDocumentName = document.querySelector('.pn-document-open[aria-current="true"]')?.textContent.trim();
+    const transitionTarget = Array.from(document.querySelectorAll('.pn-document-open[aria-current="false"]'))[0];
     if (autosaveTitle) {
       autosaveTitle.value = "Autosave revision A";
       autosaveTitle.dispatchEvent(new window.Event("input", { bubbles: true }));
     }
-    await new Promise((resolve) => window.setTimeout(resolve, 380));
+    if (transitionTarget) transitionTarget.click();
+    await settle(window, () => deferredSaves.length === 1, 1000);
     if (autosaveTitle) {
       autosaveTitle.value = "Autosave revision B";
       autosaveTitle.dispatchEvent(new window.Event("input", { bubbles: true }));
     }
-    await new Promise((resolve) => window.setTimeout(resolve, 380));
     const firstSnapshot = deferredSaves[0];
     if (firstSnapshot) firstSnapshot.resolve("localStorage");
     await settle(window, () => deferredSaves.length === 2, 1000);
     const secondSnapshot = deferredSaves[1];
     if (secondSnapshot) secondSnapshot.resolve("localStorage");
-    await settle(window, () => /Saved locally|已自动保存/.test(document.querySelector("#pnStatus").textContent), 1000);
+    await settle(window, () => {
+      const active = document.querySelector('.pn-document-open[aria-current="true"]');
+      return Boolean(active && active.textContent.trim() !== originalDocumentName);
+    }, 1000);
     window.ProofnoteStore.saveDocument = originalSaveDocument;
     const titleFromSnapshot = (snapshot) => {
       const title = snapshot && snapshot.document.blocks.find((block) => block.type === "title");
       return title && title.content;
     };
     check(
-      "editor-autosave-queues-immutable-revisions",
+      "editor-document-switch-flushes-all-newer-autosave-revisions",
       Boolean(autosaveTitle)
+        && Boolean(transitionTarget)
         && titleFromSnapshot(firstSnapshot) === "Autosave revision A"
         && titleFromSnapshot(secondSnapshot) === "Autosave revision B"
         && editorSource.includes("let saveQueue = Promise.resolve()")
-        && editorSource.includes("editRevision === snapshot.revision"),
+        && editorSource.includes("editRevision === snapshot.revision")
+        && editorSource.includes("flushCurrentDocumentUntilClean"),
       JSON.stringify(deferredSaves.map((save) => titleFromSnapshot(save)))
     );
     check(
@@ -854,6 +930,24 @@ async function main() {
         && editorSource.includes('root.addEventListener("pagehide"')
         && editorSource.includes("flushBeforeLeaving"),
       "pending autosaves need a hidden/pagehide flush"
+    );
+
+    const sectionsBeforePickerInsert = new Set(canvasBlockNodes(document).map((block) => block.dataset.blockId));
+    const pickerTrigger = canvas.querySelector(".pn-insert-last .pn-insert-trigger");
+    if (pickerTrigger) pickerTrigger.click();
+    await settle(window, () => Array.from(canvas.querySelectorAll(".pn-insert-choice")).some((choice) => /Section|章节/.test(choice.textContent)));
+    const pickerSection = Array.from(canvas.querySelectorAll(".pn-insert-choice")).find((choice) => /Section|章节/.test(choice.textContent));
+    if (pickerSection) pickerSection.click();
+    await settle(window, () => canvasBlockNodes(document).some((block) => !sectionsBeforePickerInsert.has(block.dataset.blockId) && block.classList.contains("pn-canvas-semantic")));
+    const insertedSection = canvasBlockNodes(document).find((block) => !sectionsBeforePickerInsert.has(block.dataset.blockId) && block.classList.contains("pn-canvas-semantic"));
+    check(
+      "editor-picker-section-creates-editorial-semantic-section",
+      Boolean(pickerTrigger)
+        && Boolean(pickerSection)
+        && Boolean(insertedSection && insertedSection.querySelector(".pn-editorial-section"))
+        && Boolean(insertedSection && insertedSection.querySelector(".pn-editorial-section-number"))
+        && Boolean(insertedSection && Array.from(insertedSection.querySelectorAll("input, textarea")).some((control) => untitledSectionPattern.test(control.value))),
+      insertedSection ? insertedSection.textContent : "the Add block picker did not create an editorial semantic section"
     );
 
     check("editor-no-runtime-errors", runtimeErrors.length === 0, runtimeErrors.join(" | ").slice(0, 500));
