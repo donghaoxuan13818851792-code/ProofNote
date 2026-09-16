@@ -386,3 +386,161 @@
   };
   root.ProofnoteStore = store;
 })(window);
+
+// This application has no build step, so the model and store are loaded as
+// adjacent classic scripts before the editor. Keep a compact defence-in-depth
+// layer here to make the untrusted JSON boundary and the local persistence
+// boundary agree on limits and coercions without changing the public 1.0
+// interchange shape.
+(function hardenProofnoteDocumentBoundary(root) {
+  "use strict";
+  const Model = root.ProofnoteDocument;
+  if (!Model || Model.__boundaryHardened) return;
+
+  const MAX_ID_LENGTH = 256;
+  const RESERVED_BLOCK_IDS = new Set(["__proofnote_header__"]);
+  const limits = Model.LIMITS || {};
+  const maxStringLength = limits.maxStringLength || 200000;
+  const maxImageDataUrlLength = limits.maxImageDataUrlLength || 14 * 1024 * 1024;
+  const originalNormalizeBlock = Model.normalizeBlock;
+  const originalNormalizeDocument = Model.normalizeDocument;
+  const originalValidateDocumentRaw = Model.validateDocumentRaw;
+  const originalValidateTemplateRaw = Model.validateTemplateRaw;
+  const originalMakeTemplate = Model.makeTemplate;
+  const originalNormalizeTemplate = Model.normalizeTemplate;
+
+  function isObject(value) { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }
+  function generatedId(prefix) { return (prefix || "item") + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 9); }
+  function idIsUnsafe(value) {
+    return typeof value === "string" && (value.length > MAX_ID_LENGTH || RESERVED_BLOCK_IDS.has(value));
+  }
+  function sanitizeBlock(raw) {
+    if (!isObject(raw)) return raw;
+    const next = Object.assign({}, raw);
+    if (idIsUnsafe(next.id)) next.id = "";
+    if (next.type === "list") next.ordered = next.ordered === true;
+    return next;
+  }
+  function sanitizeDocument(raw) {
+    if (!isObject(raw)) return raw;
+    const next = Object.assign({}, raw);
+    if (Array.isArray(raw.blocks)) next.blocks = raw.blocks.map(sanitizeBlock);
+    return next;
+  }
+  function uniquePush(target, issue) {
+    const key = String(issue && issue.path || "") + "\u0000" + String(issue && issue.message || "");
+    if (!target.some((current) => String(current && current.path || "") + "\u0000" + String(current && current.message || "") === key)) target.push(issue);
+  }
+  function allowedLargeImagePaths(document) {
+    const allowed = new Set();
+    if (!document || !Array.isArray(document.blocks)) return allowed;
+    document.blocks.forEach((block, index) => {
+      const source = block && typeof block.src === "string" ? block.src : "";
+      if (block && block.type === "image"
+        && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(source)
+        && source.length > maxStringLength
+        && source.length <= maxImageDataUrlLength) {
+        allowed.add("blocks[" + index + "].src");
+      }
+    });
+    return allowed;
+  }
+  function filterImageLengthFalsePositives(errors, document) {
+    const allowed = allowedLargeImagePaths(document);
+    return (errors || []).filter((issue) => !(allowed.has(issue.path) && issue.message === "Text exceeds the maximum supported length."));
+  }
+  function hardenDocumentValidation(raw, baseResult) {
+    const result = baseResult || { errors: [], warnings: [] };
+    const errors = filterImageLengthFalsePositives(result.errors, raw);
+    const warnings = (result.warnings || []).slice();
+    const addError = (path, message) => uniquePush(errors, { path, message });
+    const addWarning = (path, message) => uniquePush(warnings, { path, message });
+    const checkLength = (path, value) => {
+      if (typeof value === "string" && value.length > maxStringLength) addError(path, "Text exceeds the maximum supported length.");
+    };
+
+    if (isObject(raw && raw.metadata)) {
+      ["name", "templateName", "documentType", "language", "noteNumber", "author", "date", "status", "source", "createdAt", "updatedAt"].forEach((key) => checkLength("metadata." + key, raw.metadata[key]));
+      if (isObject(raw.metadata.runningHeader)) {
+        checkLength("metadata.runningHeader.left", raw.metadata.runningHeader.left);
+        checkLength("metadata.runningHeader.right", raw.metadata.runningHeader.right);
+      }
+    }
+
+    if (raw && Array.isArray(raw.blocks)) {
+      raw.blocks.slice(0, limits.maxBlocks || 2000).forEach((block, index) => {
+        if (!isObject(block)) return;
+        const path = "blocks[" + index + "]";
+        if (typeof block.id === "string") {
+          if (block.id.length > MAX_ID_LENGTH) addWarning(path + ".id", "Block ID is too long and will be regenerated.");
+          if (RESERVED_BLOCK_IDS.has(block.id)) addWarning(path + ".id", "Reserved block ID will be regenerated.");
+        }
+        if (!Model.BLOCK_TYPES.includes(block.type)) {
+          if (block.content !== undefined && typeof block.content !== "string") addWarning(path + ".content", "Expected a string; it will be treated as empty text.");
+          checkLength(path + ".content", block.content);
+        }
+        if (block.type === "table" && (!Array.isArray(block.columns) || block.columns.length === 0) && Array.isArray(block.rows)) {
+          const expected = 2;
+          block.rows.slice(0, limits.maxTableRows || 500).forEach((row, rowIndex) => {
+            if (!Array.isArray(row)) return;
+            const rowPath = path + ".rows[" + rowIndex + "]";
+            if (row.length < expected) addWarning(rowPath, "Expected 2 cells, found " + row.length + "; missing cells will be filled with empty text.");
+            else if (row.length > expected && row.length <= (limits.maxTableColumns || 50)) addError(rowPath, "Expected 2 cells, found " + row.length + "; importing would discard " + (row.length - expected) + " cell(s).");
+          });
+        }
+      });
+    }
+    return { errors, warnings };
+  }
+
+  Model.normalizeBlock = function (raw, options) {
+    return originalNormalizeBlock.call(Model, sanitizeBlock(raw), options);
+  };
+  Model.normalizeDocument = function (raw, options) {
+    const document = originalNormalizeDocument.call(Model, sanitizeDocument(raw), options);
+    const seen = new Set();
+    (document.blocks || []).forEach((block) => {
+      if (!block) return;
+      while (!block.id || block.id.length > MAX_ID_LENGTH || RESERVED_BLOCK_IDS.has(block.id) || seen.has(block.id)) block.id = generatedId("block");
+      seen.add(block.id);
+      if (block.type === "list") block.ordered = block.ordered === true;
+    });
+    return document;
+  };
+  Model.validateDocumentRaw = function (raw) {
+    return hardenDocumentValidation(raw, originalValidateDocumentRaw.call(Model, raw));
+  };
+  Model.validateTemplateRaw = function (raw) {
+    const base = originalValidateTemplateRaw.call(Model, raw);
+    const errors = filterImageLengthFalsePositives(base.errors, raw && raw.document);
+    const warnings = (base.warnings || []).slice();
+    if (raw && raw.document) {
+      const oldDocument = originalValidateDocumentRaw.call(Model, raw.document);
+      const hardenedDocument = Model.validateDocumentRaw(raw.document);
+      const oldErrorKeys = new Set(filterImageLengthFalsePositives(oldDocument.errors, raw.document).map((issue) => issue.path + "\u0000" + issue.message));
+      const oldWarningKeys = new Set((oldDocument.warnings || []).map((issue) => issue.path + "\u0000" + issue.message));
+      hardenedDocument.errors.forEach((issue) => { if (!oldErrorKeys.has(issue.path + "\u0000" + issue.message)) uniquePush(errors, issue); });
+      hardenedDocument.warnings.forEach((issue) => { if (!oldWarningKeys.has(issue.path + "\u0000" + issue.message)) uniquePush(warnings, issue); });
+    }
+    if (raw && isObject(raw.template)) {
+      if (typeof raw.template.id === "string" && raw.template.id.length > MAX_ID_LENGTH) uniquePush(warnings, { path: "template.id", message: "Template ID is too long and will be regenerated." });
+      if (typeof raw.template.name === "string" && raw.template.name.length > maxStringLength) uniquePush(errors, { path: "template.name", message: "Text exceeds the maximum supported length." });
+      if (typeof raw.template.description === "string" && raw.template.description.length > maxStringLength) uniquePush(errors, { path: "template.description", message: "Text exceeds the maximum supported length." });
+    }
+    return { errors, warnings };
+  };
+  Model.makeTemplate = function (rawDocument, template) {
+    const info = Object.assign({}, template || {});
+    if (typeof info.id === "string" && info.id.length > MAX_ID_LENGTH) info.id = "";
+    const result = originalMakeTemplate.call(Model, sanitizeDocument(rawDocument), info);
+    result.document = Model.normalizeDocument(result.document);
+    return result;
+  };
+  Model.normalizeTemplate = function (raw) {
+    const result = originalNormalizeTemplate.call(Model, raw);
+    if (result && result.template && (typeof result.template.id !== "string" || !result.template.id || result.template.id.length > MAX_ID_LENGTH)) result.template.id = generatedId("template");
+    if (result && result.document) result.document = Model.normalizeDocument(result.document);
+    return result;
+  };
+  Object.defineProperty(Model, "__boundaryHardened", { value: true, enumerable: false });
+})(window);
