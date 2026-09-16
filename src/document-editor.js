@@ -964,17 +964,26 @@
       message: tr("“" + documentName(record) + "”将从此设备移除。", "“" + documentName(record) + "” will be removed from this device."),
       confirmLabel: tr("删除文档", "Delete document"),
       onConfirm: async () => {
-        const backend = await Store.deleteDocument(id);
-        if (backend === "failed") { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
-        if (id === currentDocumentId) {
-          const opened = await openRemainingDocumentAfterDeletion();
-          if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
-          setStatus(tr("文档已删除", "Document deleted"), "saved");
-        } else {
-          await refreshDocuments();
-          setStatus(tr("文档已删除", "Document deleted"), "saved");
-        }
-      }
+  const deletingCurrent = id === currentDocumentId;
+  if (deletingCurrent) {
+// Deletion intentionally discards edits that have not entered the save
+// queue yet. A save already in flight is different: it must finish
+// before deletion, otherwise it can complete afterwards and recreate
+// the record the author just removed.
+clearTimeout(saveTimer);
+try { await saveQueue; } catch (_) {}
+  }
+  const backend = await Store.deleteDocument(id);
+  if (backend === "failed") { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
+  if (deletingCurrent) {
+const opened = await openRemainingDocumentAfterDeletion();
+if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
+setStatus(tr("文档已删除", "Document deleted"), "saved");
+  } else {
+await refreshDocuments();
+setStatus(tr("文档已删除", "Document deleted"), "saved");
+  }
+}
     });
   }
   async function saveCurrentAsTemplate() {
