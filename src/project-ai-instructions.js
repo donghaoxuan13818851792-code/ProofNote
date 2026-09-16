@@ -87,7 +87,7 @@ Use this required top-level envelope:
   "blocks": []
 }
 
-metadata.name and metadata.documentType are required. documentType must be exactly "Project". Optional metadata fields may include templateName, noteNumber, author, date, status, or source only when genuinely supported by the supplied material. Do not invent them.
+metadata.name and metadata.documentType are required. documentType must be exactly "Project". Optional metadata fields may include language (a BCP 47 tag such as "zh-CN" or "en"), templateName, noteNumber, author, date, status, or source only when genuinely supported by the supplied material. Do not invent them.
 
 Only use these block types:
 

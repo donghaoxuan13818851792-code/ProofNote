@@ -8,7 +8,7 @@
   if (!Model || !Store) return;
 
   // Increment this small, user-facing version for each released workspace update.
-  const APP_VERSION = "v1.19";
+  const APP_VERSION = "v1.22";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Standalone equation", "独立公式"], ["code", "Code", "代码"],
@@ -308,9 +308,9 @@
       <div class="pn-modal-backdrop" id="pnImportModal" hidden>
         <section class="pn-modal" role="dialog" aria-modal="true" aria-label="${tr("导入文档", "Import document")}">
           <div class="pn-modal-heading"><h2>${tr("导入 JSON", "Import JSON")}</h2><button type="button" class="pn-close" id="pnCloseImport" aria-label="${tr("关闭", "Close")}">×</button></div>
-          <p class="pn-modal-copy">${tr("支持 Proofnote Document、用户模板和原有 Solution Note 1.0。Solution Note 会无损优先地迁移为可编辑 blocks。", "Supports Proofnote Document, user templates, and Solution Note 1.0. Solution Notes are migrated into editable blocks.")}</p>
+          <p class="pn-modal-copy">${tr("支持 Proofnote Document、用户模板和原有 Solution Note 1.0。Solution Note 会无损优先地迁移为可编辑 blocks。导入文档会新建一份文档，不会覆盖当前文档。", "Supports Proofnote Document, user templates, and Solution Note 1.0. Solution Notes are migrated into editable blocks. Importing creates a new document and never replaces the current one.")}</p>
           <textarea class="input pn-import-text" id="pnImportText" rows="10" placeholder='{ "format": "proofnote-document", ... }'></textarea>
-          <div class="pn-actions"><label class="btn btn-secondary pn-file-label">${tr("选择文件", "Choose file")}<input id="pnImportFile" type="file" accept="application/json" hidden></label><button class="btn btn-primary" id="pnConfirmImport" type="button">${tr("导入并替换", "Import and replace")}</button></div>
+          <div class="pn-actions"><label class="btn btn-secondary pn-file-label">${tr("选择文件", "Choose file")}<input id="pnImportFile" type="file" accept="application/json" hidden></label><button class="btn btn-primary" id="pnConfirmImport" type="button">${tr("导入为新文档", "Import as new document")}</button></div>
           <section id="pnImportReport" class="pn-import-report" role="status" aria-live="polite"></section>
         </section>
       </div>
@@ -1419,20 +1419,33 @@
   }
   function selectProofMetadata(options) {
     if (!hasDocumentMetadataHeader()) return;
+    // A blank Project masthead should read like a finished page, not an
+    // unfinished three-column form. Its grip/overflow still reveals the
+    // configured fields on demand, without making a title-input focus rerender
+    // the paper and lose the caret.
+    const revealBlankProjectMetadata = isProjectDocument()
+      && !isProofMetadataSelected()
+      && proofMetadataIsBlank(proofMetadataValues())
+      && (!options || options.revealEmptyMetadata === true);
     selectedBlockId = PROOF_METADATA_SELECTION;
     activeOutlineBlockId = "";
     insertionIndex = null;
-    applyCanvasSelection();
+    if (revealBlankProjectMetadata) renderCanvas();
+    else applyCanvasSelection();
     syncOutlineActiveState();
     renderInspector();
     if (!options || options.openInspector !== false) setDetailOpen(true);
   }
   function clearCanvasSelection() {
     if (!selectedBlockId) return;
+    const hideBlankProjectMetadata = isProjectDocument()
+      && isProofMetadataSelected()
+      && proofMetadataIsBlank(proofMetadataValues());
     selectedBlockId = "";
     activeOutlineBlockId = "";
     insertionIndex = null;
-    applyCanvasSelection();
+    if (hideBlankProjectMetadata) renderCanvas();
+    else applyCanvasSelection();
     syncOutlineActiveState();
     renderInspector();
     setDetailOpen(false);
@@ -1529,6 +1542,48 @@
       autoGrow: opts.autoGrow !== false
     });
   }
+  // The paper is also the reading surface. Long text therefore renders with
+  // the same inline Markdown/KaTeX treatment as an export until its block is
+  // selected. The underlying textarea remains the sole source of truth and
+  // is revealed in-place for direct editing, so there is no mirrored-editor
+  // cursor or selection state to keep in sync.
+  function canvasRichTextField(block, key, options) {
+    const opts = options || {};
+    const value = opts.value === undefined ? block[key] : opts.value;
+    const field = canvasField(block, key, opts);
+    return canvasRichPreviewField(block, field, value, opts);
+  }
+  function canvasRichPreviewField(block, field, value, options) {
+    const opts = options || {};
+    const preview = element("div", {
+      class: "pn-canvas-rich-preview " + (opts.previewClass || ""),
+      tabindex: "0",
+      role: "button",
+      "aria-label": opts.editLabel || tr("编辑内容", "Edit content"),
+      html: richCanvasText(value, opts.placeholder || "", opts.singleLine)
+    });
+    const revealEditor = (event) => {
+      if (event) event.preventDefault();
+      selectBlock(block.id);
+      root.requestAnimationFrame(() => {
+        const control = field.querySelector("textarea, input");
+        if (control) control.focus();
+      });
+    };
+    preview.addEventListener("click", revealEditor);
+    preview.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") revealEditor(event);
+    });
+    const wrapper = element("div", { class: "pn-canvas-rich-field " + (opts.richFieldClass || "") });
+    wrapper.append(preview, field);
+    return wrapper;
+  }
+  function richCanvasText(value, placeholder, singleLine) {
+    const text = String(value || "");
+    if (!text.trim()) return "<span class=\"pn-canvas-rich-placeholder\">" + escapeHtml(placeholder) + "</span>";
+    if (singleLine) return inline(text.replace(/\n/g, " "));
+    return paragraphs(text);
+  }
   function isProofNoteDocument() {
     return Boolean(state && state.metadata && String(state.metadata.templateName || "").trim() === "Proof Note");
   }
@@ -1547,6 +1602,43 @@
       left: has("left") ? String(header.left || "") : String(metadata.name || tr("未命名文档", "Untitled document")),
       right: has("right") ? String(header.right || "") : "Project"
     };
+  }
+  function projectImportContext() {
+    if (!state || !isProjectDocument()) return null;
+    const metadata = state.metadata || {};
+    const fields = metadata.proofMetadata && Array.isArray(metadata.proofMetadata.fields)
+      ? metadata.proofMetadata.fields.slice() : ["author", "date"];
+    return {
+      runningHeader: projectRunningHeader(),
+      proofMetadata: { fields },
+      headerSubtitle: { visible: !(metadata.headerSubtitle && metadata.headerSubtitle.visible === false) },
+      author: String(metadata.author || ""),
+      date: String(metadata.date || ""),
+      status: String(metadata.status || "")
+    };
+  }
+  function prepareImportedProjectDocument(document, context) {
+    if (!document || !document.metadata || !context) return document;
+    // A Project has one canonical name across the library, running header,
+    // page footer, and paper title. AI JSON supplies content; importing it
+    // into a Blank Project must not leave any of those chrome surfaces empty.
+    const title = Array.isArray(document.blocks) ? document.blocks.find((block) => block && block.type === "title") : null;
+    const requestedName = String(title && title.content || document.metadata.name || "").trim() || tr("未命名文档", "Untitled document");
+    const name = uniqueLibraryDocumentName(requestedName);
+    document.metadata.name = name;
+    document.metadata.documentType = "Project";
+    document.metadata.runningHeader = {
+      left: name,
+      right: String(context.runningHeader && context.runningHeader.right || "").trim() || "Project"
+    };
+    document.metadata.proofMetadata = { fields: context.proofMetadata.fields.slice() };
+    document.metadata.headerSubtitle = { visible: context.headerSubtitle.visible !== false };
+    ["author", "date", "status"].forEach((field) => {
+      if (!String(document.metadata[field] || "").trim()) document.metadata[field] = context[field];
+    });
+    if (title) title.content = name;
+    else document.blocks.unshift(Model.createBlock("title", { content: name }));
+    return document;
   }
   function syncProjectDocumentNameControls(value, source) {
     const name = String(value || "");
@@ -1651,6 +1743,9 @@
       source: String(metadata.source || "")
     };
   }
+  function proofMetadataIsBlank(values) {
+    return !["author", "date", "status", "source"].some((key) => String(values && values[key] || "").trim());
+  }
   function proofMetadataFields() {
     const metadata = state && state.metadata ? state.metadata : {};
     const configured = metadata.proofMetadata && Array.isArray(metadata.proofMetadata.fields)
@@ -1700,6 +1795,10 @@
       author: tr("作者", "Author"), date: tr("日期", "Date"), status: tr("状态", "Status")
     }[key]]);
     if (!fields.length) return null;
+    // Proof Note deliberately retains its traditional empty metadata row;
+    // Projects do not. The latter can be revealed through the masthead's
+    // contextual controls when an author actually wants to fill it in.
+    if (isProjectDocument() && proofMetadataIsBlank(values) && !isProofMetadataSelected()) return null;
     const metadata = element("section", { class: "pn-proof-metadata", "aria-label": tr("文档信息", "Document details") });
     if (!opts.embedded) metadata.tabIndex = 0;
     const grid = element("dl", { class: "pn-proof-metadata-grid" });
@@ -1863,7 +1962,13 @@
       // spacing rule override the outer canvas gutter and visibly shifted
       // paragraphs to the right of editorial section bodies.
       body.className = "pn-canvas-paragraph-content";
-      body.appendChild(canvasField(block, "content", { fieldClass: "pn-canvas-paragraph-field", controlClass: "pn-canvas-paragraph-input", placeholder: label("开始输入…", "Start writing…") }));
+      body.appendChild(canvasRichTextField(block, "content", {
+        fieldClass: "pn-canvas-paragraph-field",
+        controlClass: "pn-canvas-paragraph-input",
+        previewClass: "pn-canvas-paragraph-preview",
+        placeholder: label("开始输入…", "Start writing…"),
+        editLabel: label("编辑正文", "Edit paragraph")
+      }));
       return;
     }
     if (block.type === "equation") {
@@ -1891,10 +1996,22 @@
       const defaultLabel = isSemantic && OUTLINE_SEMANTIC_LABEL[block.kind] ? (english() ? OUTLINE_SEMANTIC_LABEL[block.kind].en : OUTLINE_SEMANTIC_LABEL[block.kind].zh) : optionText(block.type);
       body.appendChild(element("div", { class: "pn-component-label" }, block.label || defaultLabel));
       body.appendChild(canvasField(block, "title", { multiline: false, fieldClass: "pn-canvas-component-title", controlClass: "pn-canvas-component-title-input", placeholder: label("标题", "Title"), change: { outline: isSemantic } }));
-      body.appendChild(canvasField(block, "content", { fieldClass: "pn-canvas-component-body", controlClass: "pn-canvas-component-body-input", placeholder: label("开始输入…", "Start writing…") }));
+      body.appendChild(canvasRichTextField(block, "content", {
+        fieldClass: "pn-canvas-component-body",
+        controlClass: "pn-canvas-component-body-input",
+        previewClass: "pn-canvas-component-body-preview",
+        placeholder: label("开始输入…", "Start writing…"),
+        editLabel: label("编辑正文", "Edit content")
+      }));
       if (isSemantic && ["result", "verification"].includes(block.kind)) {
         if (semanticSummaryVisible(block)) {
-          body.appendChild(canvasField(block, "summary", { fieldClass: "pn-canvas-component-summary", controlClass: "pn-canvas-component-summary-input", placeholder: label("添加备注…", "Add note…") }));
+          body.appendChild(canvasRichTextField(block, "summary", {
+            fieldClass: "pn-canvas-component-summary",
+            controlClass: "pn-canvas-component-summary-input",
+            previewClass: "pn-canvas-component-summary-preview",
+            placeholder: label("添加备注…", "Add note…"),
+            editLabel: label("编辑备注", "Edit note")
+          }));
         } else {
           body.appendChild(button(label("＋ 添加备注", "+ Add note"), "pn-component-add-summary", () => showSemanticSummary(block)));
         }
@@ -1918,7 +2035,14 @@
     if (block.type === "quote") {
       body.className = "pn-quote";
       const quote = element("blockquote");
-      quote.appendChild(canvasField(block, "content", { fieldClass: "pn-canvas-quote-field", controlClass: "pn-canvas-quote-input", rows: 2, placeholder: label("引用文字", "Quote") }));
+      quote.appendChild(canvasRichTextField(block, "content", {
+        fieldClass: "pn-canvas-quote-field",
+        controlClass: "pn-canvas-quote-input",
+        previewClass: "pn-canvas-quote-preview",
+        rows: 2,
+        placeholder: label("引用文字", "Quote"),
+        editLabel: label("编辑引文", "Edit citation")
+      }));
       body.appendChild(quote);
       if (block.citation) body.appendChild(element("figcaption", {}, "— " + block.citation));
       return;
@@ -1946,8 +2070,20 @@
     }));
     body.appendChild(head);
     if (block.type === "semantic" && editorialBodyVisible(block)) {
-      body.appendChild(canvasField(block, "content", { fieldClass: "pn-editorial-section-body", controlClass: "pn-editorial-section-body-input", placeholder: label("开始输入…", "Start writing…") }));
-      if (block.summary) body.appendChild(canvasField(block, "summary", { fieldClass: "pn-editorial-section-summary", controlClass: "pn-editorial-section-summary-input", placeholder: label("添加备注…", "Add note…") }));
+      body.appendChild(canvasRichTextField(block, "content", {
+        fieldClass: "pn-editorial-section-body",
+        controlClass: "pn-editorial-section-body-input",
+        previewClass: "pn-editorial-section-body-preview",
+        placeholder: label("开始输入…", "Start writing…"),
+        editLabel: label("编辑正文", "Edit content")
+      }));
+      if (block.summary) body.appendChild(canvasRichTextField(block, "summary", {
+        fieldClass: "pn-editorial-section-summary",
+        controlClass: "pn-editorial-section-summary-input",
+        previewClass: "pn-editorial-section-summary-preview",
+        placeholder: label("添加备注…", "Add note…"),
+        editLabel: label("编辑备注", "Edit note")
+      }));
     }
   }
   function buildEditorialSemantic(body, block) {
@@ -1956,8 +2092,20 @@
     body.className = "pn-editorial-detail pn-editorial-" + block.kind;
     body.appendChild(element("div", { class: "pn-component-label" }, semanticLabel));
     body.appendChild(canvasField(block, "title", { multiline: false, fieldClass: "pn-editorial-detail-title", controlClass: "pn-editorial-detail-title-input", placeholder: label("标题", "Title"), change: { outline: true } }));
-    body.appendChild(canvasField(block, "content", { fieldClass: "pn-editorial-detail-body", controlClass: "pn-editorial-detail-body-input", placeholder: label("开始输入…", "Start writing…") }));
-    if (block.summary) body.appendChild(canvasField(block, "summary", { fieldClass: "pn-editorial-detail-summary", controlClass: "pn-editorial-detail-summary-input", placeholder: label("添加备注…", "Add note…") }));
+    body.appendChild(canvasRichTextField(block, "content", {
+      fieldClass: "pn-editorial-detail-body",
+      controlClass: "pn-editorial-detail-body-input",
+      previewClass: "pn-editorial-detail-body-preview",
+      placeholder: label("开始输入…", "Start writing…"),
+      editLabel: label("编辑正文", "Edit content")
+    }));
+    if (block.summary) body.appendChild(canvasRichTextField(block, "summary", {
+      fieldClass: "pn-editorial-detail-summary",
+      controlClass: "pn-editorial-detail-summary-input",
+      previewClass: "pn-editorial-detail-summary-preview",
+      placeholder: label("添加备注…", "Add note…"),
+      editLabel: label("编辑备注", "Edit note")
+    }));
   }
   function focusCanvasControl(blockId, selector) {
     root.requestAnimationFrame(() => {
@@ -2017,7 +2165,14 @@
           removeListItem(block, itemIndex);
         }
       });
-      row.append(field, button("×", "pn-collection-remove", () => removeListItem(block, itemIndex), tr("删除此项", "Remove item")));
+      const richField = canvasRichPreviewField(block, field, item, {
+        richFieldClass: "pn-canvas-list-rich-field",
+        previewClass: "pn-canvas-list-preview",
+        singleLine: true,
+        placeholder: tr("开始输入…", "Start writing…"),
+        editLabel: tr("编辑列表项目", "Edit list item")
+      });
+      row.append(richField, button("×", "pn-collection-remove", () => removeListItem(block, itemIndex), tr("删除此项", "Remove item")));
       list.appendChild(row);
     });
     body.append(list, collectionTools([[tr("＋ 添加项目", "+ Add item"), "", () => addListItem(block, block.items.length, "")]]));
@@ -2731,7 +2886,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     .pn-project-document .pn-editorial-section-head{margin-bottom:18px;padding-bottom:8px}
     .pn-project-document .pn-editorial-section p{margin-bottom:15px}
     .pn-project-document .pn-semantic{margin:20px 0;padding:20px 22px;border-color:#facb8d;background:#fff3e4}
-    @media print{.pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:auto;margin-left:0;margin-right:0}}
+    @media print{.pn-project-document{max-width:none;padding:16mm 15mm}.pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:auto;margin-left:0;margin-right:0}}
   `;
   // Keep downloaded documents in step with the quieter, denser semantic cards
   // on the editing canvas. Empty summaries are omitted by renderBlock(), so an
@@ -2776,9 +2931,29 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     let katexCss = "", fontsCss = "";
     try { katexCss = root.SOLUTION_NOTE_KATEX_EMBED ? decodeBase64(root.SOLUTION_NOTE_KATEX_EMBED.css) : ""; } catch (_) {}
     try { fontsCss = root.SOLUTION_NOTE_FONTS_EMBED ? decodeBase64(root.SOLUTION_NOTE_FONTS_EMBED.css) : ""; } catch (_) {}
-    const title = escapeHtml(state.metadata.name || "Proofnote document");
-    const html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + title + "</title><style>" + katexCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + fontsCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS + EXPORT_CODE_SYNTAX_CSS + "</style></head><body>" + renderStandaloneDocument() + "</body></html>";
+    const title = escapeHtml(exportDocumentTitle());
+    const language = escapeHtml(exportDocumentLanguage());
+    const html = "<!doctype html><html lang=\"" + language + "\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + title + "</title><style>" + katexCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + fontsCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS + EXPORT_CODE_SYNTAX_CSS + "</style></head><body>" + renderStandaloneDocument() + "</body></html>";
     download(slug() + ".html", html, "text/html");
+  }
+  function exportDocumentTitle() {
+    const titleBlock = state && state.blocks && state.blocks.find((block) => block && block.type === "title");
+    return String(titleBlock && titleBlock.content || state && state.metadata && state.metadata.name || "Proofnote document").trim() || "Proofnote document";
+  }
+  function exportDocumentLanguage() {
+    const specified = String(state && state.metadata && state.metadata.language || "").trim();
+    // `lang` accepts BCP 47 tags. Ignore malformed imported metadata rather
+    // than writing a misleading attribute into a standalone publication.
+    if (/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(specified)) return specified;
+    const text = (state && state.blocks || []).map((block) => {
+      if (!block) return "";
+      return [block.content, block.title, block.summary, block.label, block.citation]
+        .concat(Array.isArray(block.items) ? block.items.map((item) => typeof item === "string" ? item : [item && item.label, item && item.value, item && item.kicker, item && item.body].join(" ")) : [])
+        .join(" ");
+    }).join(" ");
+    if (/[\u3400-\u9fff]/.test(text)) return "zh-CN";
+    if (/[A-Za-z]/.test(text)) return "en";
+    return english() ? "en" : "zh-CN";
   }
 
   function readImportFile() {
@@ -3067,10 +3242,12 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       showImportMessage(tr("JSON 文本超过 25MB 导入上限。", "JSON text exceeds the 25 MB import limit."), "error");
       return;
     }
-    // The place where a person imports content determines the active
-    // document's preset. An AI response is content, not an authority on
-    // whether the current Blank Project should stop being a Project.
-    const preserveProjectIdentity = isProjectDocument();
+    // An import never replaces the active library record. When that source is
+    // a Blank Project, its Project chrome remains the destination preset:
+    // imported JSON is content, not an authority on whether this new project
+    // document should lose its page furniture.
+    const importingIntoProject = isProjectDocument();
+    const importProjectContext = importingIntoProject ? projectImportContext() : null;
     const inspected = inspectImportJson(els.importText.value);
     if (inspected.diagnostic) { renderImportDiagnostics(inspected.diagnostic); return; }
     const raw = inspected.raw;
@@ -3096,10 +3273,10 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       if (validation.errors.length) { renderSchemaDiagnostics(tr("无法导入文档", "Could not import document"), validation.errors, warnings.concat(validation.warnings || [])); return; }
       warnings = warnings.concat(validation.warnings || []);
       next = Model.normalizeDocument(raw);
-      if (preserveProjectIdentity) next.metadata.documentType = "Project";
     }
     const saved = await saveActiveDocumentNow();
     if (saved === "failed") { showImportMessage(tr("当前文档无法保存；请先导出备份。", "The current document could not be saved; export a backup first."), "error"); return; }
+    if (importProjectContext) prepareImportedProjectDocument(next, importProjectContext);
     const created = await Store.createDocument(next);
     if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
     closeImport();

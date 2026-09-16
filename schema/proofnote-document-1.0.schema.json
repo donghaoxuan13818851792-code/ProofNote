@@ -15,6 +15,7 @@
         "name": { "type": "string", "maxLength": 200000 },
         "templateName": { "type": "string", "maxLength": 200000 },
         "documentType": { "type": "string", "maxLength": 200000, "description": "Optional template-controlled running-header label." },
+        "language": { "type": "string", "maxLength": 200000, "description": "Optional BCP 47 language tag for exported document language metadata, for example zh-CN or en." },
         "noteNumber": { "type": "string", "maxLength": 200000 },
         "author": { "type": "string", "maxLength": 200000 },
         "date": { "type": "string", "maxLength": 200000 },

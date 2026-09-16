@@ -278,6 +278,30 @@ body.pn-sidebar-resizing { cursor: col-resize; user-select: none; }
 .pn-document-canvas textarea.pn-canvas-list-input { min-height: 1.45em; }
 .pn-document-canvas textarea.pn-canvas-stat-body-input { min-height: 1.4em; }
 
+/* Reading comes first on the paper. Rich text fields use the same inline
+ * renderer as an export while quiet; selecting their block reveals the single
+ * native textarea in place for editing. This deliberately avoids a mirrored
+ * code-editor layer and its fragile caret/scroll synchronisation. */
+.pn-canvas-rich-field { display: block; min-width: 0; }
+.pn-canvas-rich-preview { display: block; min-height: 1.6em; cursor: text; outline: 0; }
+.pn-canvas-rich-preview:focus-visible { box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--color-accent) 74%, transparent); }
+.pn-canvas-rich-preview p { margin: 0; }
+.pn-canvas-rich-preview p + p { margin-top: 10pt; }
+.pn-canvas-rich-placeholder { color: color-mix(in srgb, var(--color-text) 42%, transparent); }
+.pn-canvas-rich-field > .pn-field { display: none; }
+.pn-canvas-block.is-selected .pn-canvas-rich-field > .pn-field,
+.pn-canvas-block:focus-within .pn-canvas-rich-field > .pn-field { display: block; }
+.pn-canvas-block.is-selected .pn-canvas-rich-preview,
+.pn-canvas-block:focus-within .pn-canvas-rich-preview { display: none; }
+.pn-canvas-paragraph-preview { font: var(--pn-doc-body-size)/var(--pn-doc-body-leading) var(--pn-doc-body); }
+.pn-canvas-component-body-preview { min-height: 1.6em; font: var(--pn-doc-body-size)/var(--pn-doc-body-leading) var(--pn-doc-body); }
+.pn-canvas-component-summary-preview { margin-top: 4pt; color: color-mix(in srgb, var(--color-text) 74%, transparent); font: italic 11pt/1.5 var(--pn-doc-body); }
+.pn-editorial-section-body-preview { min-height: 1.6em; font: var(--pn-doc-body-size)/var(--pn-doc-body-leading) var(--pn-doc-body); }
+.pn-editorial-section-summary-preview,.pn-editorial-detail-summary-preview { margin-top: 4pt; color: color-mix(in srgb, var(--color-text) 72%, transparent); font: italic 11pt/1.5 var(--pn-doc-body); }
+.pn-editorial-detail-body-preview { min-height: 1.6em; font: var(--pn-doc-body-size)/var(--pn-doc-body-leading) var(--pn-doc-body); }
+.pn-canvas-quote-preview { min-height: 2.8em; color: inherit; font: inherit; font-style: inherit; }
+.pn-canvas-list-preview { min-height: 1.45em; font: inherit; line-height: inherit; }
+
 .pn-document-title { margin: 0 0 11pt; padding-bottom: 14pt; border-bottom: 1px solid var(--color-divider); }
 .pn-canvas-title-input { display: block; min-height: 34pt; font: 400 var(--pn-doc-title-size)/var(--pn-doc-title-leading) var(--pn-doc-heading); letter-spacing: -.02em; }
 .pn-document-subtitle { margin: -2pt 0 19pt; color: color-mix(in srgb, var(--color-text) 72%, transparent); font-family: var(--pn-doc-heading); font-size: var(--pn-doc-summary-size); font-style: italic; line-height: var(--pn-doc-summary-leading); }

@@ -198,6 +198,7 @@
         name: string(opts.name) || "Untitled document",
         templateName: string(opts.templateName),
         documentType: string(opts.documentType),
+        language: string(opts.language),
         noteNumber: string(opts.noteNumber),
         author: string(opts.author),
         date: string(opts.date),
@@ -222,6 +223,7 @@
       name: safe.metadata && safe.metadata.name,
       templateName: safe.metadata && safe.metadata.templateName,
       documentType: safe.metadata && safe.metadata.documentType,
+      language: safe.metadata && safe.metadata.language,
       noteNumber: safe.metadata && safe.metadata.noteNumber,
       author: safe.metadata && safe.metadata.author,
       date: safe.metadata && safe.metadata.date,
@@ -262,7 +264,7 @@
     if (!raw.metadata || typeof raw.metadata !== "object" || Array.isArray(raw.metadata)) error("metadata", "Expected a metadata object.");
     else {
       if (typeof raw.metadata.name !== "string") error("metadata.name", "Expected a document name string.");
-      ["templateName", "documentType", "noteNumber", "author", "date", "status", "source", "createdAt", "updatedAt"].forEach((key) => {
+      ["templateName", "documentType", "language", "noteNumber", "author", "date", "status", "source", "createdAt", "updatedAt"].forEach((key) => {
         if (raw.metadata[key] !== undefined && typeof raw.metadata[key] !== "string") warn("metadata." + key, "Expected a string; it will be treated as empty text.");
       });
       if (raw.metadata.proofMetadata !== undefined) {

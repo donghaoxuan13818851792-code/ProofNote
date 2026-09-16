@@ -38,6 +38,10 @@ const runningHeader = Model.normalizeDocument({ format: Model.FORMAT, version: M
 check("document-running-header-is-portable", JSON.stringify(runningHeader.metadata.runningHeader) === JSON.stringify({ left: "Field notes", right: "Project" }), JSON.stringify(runningHeader.metadata));
 const malformedRunningHeader = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad header", runningHeader: { left: 42 } }, blocks: [] });
 check("document-running-header-warns-on-non-string-label", malformedRunningHeader.warnings.some((warning) => warning.path === "metadata.runningHeader.left"), JSON.stringify(malformedRunningHeader));
+const localizedDocument = Model.normalizeDocument({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "中文项目", language: "zh-CN" }, blocks: [] });
+check("document-language-is-portable", localizedDocument.metadata.language === "zh-CN", JSON.stringify(localizedDocument.metadata));
+const malformedLanguage = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad language", language: 42 }, blocks: [] });
+check("document-language-warns-on-non-string-value", malformedLanguage.warnings.some((warning) => warning.path === "metadata.language"), JSON.stringify(malformedLanguage));
 const hiddenHeaderSubtitle = Model.normalizeDocument({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Hidden subtitle", headerSubtitle: { visible: false } }, blocks: [] });
 check("document-header-subtitle-display-is-portable", hiddenHeaderSubtitle.metadata.headerSubtitle.visible === false && Model.blankDocument().metadata.headerSubtitle.visible === true, JSON.stringify(hiddenHeaderSubtitle.metadata));
 const malformedHeaderSubtitle = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad subtitle", headerSubtitle: { visible: "no" } }, blocks: [] });

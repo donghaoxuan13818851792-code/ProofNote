@@ -101,6 +101,7 @@ async function main() {
         Model.createBlock("heading", { level: 2, content: "Equipment" }),
         Model.createBlock("heading", { level: 3, content: "Details" }),
         Model.createBlock("paragraph", { content: "A closing paragraph." }),
+        Model.createBlock("paragraph", { content: "For \\(G_n\\), the bound is \\(k(n) \\le n\\)." }),
         Model.createBlock("heading", { level: 1, content: "" })
       ]
     });
@@ -130,7 +131,7 @@ async function main() {
       && html.includes('window.Prism = { manual: true }')
       && html.includes('./vendor/prism/prism-python.min.js?v=1.30.0')
       && html.includes('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1')
-      && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260915-48'), "document-model.js, document-store.js, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
+      && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260916-51'), "document-model.js, document-store.js, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
     check(
       "editor-document-typography-is-shared",
       [
@@ -366,8 +367,8 @@ async function main() {
     check(
       "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.19"
-        && editorSource.includes('const APP_VERSION = "v1.19";')
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.22"
+        && editorSource.includes('const APP_VERSION = "v1.22";')
         && !document.querySelector("#pnEditMetadata")
         && !document.querySelector("#pnExportLegacy")
         && !/Document info|文档信息|Proofnote Document Format/.test(actionMenu.textContent),
@@ -387,6 +388,31 @@ async function main() {
     // based canvas blocks.
     const problem = canvasBlocks.find((block) => blockHasControlValue(block, "Canvas problem"));
     check("editor-canvas-semantic-block", Boolean(problem), "fixture semantic block was not rendered as .pn-canvas-block");
+
+    const readingParagraph = canvasBlocks.find((block) => blockHasControlValue(block, "For \\(G_n\\), the bound is \\(k(n) \\le n\\)."));
+    const readingPreview = readingParagraph && readingParagraph.querySelector(".pn-canvas-paragraph-preview");
+    check(
+      "editor-canvas-rich-text-reads-like-export-until-selected",
+      Boolean(readingPreview)
+        // JSDOM intentionally does not load KaTeX, where the shared inline
+        // renderer emits `.math-error`; a browser has the same rendered span
+        // with KaTeX's typeset markup instead.
+        && /(math-error|katex)/.test(readingPreview.innerHTML)
+        && !readingParagraph.classList.contains("is-selected")
+        && editorSource.includes("function canvasRichTextField")
+        && editorCss.includes(".pn-canvas-rich-field > .pn-field { display: none; }")
+        && editorCss.includes(".pn-canvas-block.is-selected .pn-canvas-rich-preview"),
+      readingPreview ? readingPreview.innerHTML : "paragraph reading preview missing"
+    );
+    if (readingPreview) {
+      readingPreview.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+      await settle(window, () => readingParagraph.classList.contains("is-selected") && document.activeElement === readingParagraph.querySelector(".pn-canvas-paragraph-input"));
+      check(
+        "editor-canvas-rich-text-reveals-native-editor-on-intent",
+        readingParagraph.classList.contains("is-selected") && document.activeElement === readingParagraph.querySelector(".pn-canvas-paragraph-input"),
+        "clicking a reading preview must reveal and focus the native textarea"
+      );
+    }
 
     if (problem) {
       const beforeInspector = inspector ? inspector.textContent.trim() : "";
@@ -981,7 +1007,7 @@ async function main() {
         && editorSource.includes(".pn-project-document{max-width:820px")
         && editorSource.includes(".pn-project-document .pn-document-title,.pn-project-document .pn-document-subtitle")
         && editorSource.includes(".pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:calc(100% + 60px);max-width:none;margin-left:-30px;margin-right:-30px}")
-        && editorSource.includes("@media print{.pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:auto;margin-left:0;margin-right:0}}")
+        && editorSource.includes("@media print{.pn-project-document{max-width:none;padding:16mm 15mm}.pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:auto;margin-left:0;margin-right:0}}")
         && editorSource.includes("EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS"),
       "Blank Projects must keep a 760px reading rail while complex export blocks may use the 820px outer measure"
     );
@@ -1029,9 +1055,9 @@ async function main() {
     const importedProjectPayload = {
       format: "proofnote-document",
       version: "1.0",
-      metadata: { name: "Imported prime-family notes" },
+      metadata: { name: "Imported prime-family notes", language: "zh-CN" },
       blocks: [
-        { type: "title", content: "Prime-family notes" },
+        { type: "title", content: "当前核心通用结构" },
         { type: "subtitle", content: "A compact research summary." },
         { type: "semantic", kind: "introduction", title: "Introduction", content: "Opening context." },
         { type: "heading", level: 1, content: "1. Core prime-family bounds" },
@@ -1147,22 +1173,32 @@ async function main() {
         && editorSource.includes("SILENT_JSON_LATEX_COMMANDS"),
       importReport?.textContent || "a legal JSON newline escape should import as a multiline paragraph"
     );
+    const documentCountBeforeProjectImport = documentLibrary ? documentLibrary.querySelectorAll(".pn-document-item").length : 0;
+    const documentNamesBeforeProjectImport = documentLibrary
+      ? Array.from(documentLibrary.querySelectorAll(".pn-document-open")).map((item) => item.textContent) : [];
     if (importText) importText.value = JSON.stringify(importedProjectPayload);
     if (confirmImport) confirmImport.click();
     await settle(window, () => canvas.classList.contains("pn-project-document")
       && Boolean(document.querySelector("#pnCanvas .pn-canvas-semantic .pn-editorial-section"))
-      && Boolean(document.querySelector("#pnCanvas .pn-canvas-heading .pn-editorial-section")));
+      && Boolean(document.querySelector("#pnCanvas .pn-canvas-heading .pn-editorial-section"))
+      && document.querySelector("#pnPageHeader .pn-running-left")?.value === "当前核心通用结构"
+      && document.querySelector("#pnFooterName")?.textContent === "当前核心通用结构");
     const importedHeading = document.querySelector("#pnCanvas .pn-canvas-heading .pn-editorial-section-title-input");
+    const documentNamesAfterProjectImport = documentLibrary
+      ? Array.from(documentLibrary.querySelectorAll(".pn-document-open")).map((item) => item.textContent) : [];
     const projectImportState = {
       project: canvas.classList.contains("pn-project-document"),
       introduction: Boolean(document.querySelector("#pnCanvas .pn-canvas-semantic .pn-editorial-section")),
       genericIntroduction: Boolean(document.querySelector("#pnCanvas .pn-semantic-introduction")),
       heading: Boolean(document.querySelector("#pnCanvas .pn-canvas-heading .pn-editorial-section")),
       genericHeading: Boolean(document.querySelector("#pnCanvas .pn-heading-1")),
-      headingValue: importedHeading && importedHeading.value
+      headingValue: importedHeading && importedHeading.value,
+      libraryCount: documentLibrary?.querySelectorAll(".pn-document-item").length,
+      header: document.querySelector("#pnPageHeader .pn-running-left")?.value,
+      footer: document.querySelector("#pnFooterName")?.textContent
     };
     check(
-      "editor-project-import-preserves-project-identity-and-editorial-fallbacks",
+      "editor-project-import-creates-a-new-project-with-complete-chrome",
       Boolean(importText && confirmImport)
         && canvas.classList.contains("pn-project-document")
         && Boolean(document.querySelector("#pnCanvas .pn-canvas-semantic .pn-editorial-section"))
@@ -1170,8 +1206,16 @@ async function main() {
         && Boolean(document.querySelector("#pnCanvas .pn-canvas-heading .pn-editorial-section"))
         && !document.querySelector("#pnCanvas .pn-heading-1")
         && importedHeading?.value === "Core prime-family bounds"
-        && editorSource.includes("const preserveProjectIdentity = isProjectDocument();")
-        && editorSource.includes('if (preserveProjectIdentity) next.metadata.documentType = "Project";'),
+        && documentLibrary?.querySelectorAll(".pn-document-item").length === documentCountBeforeProjectImport + 1
+        && documentNamesBeforeProjectImport.every((name) => documentNamesAfterProjectImport.includes(name))
+        && documentNamesAfterProjectImport.includes("当前核心通用结构")
+        && document.querySelector("#pnPageHeader .pn-running-left")?.value === "当前核心通用结构"
+        && document.querySelector("#pnPageHeader .pn-running-right")?.value === "Project"
+        && document.querySelector("#pnFooterName")?.textContent === "当前核心通用结构"
+        && /Import as new document|导入为新文档/.test(confirmImport?.textContent || "")
+        && editorSource.includes("const importingIntoProject = isProjectDocument();")
+        && editorSource.includes("function prepareImportedProjectDocument(document, context)")
+        && editorSource.includes("if (importProjectContext) prepareImportedProjectDocument(next, importProjectContext);"),
       JSON.stringify(projectImportState)
     );
     const originalCreateObjectUrl = window.URL.createObjectURL;
@@ -1195,10 +1239,14 @@ async function main() {
       "editor-project-import-export-applies-the-project-editorial-wrapper",
       Boolean(exportProjectHtml)
         && exportedProjectHtml.includes('<article class="pn-document pn-project-document">')
+        && exportedProjectHtml.includes('<html lang="zh-CN">')
+        && exportedProjectHtml.includes('<title>当前核心通用结构</title>')
         && exportedProjectHtml.includes('.pn-project-document{max-width:820px')
         && exportedProjectHtml.includes('.pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:calc(100% + 60px);max-width:none;margin-left:-30px;margin-right:-30px}')
-        && !exportedProjectHtml.includes('class="pn-export-running pn-project-running"')
-        && !exportedProjectHtml.includes('class="pn-proof-metadata"')
+        && exportedProjectHtml.includes('@media print{.pn-project-document{max-width:none;padding:16mm 15mm}.pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:auto;margin-left:0;margin-right:0}}')
+        && exportedProjectHtml.includes('class="pn-export-running pn-project-running"')
+        && exportedProjectHtml.includes('<span class="pn-running-brand">当前核心通用结构</span><span class="pn-running-type">Project</span>')
+        && exportedProjectHtml.includes('class="pn-proof-metadata"')
         && exportedProjectHtml.includes('class="pn-editorial-section pn-editorial-section-introduction"')
         && exportedProjectHtml.includes('class="pn-editorial-section pn-editorial-section-heading"')
         && exportedProjectHtml.includes('<span class="pn-editorial-section-number">01</span><h2>Introduction</h2>')
