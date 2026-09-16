@@ -64,7 +64,7 @@
       "type": "object",
       "required": ["type"],
       "properties": {
-        "id": { "type": "string", "maxLength": 200000, "description": "Stable editor identifier. Proofnote generates one when importing AI-authored JSON; duplicate IDs are regenerated." },
+        "id": { "type": "string", "maxLength": 256, "description": "Stable editor identifier. Proofnote generates one when importing AI-authored JSON; duplicate, reserved, or oversized IDs are regenerated." },
         "type": { "enum": ["title", "subtitle", "heading", "paragraph", "equation", "code", "table", "image", "quote", "divider", "page-break", "callout", "semantic", "list", "key-value", "stats"] },
         "preset": { "type": "string", "description": "A Proofnote-controlled typography or component preset. Proofnote derives it when omitted." },
         "content": { "type": "string", "maxLength": 200000 },
