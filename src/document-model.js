@@ -358,9 +358,17 @@
           if (!Array.isArray(block.rows)) warn(path + ".rows", "Expected an array.");
           else {
             if (block.rows.length > LIMITS.maxTableRows) error(path + ".rows", "Contains more rows than Proofnote can import safely.");
+            const columnCount = Array.isArray(block.columns) ? block.columns.length : null;
             block.rows.slice(0, LIMITS.maxTableRows).forEach((row, rowIndex) => {
-              if (!Array.isArray(row)) { warn(path + ".rows[" + rowIndex + "]", "Expected an array; it will be treated as an empty row."); return; }
-              if (row.length > LIMITS.maxTableColumns) warn(path + ".rows[" + rowIndex + "]", "Extra cells beyond the table columns are ignored.");
+              const rowPath = path + ".rows[" + rowIndex + "]";
+              if (!Array.isArray(row)) { warn(rowPath, "Expected an array; it will be treated as an empty row."); return; }
+              if (row.length > LIMITS.maxTableColumns) {
+                error(rowPath, "Contains more cells than Proofnote can import safely.");
+              } else if (columnCount !== null && row.length < columnCount) {
+                warn(rowPath, "Expected " + columnCount + " cells, found " + row.length + "; missing cells will be filled with empty text.");
+              } else if (columnCount !== null && row.length > columnCount) {
+                error(rowPath, "Expected " + columnCount + " cells, found " + row.length + "; importing would discard " + (row.length - columnCount) + " cell(s).");
+              }
               row.slice(0, LIMITS.maxTableColumns).forEach((cell, cellIndex) => expectString(path + ".rows[" + rowIndex + "][" + cellIndex + "]", cell));
             });
           }

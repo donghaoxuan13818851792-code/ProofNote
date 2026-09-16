@@ -131,6 +131,14 @@ const malformedShapes = Model.validateDocumentRaw({
 check("document-raw-validation-covers-block-shapes", malformedShapes.errors.length === 0 && malformedShapes.warnings.length >= 4, JSON.stringify(malformedShapes));
 const malformedTableHeader = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Table" }, blocks: [{ type: "table", header: "yes" }] });
 check("document-table-header-validation", malformedTableHeader.warnings.some((warning) => warning.path === "blocks[0].header"), JSON.stringify(malformedTableHeader));
+const shortTableRow = { format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Short table row" }, blocks: [{ type: "table", columns: ["Name", "Score", "Status"], rows: [["Alice", "98"]] }] };
+const shortTableValidation = Model.validateDocumentRaw(shortTableRow);
+const shortTableNormalized = Model.normalizeDocument(shortTableRow);
+check("document-table-short-row-warns-and-fills-empty-cells", shortTableValidation.errors.length === 0
+  && shortTableValidation.warnings.some((warning) => warning.path === "blocks[0].rows[0]" && /Expected 3 cells, found 2/.test(warning.message))
+  && JSON.stringify(shortTableNormalized.blocks[0].rows[0]) === JSON.stringify(["Alice", "98", ""]), JSON.stringify({ validation: shortTableValidation, normalized: shortTableNormalized.blocks[0] }));
+const longTableRow = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Long table row" }, blocks: [{ type: "table", columns: ["Name", "Score", "Status"], rows: [["Bob", "91", "Pass", "EXTRA CELL"]] }] });
+check("document-table-long-row-blocks-silent-cell-loss", longTableRow.errors.some((error) => error.path === "blocks[0].rows[0]" && /Expected 3 cells, found 4/.test(error.message) && /discard 1 cell/.test(error.message)), JSON.stringify(longTableRow));
 const tooManyBlocks = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Large" }, blocks: Array.from({ length: Model.LIMITS.maxBlocks + 1 }, () => ({ type: "paragraph", content: "" })) });
 check("document-raw-validation-has-block-limit", tooManyBlocks.errors.some((error) => error.path === "blocks"), JSON.stringify(tooManyBlocks.errors));
 let deeplyNestedCompatibility = {};

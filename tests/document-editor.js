@@ -130,7 +130,7 @@ async function main() {
       && html.includes('window.Prism = { manual: true }')
       && html.includes('./vendor/prism/prism-python.min.js?v=1.30.0')
       && html.includes('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1')
-      && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260915-46'), "document-model.js, document-store.js, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
+      && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260915-48'), "document-model.js, document-store.js, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
     check(
       "editor-document-typography-is-shared",
       [
@@ -366,8 +366,8 @@ async function main() {
     check(
       "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.17"
-        && editorSource.includes('const APP_VERSION = "v1.17";')
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.19"
+        && editorSource.includes('const APP_VERSION = "v1.19";')
         && !document.querySelector("#pnEditMetadata")
         && !document.querySelector("#pnExportLegacy")
         && !/Document info|文档信息|Proofnote Document Format/.test(actionMenu.textContent),
@@ -1098,6 +1098,54 @@ async function main() {
         && Boolean(importReport?.querySelector(".pn-import-diagnostic-list"))
         && editorSource.includes("renderSchemaDiagnostics"),
       importReport?.textContent || "missing schema diagnostic"
+    );
+    const shortTableRowJson = JSON.stringify({
+      format: "proofnote-document",
+      version: "1.0",
+      metadata: { name: "Short table row" },
+      blocks: [{ type: "table", columns: ["Name", "Score", "Status"], rows: [["Alice", "98"]] }]
+    }, null, 2);
+    if (importText) importText.value = shortTableRowJson;
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => /recoverable notice|可恢复提示/.test(document.querySelector("#pnStatus")?.textContent || ""));
+    check(
+      "editor-import-allows-short-table-rows-with-a-recoverable-notice",
+      /recoverable notice|可恢复提示/.test(document.querySelector("#pnStatus")?.textContent || "")
+        && document.querySelector("#pnImportModal")?.hidden === true,
+      document.querySelector("#pnStatus")?.textContent || "short table rows should import with a recoverable notice"
+    );
+    const longTableRowJson = JSON.stringify({
+      format: "proofnote-document",
+      version: "1.0",
+      metadata: { name: "Long table row" },
+      blocks: [{ type: "table", columns: ["Name", "Score", "Status"], rows: [["Bob", "91", "Pass", "EXTRA CELL"]] }]
+    }, null, 2);
+    if (importText) importText.value = longTableRowJson;
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => /Document structure error|文档结构错误/.test(importReport?.textContent || ""));
+    check(
+      "editor-import-blocks-long-table-rows-before-any-cell-is-discarded",
+      /Document structure error|文档结构错误/.test(importReport?.textContent || "")
+        && /blocks\[0\]\.rows\[0\]/.test(importReport?.textContent || "")
+        && /Expected 3 cells, found 4/.test(importReport?.textContent || "")
+        && importText?.value.includes("EXTRA CELL"),
+      importReport?.textContent || "long table rows should be rejected before cells are lost"
+    );
+    const multilineParagraphJson = JSON.stringify({
+      format: "proofnote-document",
+      version: "1.0",
+      metadata: { name: "Multiline paragraph" },
+      blocks: [{ type: "paragraph", content: "First line\nSecond line" }]
+    }, null, 2);
+    if (importText) importText.value = multilineParagraphJson;
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => document.querySelector("#pnCanvas .pn-canvas-paragraph-input")?.value === "First line\nSecond line");
+    check(
+      "editor-import-allows-legal-json-newline-escapes",
+      document.querySelector("#pnCanvas .pn-canvas-paragraph-input")?.value === "First line\nSecond line"
+        && !/Possible malformed LaTeX|可能已损坏的 LaTeX/.test(importReport?.textContent || "")
+        && editorSource.includes("SILENT_JSON_LATEX_COMMANDS"),
+      importReport?.textContent || "a legal JSON newline escape should import as a multiline paragraph"
     );
     if (importText) importText.value = JSON.stringify(importedProjectPayload);
     if (confirmImport) confirmImport.click();

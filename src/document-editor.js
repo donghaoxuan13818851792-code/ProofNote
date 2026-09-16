@@ -8,7 +8,7 @@
   if (!Model || !Store) return;
 
   // Increment this small, user-facing version for each released workspace update.
-  const APP_VERSION = "v1.17";
+  const APP_VERSION = "v1.19";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Standalone equation", "独立公式"], ["code", "Code", "代码"],
@@ -2801,6 +2801,16 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     return new Blob([text]).size;
   }
   const STRICT_JSON_PARSE_OPTIONS = { allowTrailingComma: false, disallowComments: true, allowEmptyContent: false };
+  // A raw JSON escape can silently consume only b, f, n, r, or t. Restrict
+  // the extra diagnostic to commands that are actually LaTeX, rather than
+  // treating ordinary JSON text such as "First line\\nSecond line" as math.
+  const SILENT_JSON_LATEX_COMMANDS = new Set([
+    "begin", "beta", "big", "bigg", "binom", "boldsymbol", "boxed",
+    "fbox", "forall", "frac",
+    "nabla", "ne", "neq", "newline", "not", "notin",
+    "right", "rightarrow",
+    "tan", "text", "textbf", "textcolor", "textit", "tfrac", "therefore", "theta", "times", "tiny", "to", "top", "triangle"
+  ]);
   function diagnosticPath(path) {
     if (!Array.isArray(path) || !path.length) return tr("文档根节点", "Document root");
     return path.reduce((result, part) => {
@@ -2911,6 +2921,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       const offset = match.index;
       if (escapedBackslashAt(source, offset)) continue;
       const command = source.slice(offset + 1).match(/^[A-Za-z]+/)?.[0] || match[1];
+      if (!SILENT_JSON_LATEX_COMMANDS.has(command.toLowerCase())) continue;
       const location = parser.getLocation(source, offset);
       const path = diagnosticPath(location && location.path);
       const blockIndex = location && Array.isArray(location.path) && location.path[0] === "blocks" ? location.path[1] : -1;
