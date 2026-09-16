@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Patch document-transition regressions
+      - name: Patch imported-template collision handling
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -27,150 +27,99 @@ jobs:
 
           editor = Path('src/document-editor.js')
           text = editor.read_text()
-
-          start = text.index('  async function duplicateLibraryDocument(id) {')
-          source_line = '    const source = documents.find((record) => record.id === id);\n'
-          source_pos = text.index(source_line, start)
-          end = source_pos + len(source_line)
-          replacement = (
-              '  async function duplicateLibraryDocument(id) {\n'
-              '    // Activating a duplicate is a document transition even when the\n'
-              '    // source row is not the currently open document. Flush the active\n'
-              '    // record first so its pending edits cannot be lost when the copy\n'
-              '    // replaces the in-memory editor state.\n'
-              '    const saved = await saveActiveDocumentNow();\n'
-              '    if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再复制。", "Autosave failed — export a backup before duplicating."), "error"); return; }\n'
-              '    const source = documents.find((record) => record.id === id);\n'
-          )
-          text = text[:start] + replacement + text[end:]
-
-          rename_start = text.index('    if (id === currentDocumentId) {\n      state.metadata.name = renamed.record.document.metadata.name;')
-          rename_end = text.index('    await refreshDocuments();', rename_start)
-          rename_replacement = (
-              '    if (id === currentDocumentId) {\n'
-              '      state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });\n'
-              '      editRevision = 0;\n'
-              '      hasUnsavedChanges = false;\n'
-              '      renderAll();\n'
-              '      root.requestAnimationFrame(syncCanvasScale);\n'
-              '    }\n'
-          )
-          text = text[:rename_start] + rename_replacement + text[rename_end:]
-
-          old_copy_name = '    const copiedName = documentName(source) + tr(" 副本", " copy");'
-          new_copy_name = '    const copiedName = uniqueLibraryDocumentName(documentName(source) + tr(" 副本", " copy"));'
-          if old_copy_name not in text and new_copy_name not in text:
-              raise SystemExit('duplicate name source pattern not found')
-          text = text.replace(old_copy_name, new_copy_name, 1)
-          editor.write_text(text)
+          old = '''      const template = Model.normalizeTemplate(raw);
+      const backend = await Store.saveTemplate(template);
+      if (backend === "failed") { showImportMessage(tr("模板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."), "error"); return; }
+      await refreshTemplates();
+      closeImport();
+      warnings = warnings.concat(validation.warnings || []);
+'''
+          new = '''      warnings = warnings.concat(validation.warnings || []);
+      let template = Model.normalizeTemplate(raw);
+      // Import is additive. `saveTemplate` is intentionally an upsert for
+      // explicit template edits, but an imported portable file must never
+      // overwrite an existing local template merely because both carry the
+      // same portable id.
+      const storedTemplateIds = new Set((await Store.listTemplates())
+        .map((item) => item && item.template && item.template.id)
+        .filter((id) => typeof id === "string" && id));
+      if (storedTemplateIds.has(template.template.id)) {
+        const importedInfo = { name: template.template.name, description: template.template.description };
+        do { template = Model.makeTemplate(template.document, importedInfo); }
+        while (storedTemplateIds.has(template.template.id));
+        warnings.push({
+          path: "template.id",
+          message: tr("模板 ID 已存在；已作为新模板导入。", "Template ID already exists; imported as a new template.")
+        });
+      }
+      const backend = await Store.saveTemplate(template);
+      if (backend === "failed") { showImportMessage(tr("模板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."), "error"); return; }
+      await refreshTemplates();
+      closeImport();
+'''
+          if old not in text:
+              raise SystemExit('template import source pattern not found')
+          editor.write_text(text.replace(old, new, 1))
 
           test = Path('tests/document-editor.js')
           text = test.read_text()
+          token = '    const blankProjectImportPayload = {'
+          if token not in text:
+              raise SystemExit('template collision test anchor not found')
+          regression = textwrap.dedent(r'''
+          // Importing a template is additive: a portable id collision must not
+          // silently overwrite a template already saved on this device.
+          const existingCollisionTemplate = {
+            format: "proofnote-template",
+            version: "1.0",
+            template: { id: "collision-template", name: "Original local template", description: "keep me" },
+            document: {
+              format: "proofnote-document",
+              version: "1.0",
+              metadata: { name: "Original local template document" },
+              blocks: [{ type: "title", content: "Original local template document" }]
+            }
+          };
+          await window.ProofnoteStore.saveTemplate(existingCollisionTemplate);
+          const incomingCollisionTemplate = {
+            format: "proofnote-template",
+            version: "1.0",
+            template: { id: "collision-template", name: "Imported collision template", description: "new import" },
+            document: {
+              format: "proofnote-document",
+              version: "1.0",
+              metadata: { name: "Imported collision template document" },
+              blocks: [{ type: "title", content: "Imported collision template document" }]
+            }
+          };
+          if (importText) importText.value = JSON.stringify(incomingCollisionTemplate);
+          if (confirmImport) confirmImport.click();
+          await settle(window, async () => (await window.ProofnoteStore.listTemplates()).some((item) => item.template?.name === "Imported collision template"), 1500);
+          const collisionTemplatesAfterImport = await window.ProofnoteStore.listTemplates();
+          const preservedCollisionTemplate = collisionTemplatesAfterImport.find((item) => item.template?.id === "collision-template");
+          const newlyImportedCollisionTemplate = collisionTemplatesAfterImport.find((item) => item.template?.name === "Imported collision template");
+          check(
+            "editor-template-import-id-collision-does-not-overwrite-local-template",
+            preservedCollisionTemplate?.template?.name === "Original local template"
+              && preservedCollisionTemplate?.template?.description === "keep me"
+              && Boolean(newlyImportedCollisionTemplate)
+              && newlyImportedCollisionTemplate.template.id !== "collision-template"
+              && /recoverable notice|可恢复提示/.test(document.querySelector("#pnStatus")?.textContent || "")
+              && editorSource.includes("an imported portable file must never")
+              && editorSource.includes("storedTemplateIds.has(template.template.id)"),
+            JSON.stringify(collisionTemplatesAfterImport.map((item) => item.template))
+          );
 
-          if 'editor-duplicating-another-document-flushes-active-edits-first' not in text:
-              token = '    check(\n      "editor-autosave-flushes-on-document-lifecycle",'
-              if token not in text:
-                  raise SystemExit('autosave lifecycle test anchor not found')
-              regression = textwrap.dedent(r'''
-              // Duplicating a different library row still activates the new copy. Make
-              // the active document dirty through a structural insertion (a guaranteed
-              // changed() path), then verify its save completes before duplication.
-              await new Promise((resolve) => window.setTimeout(resolve, 450));
-              const duplicateSourceRow = Array.from(document.querySelectorAll(".pn-document-item")).find((row) => Boolean(row.querySelector('.pn-document-open[aria-current="false"]')));
-              const duplicateSourceActions = duplicateSourceRow && duplicateSourceRow.querySelector(".pn-document-more");
-              const duplicateOther = duplicateSourceActions && Array.from(duplicateSourceActions.querySelectorAll("button")).find((control) => /Duplicate|制作副本/.test(control.textContent));
-              const originalTransitionSave = window.ProofnoteStore.saveDocument;
-              const originalTransitionDuplicate = window.ProofnoteStore.duplicateDocument;
-              const duplicateTransitionEvents = [];
-              window.ProofnoteStore.saveDocument = async (id, savedDocument) => {
-                duplicateTransitionEvents.push("save");
-                return originalTransitionSave.call(window.ProofnoteStore, id, savedDocument);
-              };
-              window.ProofnoteStore.duplicateDocument = async (id, name) => {
-                duplicateTransitionEvents.push("duplicate");
-                return originalTransitionDuplicate.call(window.ProofnoteStore, id, name);
-              };
-              const dirtyBlockCount = canvasBlockNodes(document).length;
-              const dirtyPicker = canvas.querySelector(".pn-insert-last .pn-insert-trigger");
-              if (dirtyPicker) dirtyPicker.click();
-              const dirtyChoice = Array.from(canvas.querySelectorAll(".pn-insert-choice")).find((choice) => /Paragraph|正文/.test(choice.textContent));
-              if (dirtyChoice) dirtyChoice.click();
-              if (duplicateSourceActions) duplicateSourceActions.open = true;
-              if (duplicateOther) duplicateOther.click();
-              await settle(window, () => duplicateTransitionEvents.includes("duplicate"), 1500);
-              window.ProofnoteStore.saveDocument = originalTransitionSave;
-              window.ProofnoteStore.duplicateDocument = originalTransitionDuplicate;
-              const duplicateSaveIndex = duplicateTransitionEvents.indexOf("save");
-              const duplicateCallIndex = duplicateTransitionEvents.indexOf("duplicate");
-              check(
-                "editor-duplicating-another-document-flushes-active-edits-first",
-                Boolean(duplicateOther)
-                  && Boolean(dirtyPicker)
-                  && Boolean(dirtyChoice)
-                  && canvasBlockNodes(document).length >= dirtyBlockCount
-                  && duplicateSaveIndex >= 0
-                  && duplicateCallIndex > duplicateSaveIndex
-                  && editorSource.includes("Activating a duplicate is a document transition"),
-                JSON.stringify(duplicateTransitionEvents)
-              );
-              ''').strip('\n')
-              regression = textwrap.indent(regression, '    ') + '\n\n'
-              text = text.replace(token, regression + token, 1)
-
-          if 'editor-library-rename-reloads-current-project-chrome' not in text:
-              rename_token = '    const invalidLatexJson = ['
-              if rename_token not in text:
-                  raise SystemExit('blank Project import test anchor not found')
-              rename_regression = textwrap.dedent(r'''
-              // Library rename persists a canonical Project name across metadata,
-              // title, running header, and footer. The live editor must reload that
-              // persisted record rather than keep stale title/header state.
-              await new Promise((resolve) => window.setTimeout(resolve, 450));
-              const currentProjectRow = documentLibrary && documentLibrary.querySelector(".pn-document-item.is-active");
-              const currentProjectActions = currentProjectRow && currentProjectRow.querySelector(".pn-document-more");
-              const renameCurrentProject = currentProjectActions && Array.from(currentProjectActions.querySelectorAll("button")).find((control) => /Rename|重命名/.test(control.textContent));
-              if (currentProjectActions) currentProjectActions.open = true;
-              if (renameCurrentProject) renameCurrentProject.click();
-              await settle(window, () => Boolean(documentLibrary && documentLibrary.querySelector(".pn-document-rename")));
-              const currentProjectRenameInput = documentLibrary && documentLibrary.querySelector(".pn-document-rename");
-              if (currentProjectRenameInput) currentProjectRenameInput.value = "Library project rename";
-              const saveProjectRename = documentLibrary && documentLibrary.querySelector(".pn-document-rename-save");
-              if (saveProjectRename) saveProjectRename.click();
-              await settle(window, () => document.querySelector("#pnFooterName")?.textContent === "Library project rename"
-                && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Library project rename"
-                && document.querySelector("#pnCanvas .pn-canvas-title-input")?.value === "Library project rename", 1500);
-              check(
-                "editor-library-rename-reloads-current-project-chrome",
-                Boolean(renameCurrentProject)
-                  && Boolean(currentProjectRenameInput)
-                  && Boolean(saveProjectRename)
-                  && document.querySelector("#pnFooterName")?.textContent === "Library project rename"
-                  && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Library project rename"
-                  && document.querySelector("#pnCanvas .pn-canvas-title-input")?.value === "Library project rename"
-                  && editorSource.includes("state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true })"),
-                JSON.stringify({
-                  footer: document.querySelector("#pnFooterName")?.textContent,
-                  header: document.querySelector("#pnPageHeader .pn-running-left")?.value,
-                  title: document.querySelector("#pnCanvas .pn-canvas-title-input")?.value
-                })
-              );
-              check(
-                "editor-automatic-duplicate-names-are-disambiguated",
-                editorSource.includes('const copiedName = uniqueLibraryDocumentName(documentName(source) + tr(" 副本", " copy"));'),
-                "automatic duplicate names should use the same library disambiguation as new Projects"
-              );
-              ''').strip('\n')
-              rename_regression = textwrap.indent(rename_regression, '    ') + '\n\n'
-              text = text.replace(rename_token, rename_regression + rename_token, 1)
-
-          test.write_text(text)
+          ''').strip('\n')
+          regression = textwrap.indent(regression, '    ') + '\n'
+          test.write_text(text.replace(token, regression + token, 1))
           PY
       - run: npm ci
       - run: npm test
-      - name: Commit branch-only fixes
+      - name: Commit branch-only fix
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/document-editor.js tests/document-editor.js
-          git commit -m "fix: preserve project identity across library actions"
+          git commit -m "fix: preserve local templates on import collision"
           git push origin HEAD:blue-team-hardening-20260916
