@@ -1,0 +1,128 @@
+name: branch-autofix
+
+on:
+  push:
+    branches: [blue-team-hardening-20260916]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Patch duplicate transition and regression test
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          editor = Path('src/document-editor.js')
+          text = editor.read_text()
+          old = '''  async function duplicateLibraryDocument(id) {
+              if (id === currentDocumentId) {
+                const saved = await saveActiveDocumentNow();
+                if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再复制。", "Autosave failed — export a backup before duplicating."), "error"); return; }
+              }
+              const source = documents.find((record) => record.id === id);
+          '''
+          # Keep the replacement independent of incidental indentation in the
+          # workflow heredoc by matching the real source form if needed.
+          real_old = '''  async function duplicateLibraryDocument(id) {
+            if (id === currentDocumentId) {
+              const saved = await saveActiveDocumentNow();
+              if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再复制。", "Autosave failed — export a backup before duplicating."), "error"); return; }
+            }
+            const source = documents.find((record) => record.id === id);
+          '''
+          real_new = '''  async function duplicateLibraryDocument(id) {
+            // Activating a duplicate is a document transition even when the
+            // source row is not the currently open document. Flush the active
+            // record first so its pending edits cannot be lost when the copy
+            // replaces the in-memory editor state.
+            const saved = await saveActiveDocumentNow();
+            if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再复制。", "Autosave failed — export a backup before duplicating."), "error"); return; }
+            const source = documents.find((record) => record.id === id);
+          '''
+          if real_old not in text:
+              raise SystemExit('duplicateLibraryDocument source pattern not found')
+          editor.write_text(text.replace(real_old, real_new, 1))
+
+          test = Path('tests/document-editor.js')
+          text = test.read_text()
+          anchor = '''    check(
+              "editor-autosave-flushes-on-document-lifecycle",
+          '''
+          real_anchor = '''    check(
+              "editor-autosave-flushes-on-document-lifecycle",
+          '''
+          # Python triple-quoted text above preserves the spaces exactly as
+          # written here; use a simpler unique token for insertion.
+          token = '    check(\n      "editor-autosave-flushes-on-document-lifecycle",'
+          if token not in text:
+              raise SystemExit('autosave lifecycle test anchor not found')
+          regression = r'''    // Duplicating a different library row still activates the new copy. The
+              // currently open document therefore has to be flushed first, just like an
+              // ordinary document switch.
+              await new Promise((resolve) => window.setTimeout(resolve, 450));
+              const duplicateTransitionTitle = document.querySelector("#pnCanvas .pn-document-title input, #pnCanvas .pn-document-title textarea");
+              const duplicateSourceRow = Array.from(document.querySelectorAll(".pn-document-item")).find((row) => Boolean(row.querySelector('.pn-document-open[aria-current="false"]')));
+              const duplicateSourceActions = duplicateSourceRow && duplicateSourceRow.querySelector(".pn-document-more");
+              const duplicateOther = duplicateSourceActions && Array.from(duplicateSourceActions.querySelectorAll("button")).find((control) => /Duplicate|制作副本/.test(control.textContent));
+              const originalTransitionSave = window.ProofnoteStore.saveDocument;
+              const originalTransitionDuplicate = window.ProofnoteStore.duplicateDocument;
+              const duplicateTransitionEvents = [];
+              window.ProofnoteStore.saveDocument = async (id, savedDocument) => {
+                const title = savedDocument.blocks.find((block) => block.type === "title");
+                duplicateTransitionEvents.push("save:" + (title && title.content || ""));
+                return originalTransitionSave.call(window.ProofnoteStore, id, savedDocument);
+              };
+              window.ProofnoteStore.duplicateDocument = async (id, name) => {
+                duplicateTransitionEvents.push("duplicate");
+                return originalTransitionDuplicate.call(window.ProofnoteStore, id, name);
+              };
+              if (duplicateTransitionTitle) {
+                duplicateTransitionTitle.value = "Unsaved before other duplicate";
+                duplicateTransitionTitle.dispatchEvent(new window.Event("input", { bubbles: true }));
+              }
+              if (duplicateSourceActions) duplicateSourceActions.open = true;
+              if (duplicateOther) duplicateOther.click();
+              await settle(window, () => duplicateTransitionEvents.includes("duplicate"), 1500);
+              window.ProofnoteStore.saveDocument = originalTransitionSave;
+              window.ProofnoteStore.duplicateDocument = originalTransitionDuplicate;
+              const duplicateSaveIndex = duplicateTransitionEvents.findIndex((event) => event === "save:Unsaved before other duplicate");
+              const duplicateCallIndex = duplicateTransitionEvents.indexOf("duplicate");
+              check(
+                "editor-duplicating-another-document-flushes-active-edits-first",
+                Boolean(duplicateTransitionTitle)
+                  && Boolean(duplicateOther)
+                  && duplicateSaveIndex >= 0
+                  && duplicateCallIndex > duplicateSaveIndex
+                  && editorSource.includes("Activating a duplicate is a document transition"),
+                JSON.stringify(duplicateTransitionEvents)
+              );
+
+          '''
+          # The raw string is indented by the Python source. Dedent once before
+          # inserting it into the JavaScript file.
+          import textwrap
+          regression = textwrap.dedent(regression)
+          text = text.replace(token, regression + token, 1)
+          test.write_text(text)
+          PY
+      - run: npm ci
+      - run: npm test
+      - name: Commit branch-only fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/document-editor.js tests/document-editor.js
+          git commit -m "fix: flush active edits before duplicating another document"
+          git push origin HEAD:blue-team-hardening-20260916
