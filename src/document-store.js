@@ -36,6 +36,27 @@
       lastOpenedAt: existing && existing.lastOpenedAt || now
     };
   }
+  // Project documents expose one reader-facing name in the library, title,
+  // running header, and footer. Library-level rename/duplicate operations must
+  // preserve that invariant just like an in-canvas title edit does.
+  function documentWithName(document, name) {
+    const next = clone(document || {});
+    const nextName = String(name || "").trim();
+    next.metadata = Object.assign({}, next.metadata, { name: nextName });
+    if (next.metadata.documentType === "Project") {
+      const blocks = Array.isArray(next.blocks) ? next.blocks : [];
+      const title = blocks.find((block) => block && block.type === "title");
+      if (title) title.content = nextName;
+      const header = next.metadata.runningHeader && typeof next.metadata.runningHeader === "object" && !Array.isArray(next.metadata.runningHeader)
+        ? next.metadata.runningHeader : {};
+      const hasRight = Object.prototype.hasOwnProperty.call(header, "right");
+      next.metadata.runningHeader = {
+        left: nextName,
+        right: hasRight ? String(header.right || "") : "Project"
+      };
+    }
+    return next;
+  }
   function validRecord(value) { return Boolean(value && typeof value === "object" && typeof value.id === "string" && value.id && value.document && typeof value.document === "object"); }
   function ordered(records) {
     return records.filter(validRecord).sort((first, second) => String(second.updatedAt || second.lastOpenedAt || "").localeCompare(String(first.updatedAt || first.lastOpenedAt || "")));
@@ -245,7 +266,9 @@
         const record = recordFor(document, existing || { id: id || newDocumentId() });
         record.id = id || record.id;
         record.lastOpenedAt = existing && existing.lastOpenedAt || record.lastOpenedAt;
-        await writeIndexedLibrary({ put: [record], currentId: id || library.currentId || record.id });
+        // Saving a background record must not silently switch the current
+        // document. The open/create operations own current-document changes.
+        await writeIndexedLibrary({ put: [record], currentId: library.currentId || record.id });
         return "indexeddb";
       }, () => {
         const library = fallbackLibrary(document);
@@ -262,9 +285,10 @@
       const nextName = String(name || "").trim();
       if (!nextName) return null;
       const apply = (record) => {
-        const next = Object.assign({}, record, { document: clone(record.document), updatedAt: timestamp() });
-        next.document.metadata = Object.assign({}, next.document.metadata, { name: nextName, updatedAt: next.updatedAt });
-        return next;
+        const updatedAt = timestamp();
+        const document = documentWithName(record.document, nextName);
+        document.metadata = Object.assign({}, document.metadata, { updatedAt });
+        return Object.assign({}, record, { document, updatedAt });
       };
       return useStorageSession(async () => {
         const library = await readIndexedLibrary();
@@ -288,8 +312,9 @@
         const library = await readIndexedLibrary();
         const source = library.records.find((record) => record.id === id);
         if (!source) return null;
-        const document = clone(source.document);
-        document.metadata = Object.assign({}, document.metadata, { name: String(name || document.metadata && document.metadata.name || "Untitled document"), updatedAt: timestamp() });
+        const nextName = String(name || source.document.metadata && source.document.metadata.name || "Untitled document");
+        const document = documentWithName(source.document, nextName);
+        document.metadata = Object.assign({}, document.metadata, { updatedAt: timestamp() });
         const record = recordFor(document);
         await writeIndexedLibrary({ put: [record], currentId: record.id });
         return { record: clone(record), backend: "indexeddb" };
@@ -297,8 +322,9 @@
         const library = fallbackLibrary(null);
         const source = library.records.find((record) => record.id === id);
         if (!source) return null;
-        const document = clone(source.document);
-        document.metadata = Object.assign({}, document.metadata, { name: String(name || document.metadata && document.metadata.name || "Untitled document"), updatedAt: timestamp() });
+        const nextName = String(name || source.document.metadata && source.document.metadata.name || "Untitled document");
+        const document = documentWithName(source.document, nextName);
+        document.metadata = Object.assign({}, document.metadata, { updatedAt: timestamp() });
         const record = recordFor(document);
         library.records.push(record); library.current = record; library.currentId = record.id;
         return { record: clone(record), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
