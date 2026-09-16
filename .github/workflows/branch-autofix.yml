@@ -19,14 +19,61 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Prevent deletion resurrection race
-        run: echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgplZGl0b3IgPSBQYXRoKCJzcmMvZG9jdW1lbnQtZWRpdG9yLmpzIikKdGV4dCA9IGVkaXRvci5yZWFkX3RleHQoKQpzdGFydF9tYXJrZXIgPSAiICAgICAgb25Db25maXJtOiBhc3luYyAoKSA9PiB7XG4gICAgICAgIGNvbnN0IGJhY2tlbmQgPSBhd2FpdCBTdG9yZS5kZWxldGVEb2N1bWVudChpZCk7IgpzdGFydCA9IHRleHQuaW5kZXgoc3RhcnRfbWFya2VyKQplbmRfbWFya2VyID0gIiAgICAgIH1cbiAgICB9KTtcbiAgfVxuICBhc3luYyBmdW5jdGlvbiBzYXZlQ3VycmVudEFzVGVtcGxhdGUiCmVuZCA9IHRleHQuaW5kZXgoZW5kX21hcmtlciwgc3RhcnQpCnJlcGxhY2VtZW50ID0gIlxuIi5qb2luKFsKICAgICIgICAgICBvbkNvbmZpcm06IGFzeW5jICgpID0+IHsiLAogICAgIiAgICAgICAgY29uc3QgZGVsZXRpbmdDdXJyZW50ID0gaWQgPT09IGN1cnJlbnREb2N1bWVudElkOyIsCiAgICAiICAgICAgICBpZiAoZGVsZXRpbmdDdXJyZW50KSB7IiwKICAgICIgICAgICAgICAgLy8gRGVsZXRpb24gaW50ZW50aW9uYWxseSBkaXNjYXJkcyBhbnkgbm90LXlldC1zY2hlZHVsZWQgZWRpdHMsIGJ1dCBhIiwKICAgICIgICAgICAgICAgLy8gc2F2ZSB0aGF0IGlzIGFscmVhZHkgaW4gZmxpZ2h0IG11c3QgZmluaXNoIGJlZm9yZSB0aGUgcmVjb3JkIGlzIiwKICAgICIgICAgICAgICAgLy8gcmVtb3ZlZC4gT3RoZXJ3aXNlIHRoYXQgb2xkZXIgd3JpdGUgY2FuIGNvbXBsZXRlIGFmdGVyIGRlbGV0aW9uIGFuZCIsCiAgICAiICAgICAgICAgIC8vIHJlc3VycmVjdCB0aGUgZG9jdW1lbnQgdGhhdCB0aGUgYXV0aG9yIGp1c3QgZGVsZXRlZC4iLAogICAgIiAgICAgICAgICBjbGVhclRpbWVvdXQoc2F2ZVRpbWVyKTsiLAogICAgIiAgICAgICAgICB0cnkgeyBhd2FpdCBzYXZlUXVldWU7IH0gY2F0Y2ggKF8pIHt9IiwKICAgICIgICAgICAgIH0iLAogICAgIiAgICAgICAgY29uc3QgYmFja2VuZCA9IGF3YWl0IFN0b3JlLmRlbGV0ZURvY3VtZW50KGlkKTsiLAogICAgIiAgICAgICAgaWYgKGJhY2tlbmQgPT09IFwiZmFpbGVkXCIpIHsgc2V0U3RhdHVzKHRyKFwi5Yig6Zmk5paH5qGj5aSx6LSl44CCXCIsIFwiQ291bGQgbm90IGRlbGV0ZSBkb2N1bWVudC5cIiksIFwiZXJyb3JcIik7IHJldHVybjsgfSIsCiAgICAiICAgICAgICBpZiAoZGVsZXRpbmdDdXJyZW50KSB7IiwKICAgICIgICAgICAgICAgY29uc3Qgb3BlbmVkID0gYXdhaXQgb3BlblJlbWFpbmluZ0RvY3VtZW50QWZ0ZXJEZWxldGlvbigpOyIsCiAgICAiICAgICAgICAgIGlmICghb3BlbmVkKSB7IHNldFN0YXR1cyh0cihcIuWIoOmZpOWQjuaXoOazleaJk+W8gOWFtuS9meaWh+aho+OAglwiLCBcIkNvdWxkIG5vdCBvcGVuIGEgcmVtYWluaW5nIGRvY3VtZW50IGFmdGVyIGRlbGV0aW9uLlwiKSwgXCJlcnJvclwiKTsgcmV0dXJuOyB9IiwKICAgICIgICAgICAgICAgc2V0U3RhdHVzKHRyKFwi5paH5qGj5bey5Yig6ZmkXCIsIFwiRG9jdW1lbnQgZGVsZXRlZFwiKSwgXCJzYXZlZFwiKTsiLAogICAgIiAgICAgICAgfSBlbHNlIHsiLAogICAgIiAgICAgICAgICBhd2FpdCByZWZyZXNoRG9jdW1lbnRzKCk7IiwKICAgICIgICAgICAgICAgc2V0U3RhdHVzKHRyKFwi5paH5qGj5bey5Yig6ZmkXCIsIFwiRG9jdW1lbnQgZGVsZXRlZFwiKSwgXCJzYXZlZFwiKTsiLAogICAgIiAgICAgICAgfSIsCiAgICAiICAgICAgfSIsCl0pCnRleHQgPSB0ZXh0WzpzdGFydF0gKyByZXBsYWNlbWVudCArICJcbiAgICB9KTtcbiAgfVxuICBhc3luYyBmdW5jdGlvbiBzYXZlQ3VycmVudEFzVGVtcGxhdGUiICsgdGV4dFtlbmQgKyBsZW4oZW5kX21hcmtlcik6XQplZGl0b3Iud3JpdGVfdGV4dCh0ZXh0KQoKdGVzdCA9IFBhdGgoInRlc3RzL2RvY3VtZW50LWVkaXRvci5qcyIpCnRleHQgPSB0ZXN0LnJlYWRfdGV4dCgpCmFuY2hvciA9ICcgICAgY29uc3QgZG9jdW1lbnRDb3VudEJlZm9yZUN1cnJlbnREZWxldGUgPSBkb2N1bWVudExpYnJhcnkgPyBkb2N1bWVudExpYnJhcnkucXVlcnlTZWxlY3RvckFsbCgiLnBuLWRvY3VtZW50LWl0ZW0iKS5sZW5ndGggOiAwO1xuJwppZiBhbmNob3Igbm90IGluIHRleHQ6IHJhaXNlIFN5c3RlbUV4aXQoImRlbGV0ZSB0ZXN0IGFuY2hvciBub3QgZm91bmQiKQpzZXR1cCA9ICJcbiIuam9pbihbCiAgICAiICAgIC8vIEEgcXVldWVkIGF1dG9zYXZlIG11c3Qgbm90IGJlIGFsbG93ZWQgdG8gZmluaXNoIGFmdGVyIGN1cnJlbnQtZG9jdW1lbnQiLAogICAgIiAgICAvLyBkZWxldGlvbiwgb3IgaXQgY2FuIHJlY3JlYXRlIHRoZSBkZWxldGVkIHJlY29yZC4gSG9sZCBvbmUgd3JpdGUgb3BlbiBhbmQiLAogICAgIiAgICAvLyBhc3NlcnQgdGhhdCBkZWxldGUgd2FpdHMgZm9yIGl0IGJlZm9yZSByZW1vdmluZyB0aGUgYWN0aXZlIHJlY29yZC4iLAogICAgIiAgICBhd2FpdCBuZXcgUHJvbWlzZSgocmVzb2x2ZSkgPT4gd2luZG93LnNldFRpbWVvdXQocmVzb2x2ZSwgNDUwKSk7IiwKICAgICIgICAgY29uc3Qgb3JpZ2luYWxEZWxldGVSYWNlU2F2ZSA9IHdpbmRvdy5Qcm9vZm5vdGVTdG9yZS5zYXZlRG9jdW1lbnQ7IiwKICAgICIgICAgY29uc3Qgb3JpZ2luYWxEZWxldGVSYWNlRGVsZXRlID0gd2luZG93LlByb29mbm90ZVN0b3JlLmRlbGV0ZURvY3VtZW50OyIsCiAgICAiICAgIGNvbnN0IGRlbGV0ZVJhY2VFdmVudHMgPSBbXTsiLAogICAgIiAgICBsZXQgcmVsZWFzZURlbGV0ZVJhY2VTYXZlID0gbnVsbDsiLAogICAgIiAgICB3aW5kb3cuUHJvb2Zub3RlU3RvcmUuc2F2ZURvY3VtZW50ID0gKCkgPT4gbmV3IFByb21pc2UoKHJlc29sdmUpID0+IHsiLAogICAgIiAgICAgIGRlbGV0ZVJhY2VFdmVudHMucHVzaChcInNhdmUtc3RhcnRcIik7IiwKICAgICIgICAgICByZWxlYXNlRGVsZXRlUmFjZVNhdmUgPSAoKSA9PiB7IiwKICAgICIgICAgICAgIGRlbGV0ZVJhY2VFdmVudHMucHVzaChcInNhdmUtZmluaXNoXCIpOyIsCiAgICAiICAgICAgICByZXNvbHZlKFwibG9jYWxTdG9yYWdlXCIpOyIsCiAgICAiICAgICAgfTsiLAogICAgIiAgICB9KTsiLAogICAgIiAgICB3aW5kb3cuUHJvb2Zub3RlU3RvcmUuZGVsZXRlRG9jdW1lbnQgPSBhc3luYyAoaWQpID0+IHsiLAogICAgIiAgICAgIGRlbGV0ZVJhY2VFdmVudHMucHVzaChcImRlbGV0ZVwiKTsiLAogICAgIiAgICAgIHJldHVybiBvcmlnaW5hbERlbGV0ZVJhY2VEZWxldGUuY2FsbCh3aW5kb3cuUHJvb2Zub3RlU3RvcmUsIGlkKTsiLAogICAgIiAgICB9OyIsCiAgICAnICAgIGNvbnN0IGRlbGV0ZVJhY2VUaXRsZSA9IGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoIiNwbkNhbnZhcyAucG4tZG9jdW1lbnQtdGl0bGUgaW5wdXQsICNwbkNhbnZhcyAucG4tZG9jdW1lbnQtdGl0bGUgdGV4dGFyZWEiKTsnLAogICAgIiAgICBpZiAoZGVsZXRlUmFjZVRpdGxlKSB7IiwKICAgICAnICAgICAgZGVsZXRlUmFjZVRpdGxlLnZhbHVlID0gIlBlbmRpbmcgc2F2ZSBiZWZvcmUgZGVsZXRlIjsnLAogICAgJyAgICAgIGRlbGV0ZVJhY2VUaXRsZS5kaXNwYXRjaEV2ZW50KG5ldyB3aW5kb3cuRXZlbnQoImlucHV0IiwgeyBidWJibGVzOiB0cnVlIH0pKTsnLAogICAgIiAgICB9IiwKICAgICcgICAgYXdhaXQgc2V0dGxlKHdpbmRvdywgKCkgPT4gdHlwZW9mIHJlbGVhc2VEZWxldGVSYWNlU2F2ZSA9PT0gImZ1bmN0aW9uIiwgMTAwMCk7JywKICAgICgiIiwKXSkKdGV4dCA9IHRleHQucmVwbGFjZShhbmNob3IsIHNldHVwICsgYW5jaG9yLCAxKQpvbGRfc3RhcnQgPSAnICAgIGlmIChkZWxldGVBY2NlcHQpIGRlbGV0ZUFjY2VwdC5jbGljaygpO1xuICAgIGF3YWl0IHNldHRsZSh3aW5kb3csICgpID0+IGRvY3VtZW50TGlicmFyeSAmJiBkb2N1bWVudExpYnJhcnkucXVlcnlTZWxlY3RvckFsbCgiLnBuLWRvY3VtZW50LWl0ZW0iKS5sZW5ndGggPT09IGRvY3VtZW50Q291bnRCZWZvcmVDdXJyZW50RGVsZXRlIC0gMSk7XG4gICAgY2hlY2soXG4gICAgICAiZWRpdG9yLWRlbGV0aW5nLWN1cnJlbnQtZG9jdW1lbnQtb3BlbnMtYW4tZXhpc3RpbmctZG9jdW1lbnQtd2l0aG91dC1jcmVhdGluZy1vbmUiLApwb3MgPSB0ZXh0LmluZGV4KG9sZF9zdGFydCkKYXNzZXJ0X2VuZF9tYXJrZXIgPSAnICAgICApO1xuXG4gICAgLy8gSG9sZCB0aGUgZmlyc3Qgd3JpdGUgb3BlbicKYXNzZXJ0X2VuZCA9IHRleHQuaW5kZXgoYXNzZXJ0X2VuZF9tYXJrZXIsIHBvcykKbmV3X2Fzc2VydCA9ICJcbiIuam9pbihbCiAgICAiICAgIGlmIChkZWxldGVBY2NlcHQpIGRlbGV0ZUFjY2VwdC5jbGljaygpOyIsCiAgICAiICAgIGF3YWl0IG5ldyBQcm9taXNlKChyZXNvbHZlKSA9PiB3aW5kb3cuc2V0VGltZW91dChyZXNvbHZlLCAyMCkpOyIsCiAgICAiICAgIGNvbnN0IGRlbGV0ZVN0YXJ0ZWRCZWZvcmVRdWV1ZWRTYXZlRmluaXNoZWQgPSBkZWxldGVSYWNlRXZlbnRzLmluY2x1ZGVzKFwiZGVsZXRlXCIpOyIsCiAgICAiICAgIGlmIChyZWxlYXNlRGVsZXRlUmFjZVNhdmUpIHJlbGVhc2VEZWxldGVSYWNlU2F2ZSgpOyIsCiAgICAiICAgIGF3YWl0IHNldHRsZSh3aW5kb3csICgpID0+IGRvY3VtZW50TGlicmFyeSAmJiBkb2N1bWVudExpYnJhcnkucXVlcnlTZWxlY3RvckFsbChcIi5wbi1kb2N1bWVudC1pdGVtXCIpLmxlbmd0aCA9PT0gZG9jdW1lbnRDb3VudEJlZm9yZUN1cnJlbnREZWxldGUgLSAxKTsiLAogICAgIiAgICB3aW5kb3cuUHJvb2Zub3RlU3RvcmUuc2F2ZURvY3VtZW50ID0gb3JpZ2luYWxEZWxldGVSYWNlU2F2ZTsiLAogICAgIiAgICB3aW5kb3cuUHJvb2Zub3RlU3RvcmUuZGVsZXRlRG9jdW1lbnQgPSBvcmlnaW5hbERlbGV0ZVJhY2VEZWxldGU7IiwKICAgICIgICAgY2hlY2soIiwKICAgICcgICAgICAiZWRpdG9yLWRlbGV0aW5nLWN1cnJlbnQtZG9jdW1lbnQtd2FpdHMtZm9yLWluZmxpZ2h0LXNhdmUiLCcsCiAgICAiICAgICAgQm9vbGVhbihkZWxldGVSYWNlVGl0bGUpIiwKICAgICcgICAgICAgICYmIGRlbGV0ZVJhY2VFdmVudHMuaW5kZXhPZihcInNhdmUtc3RhcnRcIikgPj0gMCcsCiAgICAnICAgICAgICAmJiBkZWxldGVSYWNlRXZlbnRzLmluZGV4T2YoXCJzYXZlLWZpbmlzaFwiKSA+IGRlbGV0ZVJhY2VFdmVudHMuaW5kZXhPZihcInNhdmUtc3RhcnRcIiknLAogICAgJyAgICAgICAgJiYgZGVsZXRlUmFjZUV2ZW50cy5pbmRleE9mKFwiZGVsZXRlXCIpID4gZGVsZXRlUmFjZUV2ZW50cy5pbmRleE9mKFwic2F2ZS1maW5pc2hcIiknLAogICAgIiAgICAgICAgJiYgIWRlbGV0ZVN0YXJ0ZWRCZWZvcmVRdWV1ZWRTYXZlRmluaXNoZWQiLAogICAgJyAgICAgICAgJiYgZWRpdG9yU291cmNlLmluY2x1ZGVzKFwiYSBzYXZlIHRoYXQgaXMgYWxyZWFkeSBpbiBmbGlnaHQgbXVzdCBmaW5pc2ggYmVmb3JlIHRoZSByZWNvcmQgaXNcIiksJywKICAgICIgICAgICBKU09OLnN0cmluZ2lmeShkZWxldGVSYWNlRXZlbnRzKSIsCiAgICAiICAgICk7IiwKICAgICIgICAgY2hlY2soIiwKICAgICcgICAgICAiZWRpdG9yLWRlbGV0aW5nLWN1cnJlbnQtZG9jdW1lbnQtb3BlbnMtYW4tZXhpc3RpbmctZG9jdW1lbnQtd2l0aG91dC1jcmVhdGluZy1vbmUiLCcsCiAgICAiICAgICAgQm9vbGVhbihkb2N1bWVudExpYnJhcnkgJiYgYWN0aXZlRG9jdW1lbnQgJiYgZGVsZXRlQ3VycmVudCkiLAogICAgJyAgICAgICAgJiYgZG9jdW1lbnRMaWJyYXJ5LnF1ZXJ5U2VsZWN0b3JBbGwoXCIucG4tZG9jdW1lbnQtaXRlbVwiKS5sZW5ndGggPT09IGRvY3VtZW50Q291bnRCZWZvcmVDdXJyZW50RGVsZXRlIC0gMScsCiAgICAnICAgICAgICAmJiBkb2N1bWVudExpYnJhcnkucXVlcnlTZWxlY3RvcihcJy5wbi1kb2N1bWVudC1vcGVuW2FyaWEtY3VycmVudD0idHJ1ZSJdXCcpICE9PSBhY3RpdmVEb2N1bWVudCcsCiAgICAnICAgICAgICAmJiBlZGl0b3JTb3VyY2UuaW5jbHVkZXMoXCJvcGVuUmVtYWluaW5nRG9jdW1lbnRBZnRlckRlbGV0aW9uXCIpJywKICAgICcgICAgICAgICYmICFlZGl0b3JTb3VyY2UuaW5jbHVkZXMoXCJjcmVhdGVCbGFua0xpYnJhcnlEb2N1bWVudFwiKSwnLAogICAgJyAgICAgIGRvY3VtZW50TGlicmFyeSA/IGRvY3VtZW50TGlicmFyeS50ZXh0Q29udGVudCA6IFwiY3VycmVudC1kb2N1bWVudCBkZWxldGlvbiBzaG91bGQgbm90IGNyZWF0ZSBhIHJlcGxhY2VtZW50IHdoaWxlIGRvY3VtZW50cyByZW1haW5cIicsCiAgICAiICAgICk7IiwKXSkKdGV4dCA9IHRleHRbOnBvc10gKyBuZXdfYXNzZXJ0ICsgIlxuXG4gICAgLy8gSG9sZCB0aGUgZmlyc3Qgd3JpdGUgb3BlbiIgKyB0ZXh0W2Fzc2VydF9lbmQgKyBsZW4oYXNzZXJ0X2VuZF9tYXJrZXIpOl0KdGVzdC53cml0ZV90ZXh0KHRleHQpCg==' | base64 -d | python
+      - name: Prevent current-document deletion resurrection
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/document-editor.js')
+          s = p.read_text()
+          old = '''      onConfirm: async () => {
+            const backend = await Store.deleteDocument(id);
+            if (backend === "failed") { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
+            if (id === currentDocumentId) {
+              const opened = await openRemainingDocumentAfterDeletion();
+              if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
+              setStatus(tr("文档已删除", "Document deleted"), "saved");
+            } else {
+              await refreshDocuments();
+              setStatus(tr("文档已删除", "Document deleted"), "saved");
+            }
+          }
+          '''
+          # The workflow YAML adds four indentation spaces to the script text;
+          # Python's heredoc removes none. Normalize the source snippet once.
+          old = old.replace('\n    ', '\n')
+          new = '''      onConfirm: async () => {
+            const deletingCurrent = id === currentDocumentId;
+            if (deletingCurrent) {
+              // Deletion intentionally discards edits that have not entered the save
+              // queue yet. A save already in flight is different: it must finish
+              // before deletion, otherwise it can complete afterwards and recreate
+              // the record the author just removed.
+              clearTimeout(saveTimer);
+              try { await saveQueue; } catch (_) {}
+            }
+            const backend = await Store.deleteDocument(id);
+            if (backend === "failed") { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
+            if (deletingCurrent) {
+              const opened = await openRemainingDocumentAfterDeletion();
+              if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
+              setStatus(tr("文档已删除", "Document deleted"), "saved");
+            } else {
+              await refreshDocuments();
+              setStatus(tr("文档已删除", "Document deleted"), "saved");
+            }
+          }
+          '''
+          new = new.replace('\n    ', '\n')
+          if old not in s:
+              raise SystemExit('delete confirmation source pattern not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
       - run: npm ci
       - run: npm test
       - name: Commit branch-only fix
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/document-editor.js tests/document-editor.js
-          git commit -m "fix: serialize current deletion with pending saves"
+          git add src/document-editor.js
+          git commit -m "fix: serialize deletion behind pending saves"
           git push origin HEAD:blue-team-hardening-20260916
