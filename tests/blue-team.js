@@ -137,6 +137,16 @@ async function main() {
       && duplicated.record.document.metadata.runningHeader.left === "Project copy"
   );
 
+  const staleFallbackStore = loadStore({ localStorage: memoryStorage() });
+  const staleFallbackCreated = await staleFallbackStore.createDocument(documentWith([], { name: "Disposable fallback" }));
+  await staleFallbackStore.deleteDocument(staleFallbackCreated.record.id);
+  const staleFallbackSave = await staleFallbackStore.saveDocument(staleFallbackCreated.record.id, documentWith([], { name: "Should stay deleted" }));
+  const staleFallbackRecords = await staleFallbackStore.listDocuments();
+  check(
+    "store-save-cannot-resurrect-deleted-local-identity",
+    staleFallbackSave === "failed" && !staleFallbackRecords.some((record) => record.id === staleFallbackCreated.record.id)
+  );
+
   const indexedDB = new IDBFactory();
   const IndexedStore = loadStore({ indexedDB });
   const first = await IndexedStore.createDocument(documentWith([], { name: "First" }));

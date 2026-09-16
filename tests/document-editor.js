@@ -1181,7 +1181,7 @@ check(
         && document.querySelector("#pnFooterName")?.textContent === "Library project rename"
         && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Library project rename"
         && document.querySelector("#pnCanvas .pn-canvas-title-input")?.value === "Library project rename"
-        && editorSource.includes("state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true })"),
+        && editorSource.includes("const persisted = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true })") && editorSource.includes("const reconciled = await saveActiveDocumentNow()"),
       JSON.stringify({
         footer: document.querySelector("#pnFooterName")?.textContent,
         header: document.querySelector("#pnPageHeader .pn-running-left")?.value,
@@ -1473,6 +1473,30 @@ check(
         && editorSource.includes("flushCurrentDocumentUntilClean"),
       JSON.stringify(deferredSaves.map((save) => titleFromSnapshot(save)))
     );
+    const functionSlice = (startMarker, endMarker) => {
+      const start = editorSource.indexOf(startMarker);
+      const end = editorSource.indexOf(endMarker, start + startMarker.length);
+      return start >= 0 && end > start ? editorSource.slice(start, end) : "";
+    };
+    const openTransitionSource = functionSlice("async function openLibraryDocument", "async function finishDocumentRename");
+    const duplicateTransitionSource = functionSlice("async function duplicateLibraryDocument", "async function openRemainingDocumentAfterDeletion");
+    const createTransitionSource = functionSlice("async function createNewProject", "function chooseNewDocument");
+    const templateTransitionSource = functionSlice("async function useSelectedTemplate", "async function openLibraryDocument");
+    const orderedFinalFlush = (source, awaitedOperation, activation) => {
+      const operationIndex = source.indexOf(awaitedOperation);
+      const flushIndex = source.lastIndexOf("const finalSaved = await saveActiveDocumentNow();");
+      const activationIndex = source.indexOf(activation);
+      return operationIndex >= 0 && flushIndex > operationIndex && activationIndex > flushIndex;
+    };
+    check(
+      "editor-document-transitions-final-flush-before-activation",
+      orderedFinalFlush(openTransitionSource, "await Store.openDocument", "await activateDocument")
+        && orderedFinalFlush(duplicateTransitionSource, "await Store.duplicateDocument", "await activateDocument")
+        && orderedFinalFlush(createTransitionSource, "await Store.createDocument", "await activateDocument")
+        && orderedFinalFlush(templateTransitionSource, "await Store.createDocument", "await activateDocument"),
+      "document transitions must flush edits that arrive while storage operations are in flight"
+    );
+
     // Duplicating a different library row still activates the new copy. Make
     // the active document dirty through a structural insertion (a guaranteed
     // changed() path), then verify its save completes before duplication.

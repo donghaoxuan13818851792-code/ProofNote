@@ -274,26 +274,33 @@
     },
     async saveDocument(id, document) {
       return useStorageSession(async () => {
+        if (!id) return "failed";
         const library = await readIndexedLibrary();
         const existing = library.records.find((record) => record.id === id);
-        const record = recordFor(document, existing || { id: id || newDocumentId() });
-        record.id = id || record.id;
-        record.lastOpenedAt = existing && existing.lastOpenedAt || record.lastOpenedAt;
+        // saveDocument updates an established local identity. Creation belongs
+        // exclusively to createDocument; otherwise a stale tab can recreate a
+        // record that was intentionally deleted elsewhere.
+        if (!existing) return "failed";
+        const record = recordFor(document, existing);
+        record.id = id;
+        record.lastOpenedAt = existing.lastOpenedAt || record.lastOpenedAt;
         // Saving a background record must not silently switch the current
         // document. The open/create operations own current-document changes.
         await writeIndexedLibrary({ put: [record], currentId: library.currentId || record.id });
         return "indexeddb";
       }, () => {
-        const library = fallbackLibrary(document);
+        if (!id) return "failed";
+        const library = fallbackLibrary(null);
         const index = library.records.findIndex((record) => record.id === id);
-        const record = recordFor(document, index >= 0 ? library.records[index] : { id: id || newDocumentId() });
-        record.id = id || record.id;
-        if (index >= 0) library.records[index] = record;
-        else library.records.push(record);
+        if (index < 0) return "failed";
+        const record = recordFor(document, library.records[index]);
+        record.id = id;
+        library.records[index] = record;
         if (library.currentId === record.id) library.current = record;
         return persistFallbackLibrary(library) ? "localStorage" : "failed";
       }, "failed");
     },
+
     async renameDocument(id, name) {
       const nextName = String(name || "").trim();
       if (!nextName) return null;

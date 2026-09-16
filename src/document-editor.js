@@ -869,6 +869,8 @@
       setStatus(tr("新建项目失败。", "Could not create project."), "error");
       return;
     }
+    const finalSaved = await saveActiveDocumentNow();
+    if (finalSaved === "failed") { setStatus(tr("新建期间产生的编辑无法保存；新项目已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the project could not be saved; the project was created but not opened. Export the current document first."), "error"); return; }
     closeNewProject();
     await activateDocument(created.record, { status: false });
     setStatus(tr("已新建项目", "New project created"), "saved");
@@ -884,6 +886,8 @@
     document.metadata.name = String(title && title.content || "").trim() || template.template.name;
     const created = await Store.createDocument(document);
     if (!created || !created.record || created.backend === "failed") { setStatus(tr("无法从模板创建文档。", "Could not create a document from this template."), "error"); return; }
+    const finalSaved = await saveActiveDocumentNow();
+    if (finalSaved === "failed") { setStatus(tr("创建期间产生的编辑无法保存；新文档已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the document could not be saved; the new document was created but not opened. Export the current document first."), "error"); return; }
     selectedTemplateId = template.template.id;
     await activateDocument(created.record, { status: false });
     selectedTemplateId = template.template.id;
@@ -896,6 +900,8 @@
     if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再切换。", "Autosave failed — export a backup before switching documents."), "error"); return; }
     const opened = await Store.openDocument(id);
     if (!opened || !opened.record || opened.backend === "failed") { setStatus(tr("无法打开文档。", "Could not open document."), "error"); return; }
+    const finalSaved = await saveActiveDocumentNow();
+    if (finalSaved === "failed") { setStatus(tr("切换期间产生的编辑无法保存；请导出当前文档备份后重试。", "Edits made during the switch could not be saved; export the current document and try again."), "error"); return; }
     await activateDocument(opened.record);
   }
   async function finishDocumentRename(id, name) {
@@ -912,9 +918,22 @@
     if (!renamed || !renamed.record || renamed.backend === "failed") { setStatus(tr("重命名失败。", "Could not rename document."), "error"); return; }
     renamingDocumentId = "";
     if (id === currentDocumentId) {
-      state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
-      editRevision = 0;
-      hasUnsavedChanges = false;
+      const persisted = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
+      state.metadata.name = persisted.metadata.name;
+      state.metadata.updatedAt = persisted.metadata.updatedAt;
+      if (isProjectDocument()) {
+        state.metadata.runningHeader = Object.assign({}, persisted.metadata.runningHeader);
+        const liveTitle = state.blocks.find((block) => block && block.type === "title");
+        const persistedTitle = persisted.blocks.find((block) => block && block.type === "title");
+        if (liveTitle && persistedTitle) liveTitle.content = persistedTitle.content;
+        syncProjectDocumentNameControls(state.metadata.name, null);
+      }
+      changed({ outline: isProjectDocument(), chrome: true });
+      const reconciled = await saveActiveDocumentNow();
+      if (reconciled === "failed") {
+        setStatus(tr("重命名已写入，但并发编辑无法保存；请立即导出备份。", "Rename was written, but concurrent edits could not be saved; export a backup now."), "error");
+        return;
+      }
       renderAll();
       root.requestAnimationFrame(syncCanvasScale);
     }
@@ -932,6 +951,8 @@
     const copiedName = uniqueLibraryDocumentName(documentName(source) + tr(" 副本", " copy"));
     const duplicate = await Store.duplicateDocument(id, copiedName);
     if (!duplicate || !duplicate.record || duplicate.backend === "failed") { setStatus(tr("复制文档失败。", "Could not duplicate document."), "error"); return; }
+    const finalSaved = await saveActiveDocumentNow();
+    if (finalSaved === "failed") { setStatus(tr("复制期间产生的编辑无法保存；副本已创建但尚未打开，请先导出当前文档备份。", "Edits made during duplication could not be saved; the copy was created but not opened. Export the current document first."), "error"); return; }
     await activateDocument(duplicate.record, { status: false });
     setStatus(tr("已创建文档副本", "Document duplicated"), "saved");
   }
@@ -3314,7 +3335,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
         });
       }
       const backend = await Store.saveTemplate(template);
-      if (backend === "failed") { showImportMessage(tr("樁板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."), "error"); return; }
+      if (backend === "failed") { showImportMessage(tr("模板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."), "error"); return; }
       await refreshTemplates();
       closeImport();
       setStatus(warnings.length ? tr("模板已保存；有 " + warnings.length + " 条可恢复提示。", "Template saved with " + warnings.length + " recoverable notice(s).") : tr("模板已保存到此设备。", "Template saved on this device."), warnings.length ? "warning" : "saved");
@@ -3335,6 +3356,8 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     }
     const created = await Store.createDocument(next);
     if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
+    const finalSaved = await saveActiveDocumentNow();
+    if (finalSaved === "failed") { showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error"); return; }
     closeImport();
     await activateDocument(created.record, { status: false });
     setStatus(warnings.length ? tr("已导入为新文档；有 " + warnings.length + " 条可恢复提示。", "Imported as a new document with " + warnings.length + " recoverable notice(s).") : tr("已导入为新文档", "Imported as a new document"), warnings.length ? "warning" : "saved");
