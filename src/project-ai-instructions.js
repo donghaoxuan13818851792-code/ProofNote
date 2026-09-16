@@ -310,7 +310,7 @@ Return only the final valid JSON object.
       const start = lines[1] && /^[\s|:-]+$/.test(lines[1]) ? 2 : 1;
       const rows = lines.slice(start);
       if (rows.length > MAX_TABLE_ROWS) addIssue(errors, path + ".text", "Legacy table contains more rows than Proofnote can preserve safely.");
-      rows.slice(0, MAX_TABLE_ROWS).forEach((row, index) => {
+      rows.slice(0, MAX_TABLE_ROWS).forEach((row) => {
         const count = tableCells(row).length;
         if (columns.length && count > columns.length) addIssue(errors, path + ".text", "Legacy table row contains cells that would be discarded during migration.");
         else if (columns.length && count < columns.length) addIssue(warnings, path + ".text", "Legacy table row is shorter than its header; missing cells will be filled with empty text.");
@@ -338,7 +338,7 @@ Return only the final valid JSON object.
       visited.add(value);
       nodes += 1;
       if (nodes > MAX_NODES) { addIssue(errors, "", "Document is too complex to import safely."); break; }
-      if (item.depth > MAX_DEPTH) { addIssue(errors, item.path, "Document nesting exceeds the supported limit."); break; }
+      if (item.depth >= MAX_DEPTH) { addIssue(errors, item.path, "Document nesting exceeds the supported limit."); break; }
       if (Array.isArray(value)) {
         if (value.length > MAX_ARRAY) { addIssue(errors, item.path, "Array contains more items than Proofnote can import safely."); break; }
         for (let index = value.length - 1; index >= 0; index -= 1) pending.push({ value: value[index], path: item.path + "[" + index + "]", depth: item.depth + 1 });
@@ -399,4 +399,77 @@ Return only the final valid JSON object.
     return Model.normalizeDocument(migrated);
   };
   Object.defineProperty(Model, "__legacyBoundaryHardened", { value: true, enumerable: false });
+})(window);
+
+// The base 1.0 validator knows every first-class field, but compatibility
+// payloads are intentionally extensible. Guard the entire object graph so an
+// extension cannot bypass the same depth, key, array, and text limits that the
+// canonical fields already observe before safeClone() normalises it.
+(function hardenPortableObjectGraph(root) {
+  "use strict";
+  const Model = root.ProofnoteDocument;
+  if (!Model || Model.__portableGraphHardened || typeof Model.validateDocumentRaw !== "function") return;
+  const limits = Model.LIMITS || {};
+  const MAX_DEPTH = limits.maxDepth || 32;
+  const MAX_NODES = 25000;
+  const MAX_KEYS = limits.maxObjectKeys || 2000;
+  const MAX_ARRAY = limits.maxBlocks || 2000;
+  const MAX_STRING = limits.maxStringLength || 200000;
+  const MAX_IMAGE = limits.maxImageDataUrlLength || 14 * 1024 * 1024;
+  const MAX_TOTAL_TEXT = 20 * 1024 * 1024;
+  const originalValidate = Model.validateDocumentRaw.bind(Model);
+
+  function key(issue) { return String(issue.path || "") + "\u0000" + String(issue.message || ""); }
+  function add(errors, seen, path, message) {
+    const issue = { path: path || "", message };
+    const signature = key(issue);
+    if (!seen.has(signature)) { seen.add(signature); errors.push(issue); }
+  }
+  function scan(raw, errors) {
+    const seenIssues = new Set(errors.map(key));
+    const pending = [{ value: raw, path: "", depth: 0 }];
+    const visited = new WeakSet();
+    let nodes = 0;
+    let totalText = 0;
+    while (pending.length) {
+      const item = pending.pop();
+      const value = item.value;
+      if (typeof value === "string") {
+        totalText += value.length;
+        const isImageData = /\.src$/.test(item.path) && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(value);
+        const singleLimit = isImageData ? MAX_IMAGE : MAX_STRING;
+        if (value.length > singleLimit) add(errors, seenIssues, item.path, isImageData ? "Embedded image exceeds the maximum supported size." : "Text exceeds the maximum supported length.");
+        if (totalText > MAX_TOTAL_TEXT + MAX_IMAGE) add(errors, seenIssues, "", "Document text exceeds the maximum supported import size.");
+        continue;
+      }
+      if (!value || typeof value !== "object") continue;
+      if (visited.has(value)) continue;
+      visited.add(value);
+      nodes += 1;
+      if (nodes > MAX_NODES) { add(errors, seenIssues, "", "Document is too complex to import safely."); break; }
+      if (item.depth >= MAX_DEPTH) { add(errors, seenIssues, item.path, "Document nesting exceeds the supported limit."); continue; }
+      if (Array.isArray(value)) {
+        if (value.length > MAX_ARRAY) add(errors, seenIssues, item.path, "Array contains more items than Proofnote can import safely.");
+        const count = Math.min(value.length, MAX_ARRAY);
+        for (let index = count - 1; index >= 0; index -= 1) pending.push({ value: value[index], path: item.path + "[" + index + "]", depth: item.depth + 1 });
+        continue;
+      }
+      const keys = Object.keys(value);
+      if (keys.length > MAX_KEYS) add(errors, seenIssues, item.path, "Object contains too many fields to import safely.");
+      const count = Math.min(keys.length, MAX_KEYS);
+      for (let index = count - 1; index >= 0; index -= 1) {
+        const field = keys[index];
+        pending.push({ value: value[field], path: item.path ? item.path + "." + field : field, depth: item.depth + 1 });
+      }
+    }
+  }
+
+  Model.validateDocumentRaw = function (raw) {
+    const result = originalValidate(raw);
+    const errors = Array.isArray(result && result.errors) ? result.errors.slice() : [];
+    const warnings = Array.isArray(result && result.warnings) ? result.warnings.slice() : [];
+    scan(raw, errors);
+    return { errors, warnings };
+  };
+  Object.defineProperty(Model, "__portableGraphHardened", { value: true, enumerable: false });
 })(window);
