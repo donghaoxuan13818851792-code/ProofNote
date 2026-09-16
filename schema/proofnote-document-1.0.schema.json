@@ -64,7 +64,7 @@
       "type": "object",
       "required": ["type"],
       "properties": {
-        "id": { "type": "string", "maxLength": 256, "description": "Stable editor identifier. Proofnote generates one when importing AI-authored JSON; duplicate, reserved, or oversized IDs are regenerated." },
+        "id": { "type": "string", "maxLength": 256, "description": "Stable editor identifier. Proofnote generates one when importing AI-authored JSON; duplicate, reserved, empty, or oversized IDs are regenerated." },
         "type": { "enum": ["title", "subtitle", "heading", "paragraph", "equation", "code", "table", "image", "quote", "divider", "page-break", "callout", "semantic", "list", "key-value", "stats"] },
         "preset": { "type": "string", "description": "A Proofnote-controlled typography or component preset. Proofnote derives it when omitted." },
         "content": { "type": "string", "maxLength": 200000 },
@@ -74,6 +74,7 @@
         "label": { "type": "string", "maxLength": 200000 },
         "summary": { "type": "string", "maxLength": 200000 },
         "appearance": { "enum": ["editorial", "card"], "description": "An optional template-controlled semantic presentation. Omit to inherit the template default." },
+        "bodyVisible": { "type": "boolean", "description": "Optional semantic-section display state. false hides the inline section body without discarding its content; omit or true shows it." },
         "language": { "type": "string", "maxLength": 200000 },
         "header": { "type": "boolean", "description": "Optional table display setting. Omit or true renders columns as a header row; false renders all rows as body cells." },
         "columns": { "type": "array", "maxItems": 50, "items": { "type": "string", "maxLength": 200000 } },
