@@ -9,6 +9,7 @@ const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const modelSource = fs.readFileSync(path.join(root, "src", "document-model.js"), "utf8");
 const storeSource = fs.readFileSync(path.join(root, "src", "document-store.js"), "utf8");
+const projectAiInstructionsSource = fs.readFileSync(path.join(root, "src", "project-ai-instructions.js"), "utf8");
 const editorSource = fs.readFileSync(path.join(root, "src", "document-editor.js"), "utf8");
 const editorCss = fs.readFileSync(path.join(root, "src", "document-editor.css"), "utf8");
 const docPageSource = fs.readFileSync(path.join(root, "src", "doc-page.js"), "utf8");
@@ -66,6 +67,8 @@ async function main() {
     // than relying on the old inline Solution Note editor.
     window.eval(modelSource);
     window.eval(storeSource);
+    window.eval(projectAiInstructionsSource);
+    const projectAiInstructions = window.PROOFNOTE_PROJECT_AI_INSTRUCTIONS;
     const Model = window.ProofnoteDocument;
     const fixture = Model.blankDocument({
       name: "Canvas QA",
@@ -839,9 +842,53 @@ async function main() {
         && editorCss.includes(".pn-proofnote-document .pn-document-subtitle,.pn-project-document .pn-document-subtitle")
         && editorSource.includes('const metadataAfter = documentMetadata && subtitleVisible ? "subtitle" : "title";')
         && editorSource.includes('els.canvas.classList.toggle("pn-project-document", isProjectDocument());')
-        && editorSource.includes('block.kind === "introduction"')
+        && editorSource.includes('["introduction", "section"].includes(block.kind)')
         && editorSource.includes('["introduction", "problem", "result", "theorem"].includes(block.kind)'),
       "Project title, subtitle, metadata, and exported page header must share Proof Note's editorial sequence"
+    );
+    check(
+      "editor-project-preset-restores-editorial-reading-rhythm",
+      editorSource.includes('if (block.type === "heading") return block.level === 1;')
+        && editorCss.includes("--pn-doc-body-size: 12.75pt;")
+        && editorCss.includes("--pn-doc-body-leading: 1.68;")
+        && editorCss.includes("--pn-doc-title-size: 31.5pt;")
+        && editorCss.includes(".pn-project-document .pn-editorial-section { margin-bottom: 36pt; }")
+        && editorCss.includes(".pn-project-document .pn-semantic")
+        && editorSource.includes("const EXPORT_PROJECT_EDITORIAL_CSS")
+        && editorSource.includes(".pn-project-document{max-width:760px")
+        && editorSource.includes("EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS"),
+      "Blank Projects must use the restored editorial measure on both the canvas and exported HTML"
+    );
+    check(
+      "editor-editorial-section-compatibility-preserves-the-folio-number",
+      editorSource.includes("function editorialDisplayTitle(block, key)")
+        && editorSource.includes("value: editorialDisplayTitle(block, titleKey)")
+        && editorSource.includes("const title = editorialDisplayTitle(block, titleKey)"),
+      "Legacy level-one headings should use the editorial section renderer without repeating an AI-generated number in their title"
+    );
+    const projectClipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
+    let copiedProjectAiInstructions = "";
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text) => { copiedProjectAiInstructions = text; } }
+    });
+    const projectCopyAi = document.querySelector("#pnCopyAi");
+    if (projectCopyAi) projectCopyAi.click();
+    await settle(window, () => copiedProjectAiInstructions.length > 0);
+    if (projectClipboardDescriptor) Object.defineProperty(window.navigator, "clipboard", projectClipboardDescriptor);
+    else delete window.navigator.clipboard;
+    check(
+      "editor-project-copy-ai-uses-document-architect-brief",
+      editorSource.includes("function aiInstructionsForCurrentDocument()")
+        && editorSource.includes("isProjectDocument() ? PROJECT_AI_DOCUMENT_INSTRUCTIONS : AI_DOCUMENT_INSTRUCTIONS")
+        && editorSource.includes("const instructions = aiInstructionsForCurrentDocument();")
+        && projectAiInstructions.includes("You are acting as an editor and document architect for Proofnote.")
+        && projectAiInstructions.includes("Return exactly one valid JSON object in Proofnote Document Format 1.0.")
+        && copiedProjectAiInstructions.includes('"documentType": "Project"')
+        && copiedProjectAiInstructions.includes('"kind": "section"')
+        && copiedProjectAiInstructions.includes('"appearance": "editorial"')
+        && copiedProjectAiInstructions.includes("inline KaTeX delimiters"),
+      "Blank projects must copy the complete document-architect brief plus the Project editorial-structure rules while Proof Note retains its template-specific format reference"
     );
     const firstTemplate = templateLibrary && templateLibrary.querySelector(".pn-template-item");
     const documentCountBeforeTemplate = documentLibrary ? documentLibrary.querySelectorAll(".pn-document-item").length : 0;

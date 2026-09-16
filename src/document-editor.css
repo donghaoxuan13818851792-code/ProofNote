@@ -227,6 +227,18 @@ body.pn-sidebar-resizing { cursor: col-resize; user-select: none; }
 .pn-page-footer { align-items: baseline; padding-top: 6pt; border-top: 1px solid var(--color-divider); font-weight: 400; letter-spacing: .1em; text-transform: uppercase; }
 .pn-page-footer > span:last-child { color: var(--color-accent-700); }
 .pn-document { padding: 20pt 0 14pt; color: var(--color-text); font-family: var(--pn-doc-body); font-size: var(--pn-doc-body-size); line-height: var(--pn-doc-body-leading); }
+/* A Blank Project is a long-form note, not a smaller generic canvas. These
+ * values intentionally restore the original Proofnote reading measure while
+ * leaving the specialised Proof Note and imported documents untouched. */
+.pn-project-document {
+  --pn-doc-body-size: 12.75pt;
+  --pn-doc-body-leading: 1.68;
+  --pn-doc-title-size: 31.5pt;
+  --pn-doc-summary-size: 15pt;
+  --pn-doc-section-1-size: 21pt;
+  --pn-doc-section-2-size: 16.5pt;
+  --pn-doc-section-3-size: 13.5pt;
+}
 
 .pn-canvas-block { position: relative; margin: 0 -10px; padding: 0 10px; border-left: 2px solid transparent; border-radius: 3px; transition: background .14s ease, border-color .14s ease; }
 .pn-canvas-block:hover,.pn-canvas-block.pn-focused { border-left-color: color-mix(in srgb, var(--color-accent) 58%, transparent); background: color-mix(in srgb, var(--color-accent-100) 22%, transparent); }
@@ -315,6 +327,14 @@ body.pn-sidebar-resizing { cursor: col-resize; user-select: none; }
 .pn-editorial-section > p { margin: 0 0 10pt; }.pn-editorial-section-body-input { display: block; min-height: 1.6em; font: var(--pn-doc-body-size)/var(--pn-doc-body-leading) var(--pn-doc-body); }.pn-editorial-section-summary-input { display: block; margin-top: 4pt; color: color-mix(in srgb, var(--color-text) 72%, transparent) !important; font: italic 11pt/1.5 var(--pn-doc-body); }
 .pn-editorial-detail { margin: 0 0 12pt; break-inside: avoid; page-break-inside: avoid; }.pn-editorial-detail .pn-component-label { margin-bottom: 3pt; color: color-mix(in srgb, var(--color-text) 55%, transparent); }.pn-editorial-detail-title-input { display: block; min-height: 1.25em; margin-bottom: 3pt; font: 400 14pt/1.2 var(--pn-doc-heading); }.pn-editorial-detail-body-input { display: block; min-height: 1.6em; font: var(--pn-doc-body-size)/var(--pn-doc-body-leading) var(--pn-doc-body); }.pn-editorial-detail-summary-input { display: block; margin-top: 4pt; color: color-mix(in srgb, var(--color-text) 72%, transparent) !important; font: italic 11pt/1.5 var(--pn-doc-body); }
 .pn-callout { margin: 13pt 0; padding: 4pt 0 4pt 14pt; border-left: 2px solid var(--color-accent-400); break-inside: avoid; page-break-inside: avoid; }
+.pn-project-document .pn-proof-metadata { margin: 12pt 0 27pt; }
+.pn-project-document .pn-editorial-section { margin-bottom: 36pt; }
+.pn-project-document .pn-editorial-section-head { margin-bottom: 13.5pt; padding-bottom: 6pt; }
+.pn-project-document .pn-editorial-section > p { margin-bottom: 11.25pt; }
+/* Cards are reserved for genuinely emphatic semantic content. When a Project
+ * does use one, it should read as an intentional theorem/result surface, not
+ * a faint generic component. Introduction itself renders editorially. */
+.pn-project-document .pn-semantic { margin: 15pt 0; padding: 15pt 16.5pt; border-color: #facb8d; background: #fff3e4; }
 .pn-callout-warning { border-left-color: #d8a846; }.pn-callout-info { border-left-color: #8aa2cc; }.pn-component-label { margin-bottom: 5pt; color: var(--color-accent-800); font-family: var(--pn-doc-heading); font-size: var(--pn-doc-label-size); font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
 .pn-canvas-component-title-input { display: block; min-height: 1.25em; font: 400 var(--pn-doc-section-1-size)/1.15 var(--pn-doc-heading); }.pn-canvas-component-body-input { display: block; min-height: 2.7em; font: var(--pn-doc-body-size)/var(--pn-doc-body-leading) var(--pn-doc-body); }.pn-canvas-component-summary-input { display: block; min-height: 1.7em; color: color-mix(in srgb, var(--color-text) 74%, transparent) !important; font: italic 11pt/1.5 var(--pn-doc-body); }.pn-canvas-component-summary:has(.pn-canvas-component-summary-input:placeholder-shown) { display: none; }.pn-canvas-block.is-selected .pn-canvas-component-summary:has(.pn-canvas-component-summary-input:placeholder-shown),.pn-canvas-block:focus-within .pn-canvas-component-summary:has(.pn-canvas-component-summary-input:placeholder-shown) { display: block; }.pn-canvas-component-summary-input::placeholder { color: color-mix(in srgb, var(--color-text) 38%, transparent); font-style: italic; }
 .pn-list { margin: 10pt 0; padding-left: 19pt; }.pn-list li { margin-bottom: 3pt; }.pn-canvas-list-row { position: relative; padding-right: 20px; }.pn-canvas-list-input { display: block; min-height: 1.45em; font: inherit; }

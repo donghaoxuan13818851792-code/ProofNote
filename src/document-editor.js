@@ -1426,7 +1426,7 @@
   }
   function canvasField(block, key, options) {
     const opts = options || {};
-    return inputField("", block[key], (value) => update(block, key, value, opts.change), {
+    return inputField("", opts.value === undefined ? block[key] : opts.value, (value) => update(block, key, value, opts.change), {
       multiline: opts.multiline !== false,
       rows: opts.rows || 1,
       placeholder: opts.placeholder || "",
@@ -1467,17 +1467,28 @@
   }
   function semanticAppearance(block) {
     if (block && (block.appearance === "editorial" || block.appearance === "card")) return block.appearance;
-    // Earlier Projects created an Introduction semantic block before it had
-    // an explicit presentation. Treat that one legacy default as editorial,
-    // while an explicit Card choice remains fully respected.
-    return isProofNoteDocument() || (isProjectDocument() && block && block.type === "semantic" && block.kind === "introduction")
+    // Structural sections and introductions are continuous reading surfaces.
+    // Treat legacy/generated variants as editorial even if the AI omitted the
+    // presentation field; an explicit Card choice still wins.
+    return isProofNoteDocument() || (block && block.type === "semantic" && ["introduction", "section"].includes(block.kind))
       ? "editorial" : "card";
   }
   function isEditorialPrimary(block) {
-    if (block.type === "heading") return isProofNoteDocument() && block.level === 1;
+    // Level-one headings are a compatibility path for older/generated JSON.
+    // New Project instructions use semantic.section instead, but either form
+    // should retain the editorial folio number and rule on the paper.
+    if (block.type === "heading") return block.level === 1;
     if (block.type !== "semantic" || semanticAppearance(block) !== "editorial") return false;
-    if (block.kind === "section") return true;
+    if (["section", "introduction"].includes(block.kind)) return true;
     return (isProofNoteDocument() || isProjectDocument()) && ["introduction", "problem", "result", "theorem"].includes(block.kind);
+  }
+  function editorialDisplayTitle(block, key) {
+    const title = String(block && block[key] || "");
+    if (!block || block.type !== "heading" || block.level !== 1) return title;
+    // Older AI prompts frequently generated "1. Title" or "01 Title".
+    // The renderer already supplies that number as a separate visual element,
+    // so omit only a leading one- or two-digit/roman-numeral marker on paper.
+    return title.replace(/^\s*(?:(?:\d{1,2}|[ivxlcdm]+)\s*(?:[.)]|[：:])\s*|(?:\d{1,2}|[ivxlcdm]+)\s+)(?=\S)/i, "");
   }
   function editorialBodyVisible(block) {
     return !block || block.bodyVisible !== false;
@@ -1784,6 +1795,7 @@
     head.appendChild(element("span", { class: "pn-editorial-section-number", "aria-hidden": "true" }, editorialSectionNumber(index)));
     head.appendChild(canvasField(block, titleKey, {
       multiline: false,
+      value: editorialDisplayTitle(block, titleKey),
       fieldClass: "pn-editorial-section-title",
       controlClass: "pn-editorial-section-title-input",
       placeholder: label("未命名章节", "Untitled section"),
@@ -2376,7 +2388,7 @@
     return semantic ? semantic.en : (block.kind || "Block");
   }
   function renderEditorialPrimary(block, index, titleKey) {
-    const title = String(block[titleKey] || "") || tr("未命名章节", "Untitled section");
+    const title = editorialDisplayTitle(block, titleKey) || tr("未命名章节", "Untitled section");
     const body = block.type === "semantic" && editorialBodyVisible(block)
       ? paragraphs(block.content) + (String(block.summary || "").trim() ? "<p class=\"pn-editorial-section-summary\">" + inline(block.summary) + "</p>" : "")
       : "";
@@ -2503,12 +2515,46 @@ Use ordered blocks. Supported block types: title, subtitle, heading (with level 
 Use semantic.kind only as section, introduction, problem, theorem, proof, result, or verification. Use callout.kind only as note, tip, warning, or info. A semantic block may optionally use appearance "editorial" or "card"; otherwise the selected template decides. Do not add CSS, fonts, font sizes, colours, margins, coordinates, or HTML. Proofnote owns the visual presets.
 
 For LaTeX inside prose, return valid JSON: escape every literal backslash. For example, JSON source must contain "\\\\(x \\\\le \\\\sqrt{2}\\\\)" for inline math. Preserve code as code, using only normal JSON escaping.`;
+  // A newly created project is a general-purpose document, so it benefits
+  // from the longer editorial brief. This addendum makes the document model
+  // choose the Project renderer rather than merely describing its content.
+  // Proof Note keeps its focused format reference because it is specialised.
+  const PROJECT_AI_EDITORIAL_SECTION_GUIDANCE = `
+
+BLANK PROJECT EDITORIAL STRUCTURE — THESE RULES OVERRIDE ANY EARLIER CONFLICTING GUIDANCE ABOUT HEADING LEVELS, METADATA, OR INLINE MATHEMATICS.
+
+This response will be imported as a Blank Project. In the metadata object, include "documentType": "Project".
+
+For every major top-level section, use a semantic block with this shape:
+
+{
+  "type": "semantic",
+  "kind": "section",
+  "title": "A descriptive section title",
+  "content": "Opening prose when useful.",
+  "appearance": "editorial"
+}
+
+Do not use a level-1 heading for a major section. Do not prefix any major-section title with "1.", "01", roman numerals, or another ordinal: Proofnote supplies the small editorial section number itself. Reserve heading level 2 and level 3 for genuinely internal subsections.
+
+When the material needs an introduction, use a semantic block with "kind": "introduction" and "appearance": "editorial" so it reads as continuous opening prose rather than a card.
+
+For mathematical notation inside paragraphs, table cells, and list items, use inline KaTeX delimiters such as \\(...\\) instead of plain-text approximations such as G_n or k(p) <= p-1. Use a standalone equation block only for display mathematics that deserves its own line.
+
+Prefer a continuous reading flow of paragraphs, inline mathematics, and a small number of meaningful sections. Use cards, callouts, and tables only when they communicate genuinely exceptional information; do not begin a document with a status table unless the supplied material is inherently tabular.`;
+  const PROJECT_AI_DOCUMENT_INSTRUCTIONS = (typeof root.PROOFNOTE_PROJECT_AI_INSTRUCTIONS === "string"
+    ? root.PROOFNOTE_PROJECT_AI_INSTRUCTIONS
+    : AI_DOCUMENT_INSTRUCTIONS) + PROJECT_AI_EDITORIAL_SECTION_GUIDANCE;
+  function aiInstructionsForCurrentDocument() {
+    return isProjectDocument() ? PROJECT_AI_DOCUMENT_INSTRUCTIONS : AI_DOCUMENT_INSTRUCTIONS;
+  }
   async function copyAiInstructions() {
+    const instructions = aiInstructionsForCurrentDocument();
     try {
-      await root.navigator.clipboard.writeText(AI_DOCUMENT_INSTRUCTIONS);
+      await root.navigator.clipboard.writeText(instructions);
       setStatus(tr("AI 格式说明已复制", "AI format instructions copied"), "saved");
     } catch (_) {
-      root.prompt(tr("请复制以下 AI 格式说明：", "Copy these AI format instructions:"), AI_DOCUMENT_INSTRUCTIONS);
+      root.prompt(tr("请复制以下 AI 格式说明：", "Copy these AI format instructions:"), instructions);
     }
   }
   function decodeBase64(value) {
@@ -2544,6 +2590,18 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     .pn-editorial-detail{margin:0 0 16px;break-inside:avoid;page-break-inside:avoid}.pn-editorial-detail .pn-component-label{margin-bottom:4px;color:rgba(32,31,29,.55)}.pn-editorial-detail h3{margin:0 0 4px;font:400 18.667px/1.2 var(--heading)}.pn-editorial-detail p{margin:0 0 13.333px}
     .pn-export-footer{display:flex;justify-content:space-between;margin-top:34.667px;padding-top:8px;border-top:1px solid var(--line);font:10px/1 var(--heading);letter-spacing:.1em;text-transform:uppercase;color:rgba(32,31,29,.45)}.pn-export-footer span:last-child{color:#8c6228}
   `;
+  // Blank Projects use the same composed editorial rhythm as a Proof Note,
+  // without forcing their content into a proof-specific structure. Keep this
+  // scoped to the Project wrapper so other imported/general documents retain
+  // their neutral preset.
+  const EXPORT_PROJECT_EDITORIAL_CSS = `
+    .pn-project-document{max-width:760px;padding:62px 30px 96px;--pn-doc-body-size:17px;--pn-doc-body-leading:1.68;--pn-doc-title-size:42px;--pn-doc-summary-size:20px;--pn-doc-section-1-size:28px;--pn-doc-section-2-size:22px;--pn-doc-section-3-size:18px}
+    .pn-project-document .pn-proof-metadata{margin:16px 0 36px}
+    .pn-project-document .pn-editorial-section{margin:0 0 48px}
+    .pn-project-document .pn-editorial-section-head{margin-bottom:18px;padding-bottom:8px}
+    .pn-project-document .pn-editorial-section p{margin-bottom:15px}
+    .pn-project-document .pn-semantic{margin:20px 0;padding:20px 22px;border-color:#facb8d;background:#fff3e4}
+  `;
   // Keep downloaded documents in step with the quieter, denser semantic cards
   // on the editing canvas. Empty summaries are omitted by renderBlock(), so an
   // editor-only placeholder can never leak into the exported document.
@@ -2574,7 +2632,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     try { katexCss = root.SOLUTION_NOTE_KATEX_EMBED ? decodeBase64(root.SOLUTION_NOTE_KATEX_EMBED.css) : ""; } catch (_) {}
     try { fontsCss = root.SOLUTION_NOTE_FONTS_EMBED ? decodeBase64(root.SOLUTION_NOTE_FONTS_EMBED.css) : ""; } catch (_) {}
     const title = escapeHtml(state.metadata.name || "Proofnote document");
-    const html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + title + "</title><style>" + katexCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + fontsCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_POLISH_CSS + "</style></head><body>" + renderStandaloneDocument() + "</body></html>";
+    const html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + title + "</title><style>" + katexCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + fontsCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS + "</style></head><body>" + renderStandaloneDocument() + "</body></html>";
     download(slug() + ".html", html, "text/html");
   }
 
