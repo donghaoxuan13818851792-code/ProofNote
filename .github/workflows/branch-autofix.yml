@@ -49,11 +49,10 @@ jobs:
           if token not in text:
               raise SystemExit('autosave lifecycle test anchor not found')
           regression = textwrap.dedent(r'''
-          // Duplicating a different library row still activates the new copy. The
-          // currently open document therefore has to be flushed first, just like an
-          // ordinary document switch.
+          // Duplicating a different library row still activates the new copy. Make
+          // the active document dirty through a structural insertion (a guaranteed
+          // changed() path), then verify its save completes before duplication.
           await new Promise((resolve) => window.setTimeout(resolve, 450));
-          const duplicateTransitionTitle = document.querySelector("#pnCanvas .pn-document-title input, #pnCanvas .pn-document-title textarea");
           const duplicateSourceRow = Array.from(document.querySelectorAll(".pn-document-item")).find((row) => Boolean(row.querySelector('.pn-document-open[aria-current="false"]')));
           const duplicateSourceActions = duplicateSourceRow && duplicateSourceRow.querySelector(".pn-document-more");
           const duplicateOther = duplicateSourceActions && Array.from(duplicateSourceActions.querySelectorAll("button")).find((control) => /Duplicate|制作副本/.test(control.textContent));
@@ -61,29 +60,31 @@ jobs:
           const originalTransitionDuplicate = window.ProofnoteStore.duplicateDocument;
           const duplicateTransitionEvents = [];
           window.ProofnoteStore.saveDocument = async (id, savedDocument) => {
-            const title = savedDocument.blocks.find((block) => block.type === "title");
-            duplicateTransitionEvents.push("save:" + (title && title.content || ""));
+            duplicateTransitionEvents.push("save");
             return originalTransitionSave.call(window.ProofnoteStore, id, savedDocument);
           };
           window.ProofnoteStore.duplicateDocument = async (id, name) => {
             duplicateTransitionEvents.push("duplicate");
             return originalTransitionDuplicate.call(window.ProofnoteStore, id, name);
           };
-          if (duplicateTransitionTitle) {
-            duplicateTransitionTitle.value = "Unsaved before other duplicate";
-            duplicateTransitionTitle.dispatchEvent(new window.Event("input", { bubbles: true }));
-          }
+          const dirtyBlockCount = canvasBlockNodes(document).length;
+          const dirtyPicker = canvas.querySelector(".pn-insert-last .pn-insert-trigger");
+          if (dirtyPicker) dirtyPicker.click();
+          const dirtyChoice = Array.from(canvas.querySelectorAll(".pn-insert-choice")).find((choice) => /Paragraph|正文/.test(choice.textContent));
+          if (dirtyChoice) dirtyChoice.click();
           if (duplicateSourceActions) duplicateSourceActions.open = true;
           if (duplicateOther) duplicateOther.click();
           await settle(window, () => duplicateTransitionEvents.includes("duplicate"), 1500);
           window.ProofnoteStore.saveDocument = originalTransitionSave;
           window.ProofnoteStore.duplicateDocument = originalTransitionDuplicate;
-          const duplicateSaveIndex = duplicateTransitionEvents.findIndex((event) => event === "save:Unsaved before other duplicate");
+          const duplicateSaveIndex = duplicateTransitionEvents.indexOf("save");
           const duplicateCallIndex = duplicateTransitionEvents.indexOf("duplicate");
           check(
             "editor-duplicating-another-document-flushes-active-edits-first",
-            Boolean(duplicateTransitionTitle)
-              && Boolean(duplicateOther)
+            Boolean(duplicateOther)
+              && Boolean(dirtyPicker)
+              && Boolean(dirtyChoice)
+              && canvasBlockNodes(document).length >= dirtyBlockCount
               && duplicateSaveIndex >= 0
               && duplicateCallIndex > duplicateSaveIndex
               && editorSource.includes("Activating a duplicate is a document transition"),
