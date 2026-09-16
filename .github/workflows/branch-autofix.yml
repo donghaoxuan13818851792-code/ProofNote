@@ -26,12 +26,8 @@ jobs:
 
           model = Path('src/document-model.js')
           s = model.read_text()
-          old = '''      if (block.type === "image") {
-            ["src", "alt", "caption"].forEach((key) => expectString(path + "." + key, block[key]));
-            if (typeof block.src === "string" && /^data:image\\//i.test(block.src) && block.src.length > LIMITS.maxImageDataUrlLength) error(path + ".src", "Embedded image exceeds the maximum supported size.");
-            if (block.remoteApproved !== undefined && typeof block.remoteApproved !== "boolean") warn(path + ".remoteApproved", "Remote-image approval is ignored unless it is a boolean.");
-          }
-          '''
+          start = s.index('      if (block.type === "image") {')
+          end = s.index('      if (block.type === "quote")', start)
           new = '''      if (block.type === "image") {
             ["src", "alt", "caption"].forEach((key) => expectString(path + "." + key, block[key]));
             if (typeof block.src === "string") {
@@ -44,24 +40,22 @@ jobs:
             if (block.remoteApproved !== undefined && typeof block.remoteApproved !== "boolean") warn(path + ".remoteApproved", "Remote-image approval is ignored unless it is a boolean.");
           }
           '''
-          if old not in s:
-              raise SystemExit('image validation source pattern not found')
-          model.write_text(s.replace(old, new, 1))
+          new = new.replace('\n    ', '\n')
+          model.write_text(s[:start] + new + s[end:])
 
           test = Path('tests/document-model.js')
           s = test.read_text()
-          anchor = '''const remoteImageRaw = { format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Image" }, blocks: [{ type: "image", src: "https://example.test/pixel.png", remoteApproved: true }] };
-          check("document-import-does-not-trust-remote-image-approval", Model.normalizeDocument(remoteImageRaw).blocks[0].remoteApproved !== true && Model.normalizeDocument(remoteImageRaw, { allowRemoteImages: true }).blocks[0].remoteApproved === true, JSON.stringify(Model.normalizeDocument(remoteImageRaw)));
-          '''
-          addition = anchor + '''const unsupportedImageSource = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Unsupported image" }, blocks: [{ type: "image", src: "http://example.test/pixel.png" }, { type: "image", src: "data:image/svg+xml;base64,PHN2Zz4=" }] });
+          anchor = s.index('const remoteImageRaw = ')
+          insert = s.index('\n\n// Templates include', anchor)
+          regression = '''
+          const unsupportedImageSource = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Unsupported image" }, blocks: [{ type: "image", src: "http://example.test/pixel.png" }, { type: "image", src: "data:image/svg+xml;base64,PHN2Zz4=" }] });
           check("document-import-warns-on-image-sources-the-renderer-will-refuse", unsupportedImageSource.errors.length === 0
             && unsupportedImageSource.warnings.filter((warning) => /Unsupported image source/.test(warning.message)).length === 2
             && unsupportedImageSource.warnings.some((warning) => warning.path === "blocks[0].src")
             && unsupportedImageSource.warnings.some((warning) => warning.path === "blocks[1].src"), JSON.stringify(unsupportedImageSource));
           '''
-          if anchor not in s:
-              raise SystemExit('image test anchor not found')
-          test.write_text(s.replace(anchor, addition, 1))
+          regression = regression.replace('\n    ', '\n').strip('\n')
+          test.write_text(s[:insert] + '\n' + regression + s[insert:])
           PY
       - run: npm ci
       - run: npm test
