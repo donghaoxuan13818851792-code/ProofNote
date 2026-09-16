@@ -1114,6 +1114,44 @@ async function main() {
         && editorSource.includes("function isBlankProjectImportSource()"),
       JSON.stringify({ sourceDate: blankProjectSourceDate, header: document.querySelector("#pnPageHeader .pn-running-left")?.value, footer: document.querySelector("#pnFooterName")?.textContent, documentNamesAfterBlankProjectImport })
     );
+    // Library rename persists a canonical Project name across metadata,
+    // title, running header, and footer. The live editor must reload that
+    // persisted record rather than keep stale title/header state.
+    await new Promise((resolve) => window.setTimeout(resolve, 450));
+    const currentProjectRow = documentLibrary && documentLibrary.querySelector(".pn-document-item.is-active");
+    const currentProjectActions = currentProjectRow && currentProjectRow.querySelector(".pn-document-more");
+    const renameCurrentProject = currentProjectActions && Array.from(currentProjectActions.querySelectorAll("button")).find((control) => /Rename|重命名/.test(control.textContent));
+    if (currentProjectActions) currentProjectActions.open = true;
+    if (renameCurrentProject) renameCurrentProject.click();
+    await settle(window, () => Boolean(documentLibrary && documentLibrary.querySelector(".pn-document-rename")));
+    const currentProjectRenameInput = documentLibrary && documentLibrary.querySelector(".pn-document-rename");
+    if (currentProjectRenameInput) currentProjectRenameInput.value = "Library project rename";
+    const saveProjectRename = documentLibrary && documentLibrary.querySelector(".pn-document-rename-save");
+    if (saveProjectRename) saveProjectRename.click();
+    await settle(window, () => document.querySelector("#pnFooterName")?.textContent === "Library project rename"
+      && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Library project rename"
+      && document.querySelector("#pnCanvas .pn-canvas-title-input")?.value === "Library project rename", 1500);
+    check(
+      "editor-library-rename-reloads-current-project-chrome",
+      Boolean(renameCurrentProject)
+        && Boolean(currentProjectRenameInput)
+        && Boolean(saveProjectRename)
+        && document.querySelector("#pnFooterName")?.textContent === "Library project rename"
+        && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Library project rename"
+        && document.querySelector("#pnCanvas .pn-canvas-title-input")?.value === "Library project rename"
+        && editorSource.includes("state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true })"),
+      JSON.stringify({
+        footer: document.querySelector("#pnFooterName")?.textContent,
+        header: document.querySelector("#pnPageHeader .pn-running-left")?.value,
+        title: document.querySelector("#pnCanvas .pn-canvas-title-input")?.value
+      })
+    );
+    check(
+      "editor-automatic-duplicate-names-are-disambiguated",
+      editorSource.includes('const copiedName = uniqueLibraryDocumentName(documentName(source) + tr(" 副本", " copy"));'),
+      "automatic duplicate names should use the same library disambiguation as new Projects"
+    );
+
     const invalidLatexJson = [
       "{",
       '  "format": "proofnote-document",',

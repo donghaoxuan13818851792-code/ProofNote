@@ -912,9 +912,11 @@
     if (!renamed || !renamed.record || renamed.backend === "failed") { setStatus(tr("重命名失败。", "Could not rename document."), "error"); return; }
     renamingDocumentId = "";
     if (id === currentDocumentId) {
-      state.metadata.name = renamed.record.document.metadata.name;
-      state.metadata.updatedAt = renamed.record.document.metadata.updatedAt;
-      renderDocumentChrome();
+      state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
+      editRevision = 0;
+      hasUnsavedChanges = false;
+      renderAll();
+      root.requestAnimationFrame(syncCanvasScale);
     }
     await refreshDocuments();
     setStatus(tr("文档已重命名", "Document renamed"), "saved");
@@ -927,7 +929,7 @@
     const saved = await saveActiveDocumentNow();
     if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再复制。", "Autosave failed — export a backup before duplicating."), "error"); return; }
     const source = documents.find((record) => record.id === id);
-    const copiedName = documentName(source) + tr(" 副本", " copy");
+    const copiedName = uniqueLibraryDocumentName(documentName(source) + tr(" 副本", " copy"));
     const duplicate = await Store.duplicateDocument(id, copiedName);
     if (!duplicate || !duplicate.record || duplicate.backend === "failed") { setStatus(tr("复制文档失败。", "Could not duplicate document."), "error"); return; }
     await activateDocument(duplicate.record, { status: false });
