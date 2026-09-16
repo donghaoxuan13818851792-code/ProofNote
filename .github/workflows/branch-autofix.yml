@@ -19,153 +19,240 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Close document-transition race windows
+      - name: Apply blue-team persistence fixes
         run: |
           python - <<'PY'
           from pathlib import Path
           import textwrap
 
-          editor = Path('src/document-editor.js')
+          editor = Path("src/document-editor.js")
           s = editor.read_text()
 
-          # Reconcile a current-document rename into live state instead of
-          # replacing the whole state, which can discard edits made while the
-          # asynchronous storage rename is in flight.
-          rename_fn = s.index('  async function finishDocumentRename(id, name) {')
-          renamed_marker = '    renamingDocumentId = "";\n'
-          after_renamed = s.index(renamed_marker, rename_fn) + len(renamed_marker)
-          rename_start = s.index('    if (id === currentDocumentId) {', after_renamed)
-          rename_end = s.index('    await refreshDocuments();', rename_start)
-          rename_block = '''    if (id === currentDocumentId) {
-            const persisted = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
-            state.metadata.name = persisted.metadata.name;
-            state.metadata.updatedAt = persisted.metadata.updatedAt;
-            if (isProjectDocument()) {
-              state.metadata.runningHeader = Object.assign({}, persisted.metadata.runningHeader);
-              const liveTitle = state.blocks.find((block) => block && block.type === "title");
-              const persistedTitle = persisted.blocks.find((block) => block && block.type === "title");
-              if (liveTitle && persistedTitle) liveTitle.content = persistedTitle.content;
-              syncProjectDocumentNameControls(state.metadata.name, null);
-            }
-            // Make the rename a newer editor revision. Any autosave that began
-            // during Store.renameDocument then cannot clear this pending state
-            // when its older snapshot completes.
-            changed({ outline: isProjectDocument(), chrome: true });
-            const reconciled = await saveActiveDocumentNow();
-            if (reconciled === "failed") {
-              setStatus(tr("重命名已写入，但并发编辑无法保存；请立即导出备份。", "Rename was written, but concurrent edits could not be saved; export a backup now."), "error");
-              return;
-            }
-            renderAll();
-            root.requestAnimationFrame(syncCanvasScale);
-          }
-'''
-          rename_block = textwrap.dedent(rename_block)
-          # textwrap.dedent removes the four source spaces; put them back.
-          rename_block = textwrap.indent(rename_block, '    ')
-          s = s[:rename_start] + rename_block + s[rename_end:]
-
-          def insert_before(function_marker, target_marker, insertion):
+          def insert_before_once(function_marker, target_marker, insertion, sentinel):
               global s
               fn = s.index(function_marker)
-              pos = s.index(target_marker, fn)
+              next_fn = s.find("\n  async function ", fn + len(function_marker))
+              if next_fn < 0:
+                  next_fn = len(s)
+              if sentinel in s[fn:next_fn]:
+                  return
+              pos = s.index(target_marker, fn, next_fn)
               s = s[:pos] + insertion + s[pos:]
 
-          # A first flush happens before each storage operation. A second flush
-          # immediately before activation captures edits made while that awaited
-          # storage operation itself was slow.
-          insert_before(
-              '  async function createNewProject() {',
-              '    closeNewProject();\n',
-              '    const finalSaved = await saveActiveDocumentNow();\n'
-              '    if (finalSaved === "failed") {\n'
-              '      setStatus(tr("新建期间产生的编辑无法保存；新项目已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the project could not be saved; the project was created but not opened. Export the current document first."), "error");\n'
-              '      return;\n'
-              '    }\n'
+          # A document transition has two asynchronous windows: the initial
+          # preflight save and the storage operation itself. Flush once more
+          # immediately before replacing the active in-memory document.
+          insert_before_once(
+              "  async function createNewProject() {",
+              "    closeNewProject();\n",
+              "    const finalSaved = await saveActiveDocumentNow();\n"
+              "    if (finalSaved === \"failed\") { setStatus(tr(\"新建期间产生的编辑无法保存；新项目已创建但尚未打开，请先导出当前文档备份。\", \"Edits made while creating the project could not be saved; the project was created but not opened. Export the current document first.\"), \"error\"); return; }\n",
+              "const finalSaved = await saveActiveDocumentNow();"
           )
-          insert_before(
-              '  async function useSelectedTemplate(templateId) {',
-              '    selectedTemplateId = template.template.id;\n',
-              '    const finalSaved = await saveActiveDocumentNow();\n'
-              '    if (finalSaved === "failed") { setStatus(tr("创建期间产生的编辑无法保存；新文档已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the document could not be saved; the new document was created but not opened. Export the current document first."), "error"); return; }\n'
+          insert_before_once(
+              "  async function useSelectedTemplate(templateId) {",
+              "    selectedTemplateId = template.template.id;\n",
+              "    const finalSaved = await saveActiveDocumentNow();\n"
+              "    if (finalSaved === \"failed\") { setStatus(tr(\"创建期间产生的编辑无法保存；新文档已创建但尚未打开，请先导出当前文档备份。\", \"Edits made while creating the document could not be saved; the new document was created but not opened. Export the current document first.\"), \"error\"); return; }\n",
+              "const finalSaved = await saveActiveDocumentNow();"
           )
-          insert_before(
-              '  async function openLibraryDocument(id) {',
-              '    await activateDocument(opened.record);\n',
-              '    const finalSaved = await saveActiveDocumentNow();\n'
-              '    if (finalSaved === "failed") { setStatus(tr("切换期间产生的编辑无法保存；请导出当前文档备份后重试。", "Edits made during the switch could not be saved; export the current document and try again."), "error"); return; }\n'
+          insert_before_once(
+              "  async function openLibraryDocument(id) {",
+              "    await activateDocument(opened.record);\n",
+              "    const finalSaved = await saveActiveDocumentNow();\n"
+              "    if (finalSaved === \"failed\") { setStatus(tr(\"切换期间产生的编辑无法保存；请导出当前文档备份后重试。\", \"Edits made during the switch could not be saved; export the current document and try again.\"), \"error\"); return; }\n",
+              "const finalSaved = await saveActiveDocumentNow();"
           )
-          insert_before(
-              '  async function duplicateLibraryDocument(id) {',
-              '    await activateDocument(duplicate.record, { status: false });\n',
-              '    const finalSaved = await saveActiveDocumentNow();\n'
-              '    if (finalSaved === "failed") { setStatus(tr("复制期间产生的编辑无法保存；副本已创建但尚未打开，请先导出当前文档备份。", "Edits made during duplication could not be saved; the copy was created but not opened. Export the current document first."), "error"); return; }\n'
+          insert_before_once(
+              "  async function duplicateLibraryDocument(id) {",
+              "    await activateDocument(duplicate.record, { status: false });\n",
+              "    const finalSaved = await saveActiveDocumentNow();\n"
+              "    if (finalSaved === \"failed\") { setStatus(tr(\"复制期间产生的编辑无法保存；副本已创建但尚未打开，请先导出当前文档备份。\", \"Edits made during duplication could not be saved; the copy was created but not opened. Export the current document first.\"), \"error\"); return; }\n",
+              "const finalSaved = await saveActiveDocumentNow();"
           )
-          insert_before(
-              '  async function importFromDialog() {',
-              '    closeImport();\n',
-              '    const finalSaved = await saveActiveDocumentNow();\n'
-              '    if (finalSaved === "failed") { showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error"); return; }\n'
+          insert_before_once(
+              "  async function importFromDialog() {",
+              "    closeImport();\n",
+              "    const finalSaved = await saveActiveDocumentNow();\n"
+              "    if (finalSaved === \"failed\") { showImportMessage(tr(\"导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。\", \"Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first.\"), \"error\"); return; }\n",
+              "const finalSaved = await saveActiveDocumentNow();"
           )
+
+          rename_fn = s.index("  async function finishDocumentRename(id, name) {")
+          rename_next = s.index("\n  async function duplicateLibraryDocument", rename_fn)
+          rename_segment = s[rename_fn:rename_next]
+          old = '''    if (id === currentDocumentId) {
+              state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
+              editRevision = 0;
+              hasUnsavedChanges = false;
+              renderAll();
+              root.requestAnimationFrame(syncCanvasScale);
+            }
+'''
+          old = textwrap.dedent(old)
+          if "const persisted = Model.normalizeDocument(renamed.record.document" not in rename_segment:
+              if old not in rename_segment:
+                  raise SystemExit("current rename reconciliation block not found")
+              new = '''    if (id === currentDocumentId) {
+              const persisted = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
+              state.metadata.name = persisted.metadata.name;
+              state.metadata.updatedAt = persisted.metadata.updatedAt;
+              if (isProjectDocument()) {
+                state.metadata.runningHeader = Object.assign({}, persisted.metadata.runningHeader);
+                const liveTitle = state.blocks.find((block) => block && block.type === "title");
+                const persistedTitle = persisted.blocks.find((block) => block && block.type === "title");
+                if (liveTitle && persistedTitle) liveTitle.content = persistedTitle.content;
+                syncProjectDocumentNameControls(state.metadata.name, null);
+              }
+              changed({ outline: isProjectDocument(), chrome: true });
+              const reconciled = await saveActiveDocumentNow();
+              if (reconciled === "failed") {
+                setStatus(tr("重命名已写入，但并发编辑无法保存；请立即导出备份。", "Rename was written, but concurrent edits could not be saved; export a backup now."), "error");
+                return;
+              }
+              renderAll();
+              root.requestAnimationFrame(syncCanvasScale);
+            }
+'''
+              new = textwrap.dedent(new)
+              s = s[:rename_fn] + rename_segment.replace(old, new, 1) + s[rename_next:]
+
           editor.write_text(s)
 
-          test = Path('tests/document-editor.js')
-          t = test.read_text()
-          anchor = '    // Duplicating a different library row still activates the new copy. Make\n'
-          if anchor not in t:
-              raise SystemExit('transition regression anchor not found')
-          regression = textwrap.dedent(r'''
-          // Slow storage can leave a second race window after the first flush: an
-          // author may edit while Store.openDocument itself is awaiting I/O. That
-          // late edit must be flushed before activateDocument replaces the canvas.
-          await new Promise((resolve) => window.setTimeout(resolve, 450));
-          const lateTransitionTitle = document.querySelector("#pnCanvas .pn-document-title input, #pnCanvas .pn-document-title textarea");
-          const lateTransitionOriginalName = document.querySelector('.pn-document-open[aria-current="true"]')?.textContent.trim();
-          const lateTransitionTarget = Array.from(document.querySelectorAll('.pn-document-open[aria-current="false"]'))[0];
-          const originalLateOpen = window.ProofnoteStore.openDocument;
-          const originalLateSave = window.ProofnoteStore.saveDocument;
-          const lateTransitionSaves = [];
-          let releaseLateOpen = null;
-          window.ProofnoteStore.openDocument = (id) => new Promise((resolve) => {
-            releaseLateOpen = async () => resolve(await originalLateOpen.call(window.ProofnoteStore, id));
-          });
-          window.ProofnoteStore.saveDocument = async (id, savedDocument) => {
-            const title = savedDocument.blocks.find((block) => block.type === "title");
-            lateTransitionSaves.push(title && title.content);
-            return originalLateSave.call(window.ProofnoteStore, id, savedDocument);
-          };
-          if (lateTransitionTarget) lateTransitionTarget.click();
-          await settle(window, () => typeof releaseLateOpen === "function", 1000);
-          if (lateTransitionTitle) {
-            lateTransitionTitle.value = "Edit made during slow open";
-            lateTransitionTitle.dispatchEvent(new window.Event("input", { bubbles: true }));
-          }
-          if (releaseLateOpen) await releaseLateOpen();
-          await settle(window, () => {
-            const active = document.querySelector('.pn-document-open[aria-current="true"]');
-            return Boolean(active && active.textContent.trim() !== lateTransitionOriginalName);
-          }, 1500);
-          window.ProofnoteStore.openDocument = originalLateOpen;
-          window.ProofnoteStore.saveDocument = originalLateSave;
-          check(
-            "editor-document-switch-flushes-edits-made-during-store-open",
-            Boolean(lateTransitionTitle)
-              && Boolean(lateTransitionTarget)
-              && lateTransitionSaves.includes("Edit made during slow open")
-              && editorSource.includes('const finalSaved = await saveActiveDocumentNow();'),
-            JSON.stringify(lateTransitionSaves)
-          );
+          store = Path("src/document-store.js")
+          s = store.read_text()
+          old_idb = '''      return useStorageSession(async () => {
+                const library = await readIndexedLibrary();
+                const existing = library.records.find((record) => record.id === id);
+                const record = recordFor(document, existing || { id: id || newDocumentId() });
+                record.id = id || record.id;
+                record.lastOpenedAt = existing && existing.lastOpenedAt || record.lastOpenedAt;
+                // Saving a background record must not silently switch the current
+                // document. The open/create operations own current-document changes.
+                await writeIndexedLibrary({ put: [record], currentId: library.currentId || record.id });
+                return "indexeddb";
+              }, () => {
+                const library = fallbackLibrary(document);
+                const index = library.records.findIndex((record) => record.id === id);
+                const record = recordFor(document, index >= 0 ? library.records[index] : { id: id || newDocumentId() });
+                record.id = id || record.id;
+                if (index >= 0) library.records[index] = record;
+                else library.records.push(record);
+                if (library.currentId === record.id) library.current = record;
+                return persistFallbackLibrary(library) ? "localStorage" : "failed";
+              }, "failed");
+'''
+          old_idb = textwrap.dedent(old_idb)
+          if "if (!id || !existing) return \"failed\";" not in s:
+              if old_idb not in s:
+                  raise SystemExit("saveDocument source block not found")
+              new_idb = '''      return useStorageSession(async () => {
+                const library = await readIndexedLibrary();
+                const existing = library.records.find((record) => record.id === id);
+                // saveDocument updates an established local identity. Creation
+                // belongs exclusively to createDocument; otherwise a stale tab
+                // can recreate a record that was intentionally deleted elsewhere.
+                if (!id || !existing) return "failed";
+                const record = recordFor(document, existing);
+                record.id = id;
+                record.lastOpenedAt = existing.lastOpenedAt || record.lastOpenedAt;
+                // Saving a background record must not silently switch the current
+                // document. The open/create operations own current-document changes.
+                await writeIndexedLibrary({ put: [record], currentId: library.currentId || record.id });
+                return "indexeddb";
+              }, () => {
+                const library = fallbackLibrary(null);
+                const index = library.records.findIndex((record) => record.id === id);
+                if (!id || index < 0) return "failed";
+                const record = recordFor(document, library.records[index]);
+                record.id = id;
+                library.records[index] = record;
+                if (library.currentId === record.id) library.current = record;
+                return persistFallbackLibrary(library) ? "localStorage" : "failed";
+              }, "failed");
+'''
+              s = s.replace(old_idb, textwrap.dedent(new_idb), 1)
+          store.write_text(s)
 
-          ''').strip('\n')
-          regression = textwrap.indent(regression, '    ') + '\n'
-          test.write_text(t.replace(anchor, regression + anchor, 1))
+          blue = Path("tests/blue-team.js")
+          t = blue.read_text()
+          if "store-save-cannot-resurrect-deleted-local-identity" not in t:
+              anchor = "  const indexedDB = new IDBFactory();\n"
+              regression = '''  const staleFallbackStore = loadStore({ localStorage: memoryStorage() });
+              const staleFallbackCreated = await staleFallbackStore.createDocument(documentWith([], { name: "Disposable fallback" }));
+              await staleFallbackStore.deleteDocument(staleFallbackCreated.record.id);
+              const staleFallbackSave = await staleFallbackStore.saveDocument(staleFallbackCreated.record.id, documentWith([], { name: "Should stay deleted" }));
+              const staleFallbackRecords = await staleFallbackStore.listDocuments();
+              check(
+                "store-save-cannot-resurrect-deleted-local-identity",
+                staleFallbackSave === "failed" && !staleFallbackRecords.some((record) => record.id === staleFallbackCreated.record.id)
+              );
+
+'''
+              regression = textwrap.dedent(regression)
+              if anchor not in t:
+                  raise SystemExit("blue-team IndexedDB anchor not found")
+              t = t.replace(anchor, regression + anchor, 1)
+          blue.write_text(t)
+
+          tests = Path("tests/document-editor.js")
+          t = tests.read_text()
+          if "editor-document-switch-flushes-edits-made-during-store-open" not in t:
+              anchor = "    // Duplicating a different library row still activates the new copy. Make\n"
+              if anchor not in t:
+                  raise SystemExit("transition regression anchor not found")
+              regression = '''    // Edits made while the storage-backed open operation is still pending
+                // must be flushed before the target document replaces the canvas.
+                await new Promise((resolve) => window.setTimeout(resolve, 450));
+                const lateTransitionTitle = document.querySelector("#pnCanvas .pn-document-title input, #pnCanvas .pn-document-title textarea");
+                const lateTransitionOriginalName = document.querySelector('.pn-document-open[aria-current="true"]')?.textContent.trim();
+                const lateTransitionTarget = Array.from(document.querySelectorAll('.pn-document-open[aria-current="false"]'))[0];
+                const originalLateOpen = window.ProofnoteStore.openDocument;
+                const originalLateSave = window.ProofnoteStore.saveDocument;
+                const lateTransitionSaves = [];
+                let releaseLateOpen = null;
+                window.ProofnoteStore.openDocument = (id) => new Promise((resolve) => {
+                  releaseLateOpen = async () => resolve(await originalLateOpen.call(window.ProofnoteStore, id));
+                });
+                window.ProofnoteStore.saveDocument = async (id, savedDocument) => {
+                  const title = savedDocument.blocks.find((block) => block.type === "title");
+                  lateTransitionSaves.push(title && title.content);
+                  return originalLateSave.call(window.ProofnoteStore, id, savedDocument);
+                };
+                if (lateTransitionTarget) lateTransitionTarget.click();
+                await settle(window, () => typeof releaseLateOpen === "function", 1000);
+                if (lateTransitionTitle) {
+                  lateTransitionTitle.value = "Edit made during slow open";
+                  lateTransitionTitle.dispatchEvent(new window.Event("input", { bubbles: true }));
+                }
+                if (releaseLateOpen) await releaseLateOpen();
+                await settle(window, () => {
+                  const active = document.querySelector('.pn-document-open[aria-current="true"]');
+                  return Boolean(active && active.textContent.trim() !== lateTransitionOriginalName);
+                }, 1500);
+                window.ProofnoteStore.openDocument = originalLateOpen;
+                window.ProofnoteStore.saveDocument = originalLateSave;
+                check(
+                  "editor-document-switch-flushes-edits-made-during-store-open",
+                  Boolean(lateTransitionTitle)
+                    && Boolean(lateTransitionTarget)
+                    && lateTransitionSaves.includes("Edit made during slow open")
+                    && editorSource.includes("const finalSaved = await saveActiveDocumentNow();"),
+                  JSON.stringify(lateTransitionSaves)
+                );
+
+'''
+              regression = textwrap.dedent(regression)
+              regression = textwrap.indent(regression, "    ")
+              t = t.replace(anchor, regression + anchor, 1)
+          tests.write_text(t)
           PY
       - run: npm ci
       - run: npm test
-      - name: Commit branch-only fix
+      - name: Commit branch-only fixes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/document-editor.js tests/document-editor.js
-          git commit -m "fix: preserve edits across slow document transitions"
+          git add src/document-editor.js src/document-store.js tests/document-editor.js tests/blue-team.js
+          git commit -m "fix: harden document transitions and stale saves"
           git push origin HEAD:blue-team-hardening-20260916
