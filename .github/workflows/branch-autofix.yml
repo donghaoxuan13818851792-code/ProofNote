@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Patch duplicate transition and regression test
+      - name: Patch document-transition regressions
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -27,6 +27,9 @@ jobs:
 
           editor = Path('src/document-editor.js')
           text = editor.read_text()
+
+          # Duplicating any library row activates the duplicate, so it is a
+          # document transition even when the source is not currently open.
           start = text.index('  async function duplicateLibraryDocument(id) {')
           source_line = '    const source = documents.find((record) => record.id === id);\n'
           source_pos = text.index(source_line, start)
@@ -41,65 +44,142 @@ jobs:
               '    if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再复制。", "Autosave failed — export a backup before duplicating."), "error"); return; }\n'
               '    const source = documents.find((record) => record.id === id);\n'
           )
-          editor.write_text(text[:start] + replacement + text[end:])
+          text = text[:start] + replacement + text[end:]
+
+          # A Store-level Project rename synchronizes metadata, title, and
+          # running header. Reload the persisted record into the active editor
+          # instead of updating only metadata.name and leaving stale page chrome
+          # that a later autosave could write back.
+          rename_start = text.index('    if (id === currentDocumentId) {\n      state.metadata.name = renamed.record.document.metadata.name;')
+          rename_end = text.index('    await refreshDocuments();', rename_start)
+          rename_replacement = (
+              '    if (id === currentDocumentId) {\n'
+              '      state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });\n'
+              '      editRevision = 0;\n'
+              '      hasUnsavedChanges = false;\n'
+              '      renderAll();\n'
+              '      root.requestAnimationFrame(syncCanvasScale);\n'
+              '    }\n'
+          )
+          text = text[:rename_start] + rename_replacement + text[rename_end:]
+
+          # Repeatedly duplicating the same source should not produce several
+          # indistinguishable rows with the same automatic "copy" name.
+          old_copy_name = '    const copiedName = documentName(source) + tr(" 副本", " copy");'
+          new_copy_name = '    const copiedName = uniqueLibraryDocumentName(documentName(source) + tr(" 副本", " copy"));'
+          if old_copy_name not in text and new_copy_name not in text:
+              raise SystemExit('duplicate name source pattern not found')
+          text = text.replace(old_copy_name, new_copy_name, 1)
+          editor.write_text(text)
 
           test = Path('tests/document-editor.js')
           text = test.read_text()
-          token = '    check(\n      "editor-autosave-flushes-on-document-lifecycle",'
-          if token not in text:
-              raise SystemExit('autosave lifecycle test anchor not found')
-          regression = textwrap.dedent(r'''
-          // Duplicating a different library row still activates the new copy. Make
-          // the active document dirty through a structural insertion (a guaranteed
-          // changed() path), then verify its save completes before duplication.
-          await new Promise((resolve) => window.setTimeout(resolve, 450));
-          const duplicateSourceRow = Array.from(document.querySelectorAll(".pn-document-item")).find((row) => Boolean(row.querySelector('.pn-document-open[aria-current="false"]')));
-          const duplicateSourceActions = duplicateSourceRow && duplicateSourceRow.querySelector(".pn-document-more");
-          const duplicateOther = duplicateSourceActions && Array.from(duplicateSourceActions.querySelectorAll("button")).find((control) => /Duplicate|制作副本/.test(control.textContent));
-          const originalTransitionSave = window.ProofnoteStore.saveDocument;
-          const originalTransitionDuplicate = window.ProofnoteStore.duplicateDocument;
-          const duplicateTransitionEvents = [];
-          window.ProofnoteStore.saveDocument = async (id, savedDocument) => {
-            duplicateTransitionEvents.push("save");
-            return originalTransitionSave.call(window.ProofnoteStore, id, savedDocument);
-          };
-          window.ProofnoteStore.duplicateDocument = async (id, name) => {
-            duplicateTransitionEvents.push("duplicate");
-            return originalTransitionDuplicate.call(window.ProofnoteStore, id, name);
-          };
-          const dirtyBlockCount = canvasBlockNodes(document).length;
-          const dirtyPicker = canvas.querySelector(".pn-insert-last .pn-insert-trigger");
-          if (dirtyPicker) dirtyPicker.click();
-          const dirtyChoice = Array.from(canvas.querySelectorAll(".pn-insert-choice")).find((choice) => /Paragraph|正文/.test(choice.textContent));
-          if (dirtyChoice) dirtyChoice.click();
-          if (duplicateSourceActions) duplicateSourceActions.open = true;
-          if (duplicateOther) duplicateOther.click();
-          await settle(window, () => duplicateTransitionEvents.includes("duplicate"), 1500);
-          window.ProofnoteStore.saveDocument = originalTransitionSave;
-          window.ProofnoteStore.duplicateDocument = originalTransitionDuplicate;
-          const duplicateSaveIndex = duplicateTransitionEvents.indexOf("save");
-          const duplicateCallIndex = duplicateTransitionEvents.indexOf("duplicate");
-          check(
-            "editor-duplicating-another-document-flushes-active-edits-first",
-            Boolean(duplicateOther)
-              && Boolean(dirtyPicker)
-              && Boolean(dirtyChoice)
-              && canvasBlockNodes(document).length >= dirtyBlockCount
-              && duplicateSaveIndex >= 0
-              && duplicateCallIndex > duplicateSaveIndex
-              && editorSource.includes("Activating a duplicate is a document transition"),
-            JSON.stringify(duplicateTransitionEvents)
-          );
-          ''').strip('\n')
-          regression = textwrap.indent(regression, '    ') + '\n\n'
-          test.write_text(text.replace(token, regression + token, 1))
+
+          # Keep the duplicate-transition regression idempotent across reruns.
+          if 'editor-duplicating-another-document-flushes-active-edits-first' not in text:
+              token = '    check(\n      "editor-autosave-flushes-on-document-lifecycle",'
+              if token not in text:
+                  raise SystemExit('autosave lifecycle test anchor not found')
+              regression = textwrap.dedent(r'''
+              // Duplicating a different library row still activates the new copy. Make
+              // the active document dirty through a structural insertion (a guaranteed
+              // changed() path), then verify its save completes before duplication.
+              await new Promise((resolve) => window.setTimeout(resolve, 450));
+              const duplicateSourceRow = Array.from(document.querySelectorAll(".pn-document-item")).find((row) => Boolean(row.querySelector('.pn-document-open[aria-current="false"]')));
+              const duplicateSourceActions = duplicateSourceRow && duplicateSourceRow.querySelector(".pn-document-more");
+              const duplicateOther = duplicateSourceActions && Array.from(duplicateSourceActions.querySelectorAll("button")).find((control) => /Duplicate|制作副本/.test(control.textContent));
+              const originalTransitionSave = window.ProofnoteStore.saveDocument;
+              const originalTransitionDuplicate = window.ProofnoteStore.duplicateDocument;
+              const duplicateTransitionEvents = [];
+              window.ProofnoteStore.saveDocument = async (id, savedDocument) => {
+                duplicateTransitionEvents.push("save");
+                return originalTransitionSave.call(window.ProofnoteStore, id, savedDocument);
+              };
+              window.ProofnoteStore.duplicateDocument = async (id, name) => {
+                duplicateTransitionEvents.push("duplicate");
+                return originalTransitionDuplicate.call(window.ProofnoteStore, id, name);
+              };
+              const dirtyBlockCount = canvasBlockNodes(document).length;
+              const dirtyPicker = canvas.querySelector(".pn-insert-last .pn-insert-trigger");
+              if (dirtyPicker) dirtyPicker.click();
+              const dirtyChoice = Array.from(canvas.querySelectorAll(".pn-insert-choice")).find((choice) => /Paragraph|正文/.test(choice.textContent));
+              if (dirtyChoice) dirtyChoice.click();
+              if (duplicateSourceActions) duplicateSourceActions.open = true;
+              if (duplicateOther) duplicateOther.click();
+              await settle(window, () => duplicateTransitionEvents.includes("duplicate"), 1500);
+              window.ProofnoteStore.saveDocument = originalTransitionSave;
+              window.ProofnoteStore.duplicateDocument = originalTransitionDuplicate;
+              const duplicateSaveIndex = duplicateTransitionEvents.indexOf("save");
+              const duplicateCallIndex = duplicateTransitionEvents.indexOf("duplicate");
+              check(
+                "editor-duplicating-another-document-flushes-active-edits-first",
+                Boolean(duplicateOther)
+                  && Boolean(dirtyPicker)
+                  && Boolean(dirtyChoice)
+                  && canvasBlockNodes(document).length >= dirtyBlockCount
+                  && duplicateSaveIndex >= 0
+                  && duplicateCallIndex > duplicateSaveIndex
+                  && editorSource.includes("Activating a duplicate is a document transition"),
+                JSON.stringify(duplicateTransitionEvents)
+              );
+              ''').strip('\n')
+              regression = textwrap.indent(regression, '    ') + '\n\n'
+              text = text.replace(token, regression + token, 1)
+
+          if 'editor-library-rename-reloads-current-project-chrome' not in text:
+              rename_token = '    const invalidLatexJson = ['
+              if rename_token not in text:
+                  raise SystemExit('blank Project import test anchor not found')
+              rename_regression = textwrap.dedent(r'''
+              // Library rename persists a canonical Project name across metadata,
+              // title, running header, and footer. The live editor must reload that
+              // persisted record rather than keep stale title/header state.
+              await new Promise((resolve) => window.setTimeout(resolve, 450));
+              const currentProjectRow = documentLibrary && documentLibrary.querySelector(".pn-document-item.is-active");
+              const currentProjectActions = currentProjectRow && currentProjectRow.querySelector(".pn-document-more");
+              const renameCurrentProject = currentProjectActions && Array.from(currentProjectActions.querySelectorAll("button")).find((control) => /Rename|重命名/.test(control.textContent));
+              if (currentProjectActions) currentProjectActions.open = true;
+              if (renameCurrentProject) renameCurrentProject.click();
+              await settle(window, () => Boolean(documentLibrary && documentLibrary.querySelector(".pn-document-rename")));
+              const currentProjectRenameInput = documentLibrary && documentLibrary.querySelector(".pn-document-rename");
+              if (currentProjectRenameInput) currentProjectRenameInput.value = "Library project rename";
+              const saveProjectRename = currentProjectRow && Array.from(currentProjectRow.querySelectorAll("button")).find((control) => /Save|保存/.test(control.textContent));
+              if (saveProjectRename) saveProjectRename.click();
+              await settle(window, () => document.querySelector("#pnFooterName")?.textContent === "Library project rename"
+                && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Library project rename"
+                && document.querySelector("#pnCanvas .pn-canvas-title-input")?.value === "Library project rename", 1500);
+              check(
+                "editor-library-rename-reloads-current-project-chrome",
+                Boolean(renameCurrentProject)
+                  && Boolean(currentProjectRenameInput)
+                  && Boolean(saveProjectRename)
+                  && document.querySelector("#pnFooterName")?.textContent === "Library project rename"
+                  && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Library project rename"
+                  && document.querySelector("#pnCanvas .pn-canvas-title-input")?.value === "Library project rename"
+                  && editorSource.includes("state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true })"),
+                JSON.stringify({
+                  footer: document.querySelector("#pnFooterName")?.textContent,
+                  header: document.querySelector("#pnPageHeader .pn-running-left")?.value,
+                  title: document.querySelector("#pnCanvas .pn-canvas-title-input")?.value
+                })
+              );
+              check(
+                "editor-automatic-duplicate-names-are-disambiguated",
+                editorSource.includes('const copiedName = uniqueLibraryDocumentName(documentName(source) + tr(" 副本", " copy"));'),
+                "automatic duplicate names should use the same library disambiguation as new Projects"
+              );
+              ''').strip('\n')
+              rename_regression = textwrap.indent(rename_regression, '    ') + '\n\n'
+              text = text.replace(rename_token, rename_regression + rename_token, 1)
+
+          test.write_text(text)
           PY
       - run: npm ci
       - run: npm test
-      - name: Commit branch-only fix
+      - name: Commit branch-only fixes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/document-editor.js tests/document-editor.js
-          git commit -m "fix: flush active edits before duplicating another document"
+          git commit -m "fix: preserve project identity across library actions"
           git push origin HEAD:blue-team-hardening-20260916
