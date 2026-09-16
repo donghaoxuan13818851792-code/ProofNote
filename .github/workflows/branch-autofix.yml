@@ -19,43 +19,228 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Diagnose unsupported image sources
+      - name: Close document-transition race windows
         run: |
           python - <<'PY'
           from pathlib import Path
+          import textwrap
 
-          model = Path('src/document-model.js')
-          s = model.read_text()
-          start = s.index('      if (block.type === "image") {')
-          end = s.index('      if (block.type === "quote")', start)
-          new = '''      if (block.type === "image") {
-            ["src", "alt", "caption"].forEach((key) => expectString(path + "." + key, block[key]));
-            if (typeof block.src === "string") {
-              const source = block.src.trim();
-              const supportedRemote = /^https:\\/\\//i.test(source);
-              const supportedEmbedded = /^data:image\\/(png|jpe?g|gif|webp);base64,/i.test(source);
-              if (source && !supportedRemote && !supportedEmbedded) warn(path + ".src", "Unsupported image source; use an HTTPS URL or a PNG/JPEG/GIF/WebP base64 data image.");
-              if (/^data:image\\//i.test(source) && source.length > LIMITS.maxImageDataUrlLength) error(path + ".src", "Embedded image exceeds the maximum supported size.");
-            }
-            if (block.remoteApproved !== undefined && typeof block.remoteApproved !== "boolean") warn(path + ".remoteApproved", "Remote-image approval is ignored unless it is a boolean.");
+          editor = Path('src/document-editor.js')
+          s = editor.read_text()
+
+          # Current-document library rename: merge the canonical renamed fields
+          # into the live state, then flush again. Replacing the whole state can
+          # discard edits made while the storage rename is awaiting completion.
+          old = '''    if (id === currentDocumentId) {
+            state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
+            editRevision = 0;
+            hasUnsavedChanges = false;
+            renderAll();
+            root.requestAnimationFrame(syncCanvasScale);
           }
+          await refreshDocuments();
+          setStatus(tr("文档已重命名", "Document renamed"), "saved");
           '''
-          new = new.replace('\n    ', '\n')
-          model.write_text(s[:start] + new + s[end:])
+          old = textwrap.dedent(old)
+          new = '''    if (id === currentDocumentId) {
+            const persisted = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
+            state.metadata.name = persisted.metadata.name;
+            state.metadata.updatedAt = persisted.metadata.updatedAt;
+            if (isProjectDocument()) {
+              state.metadata.runningHeader = Object.assign({}, persisted.metadata.runningHeader);
+              const liveTitle = state.blocks.find((block) => block && block.type === "title");
+              const persistedTitle = persisted.blocks.find((block) => block && block.type === "title");
+              if (liveTitle && persistedTitle) liveTitle.content = persistedTitle.content;
+              syncProjectDocumentNameControls(state.metadata.name, null);
+            }
+            // Mark the canonical rename as a newer revision. Any autosave that
+            // began during Store.renameDocument then cannot clear this pending
+            // state when its older snapshot completes.
+            changed({ outline: isProjectDocument(), chrome: true });
+            const reconciled = await saveActiveDocumentNow();
+            if (reconciled === "failed") {
+              setStatus(tr("重命名已写入，但并发编辑无法保存；请立即导出备份。", "Rename was written, but concurrent edits could not be saved; export a backup now."), "error");
+              return;
+            }
+            renderAll();
+            root.requestAnimationFrame(syncCanvasScale);
+          }
+          await refreshDocuments();
+          setStatus(tr("文档已重命名", "Document renamed"), "saved");
+          '''
+          new = textwrap.dedent(new)
+          if old not in s:
+              raise SystemExit('rename reconciliation pattern not found')
+          s = s.replace(old, new, 1)
 
-          test = Path('tests/document-model.js')
-          s = test.read_text()
-          anchor = s.index('const remoteImageRaw = ')
-          insert = s.index('\n\n// Templates include', anchor)
-          regression = '''
-          const unsupportedImageSource = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Unsupported image" }, blocks: [{ type: "image", src: "http://example.test/pixel.png" }, { type: "image", src: "data:image/svg+xml;base64,PHN2Zz4=" }] });
-          check("document-import-warns-on-image-sources-the-renderer-will-refuse", unsupportedImageSource.errors.length === 0
-            && unsupportedImageSource.warnings.filter((warning) => /Unsupported image source/.test(warning.message)).length === 2
-            && unsupportedImageSource.warnings.some((warning) => warning.path === "blocks[0].src")
-            && unsupportedImageSource.warnings.some((warning) => warning.path === "blocks[1].src"), JSON.stringify(unsupportedImageSource));
-          '''
-          regression = regression.replace('\n    ', '\n').strip('\n')
-          test.write_text(s[:insert] + '\n' + regression + s[insert:])
+          # Every operation below performs its first flush before the storage
+          # action. Add a second flush after the awaited storage action and
+          # immediately before activation so edits made during slow storage I/O
+          # are not thrown away by activateDocument().
+          replacements = [
+            (
+              '''    const created = await Store.createDocument(project);
+              if (!created || !created.record || created.backend === "failed") {
+                setStatus(tr("新建项目失败。", "Could not create project."), "error");
+                return;
+              }
+              closeNewProject();
+              await activateDocument(created.record, { status: false });
+              ''',
+              '''    const created = await Store.createDocument(project);
+              if (!created || !created.record || created.backend === "failed") {
+                setStatus(tr("新建项目失败。", "Could not create project."), "error");
+                return;
+              }
+              const finalSaved = await saveActiveDocumentNow();
+              if (finalSaved === "failed") {
+                setStatus(tr("新建期间产生的编辑无法保存；新项目已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the project could not be saved; the project was created but not opened. Export the current document first."), "error");
+                return;
+              }
+              closeNewProject();
+              await activateDocument(created.record, { status: false });
+              '''
+            ),
+            (
+              '''    const created = await Store.createDocument(document);
+              if (!created || !created.record || created.backend === "failed") { setStatus(tr("无法从模板创建文档。", "Could not create a document from this template."), "error"); return; }
+              selectedTemplateId = template.template.id;
+              await activateDocument(created.record, { status: false });
+              ''',
+              '''    const created = await Store.createDocument(document);
+              if (!created || !created.record || created.backend === "failed") { setStatus(tr("无法从模板创建文档。", "Could not create a document from this template."), "error"); return; }
+              const finalSaved = await saveActiveDocumentNow();
+              if (finalSaved === "failed") { setStatus(tr("创建期间产生的编辑无法保存；新文档已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the document could not be saved; the new document was created but not opened. Export the current document first."), "error"); return; }
+              selectedTemplateId = template.template.id;
+              await activateDocument(created.record, { status: false });
+              '''
+            ),
+            (
+              '''    const opened = await Store.openDocument(id);
+              if (!opened || !opened.record || opened.backend === "failed") { setStatus(tr("无法打开文档。", "Could not open document."), "error"); return; }
+              await activateDocument(opened.record);
+              ''',
+              '''    const opened = await Store.openDocument(id);
+              if (!opened || !opened.record || opened.backend === "failed") { setStatus(tr("无法打开文档。", "Could not open document."), "error"); return; }
+              const finalSaved = await saveActiveDocumentNow();
+              if (finalSaved === "failed") { setStatus(tr("切换期间产生的编辑无法保存；请导出当前文档备份后重试。", "Edits made during the switch could not be saved; export the current document and try again."), "error"); return; }
+              await activateDocument(opened.record);
+              '''
+            ),
+            (
+              '''    const duplicate = await Store.duplicateDocument(id, copiedName);
+              if (!duplicate || !duplicate.record || duplicate.backend === "failed") { setStatus(tr("复制文档失败。", "Could not duplicate document."), "error"); return; }
+              await activateDocument(duplicate.record, { status: false });
+              ''',
+              '''    const duplicate = await Store.duplicateDocument(id, copiedName);
+              if (!duplicate || !duplicate.record || duplicate.backend === "failed") { setStatus(tr("复制文档失败。", "Could not duplicate document."), "error"); return; }
+              const finalSaved = await saveActiveDocumentNow();
+              if (finalSaved === "failed") { setStatus(tr("复制期间产生的编辑无法保存；副本已创建但尚未打开，请先导出当前文档备份。", "Edits made during duplication could not be saved; the copy was created but not opened. Export the current document first."), "error"); return; }
+              await activateDocument(duplicate.record, { status: false });
+              '''
+            ),
+            (
+              '''    const created = await Store.createDocument(next);
+              if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
+              closeImport();
+              await activateDocument(created.record, { status: false });
+              ''',
+              '''    const created = await Store.createDocument(next);
+              if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
+              const finalSaved = await saveActiveDocumentNow();
+              if (finalSaved === "failed") { showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error"); return; }
+              closeImport();
+              await activateDocument(created.record, { status: false });
+              '''
+            )
+          ]
+          for old_piece, new_piece in replacements:
+              old_piece = textwrap.dedent(old_piece)
+              new_piece = textwrap.dedent(new_piece)
+              if old_piece not in s:
+                  raise SystemExit('document transition source pattern not found: ' + old_piece.splitlines()[0])
+              s = s.replace(old_piece, new_piece, 1)
+
+          # Clean up the indentation from the earlier deletion-race emergency
+          # patch while this file is already being edited. No behavior change.
+          deletion_start = s.index('      onConfirm: async () => {\n  const deletingCurrent = id === currentDocumentId;')
+          deletion_end = s.index('\n    });\n  }\n  async function saveCurrentAsTemplate', deletion_start)
+          deletion = '''      onConfirm: async () => {
+            const deletingCurrent = id === currentDocumentId;
+            if (deletingCurrent) {
+              // Deletion intentionally discards edits that have not entered the save
+              // queue yet. A save already in flight is different: it must finish
+              // before deletion, otherwise it can complete afterwards and recreate
+              // the record the author just removed.
+              clearTimeout(saveTimer);
+              try { await saveQueue; } catch (_) {}
+            }
+            const backend = await Store.deleteDocument(id);
+            if (backend === "failed") { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
+            if (deletingCurrent) {
+              const opened = await openRemainingDocumentAfterDeletion();
+              if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
+              setStatus(tr("文档已删除", "Document deleted"), "saved");
+            } else {
+              await refreshDocuments();
+              setStatus(tr("文档已删除", "Document deleted"), "saved");
+            }
+          }'''
+          deletion = textwrap.dedent(deletion)
+          s = s[:deletion_start] + deletion + s[deletion_end:]
+          editor.write_text(s)
+
+          test = Path('tests/document-editor.js')
+          t = test.read_text()
+          anchor = '    // Duplicating a different library row still activates the new copy. Make\n'
+          if anchor not in t:
+              raise SystemExit('transition regression anchor not found')
+          regression = textwrap.dedent(r'''
+          // Slow storage can leave a second race window after the first flush: an
+          // author may edit while Store.openDocument itself is awaiting I/O. That
+          // late edit must be flushed before activateDocument replaces the canvas.
+          await new Promise((resolve) => window.setTimeout(resolve, 450));
+          const lateTransitionTitle = document.querySelector("#pnCanvas .pn-document-title input, #pnCanvas .pn-document-title textarea");
+          const lateTransitionOriginalName = document.querySelector('.pn-document-open[aria-current="true"]')?.textContent.trim();
+          const lateTransitionTarget = Array.from(document.querySelectorAll('.pn-document-open[aria-current="false"]'))[0];
+          const originalLateOpen = window.ProofnoteStore.openDocument;
+          const originalLateSave = window.ProofnoteStore.saveDocument;
+          const lateTransitionSaves = [];
+          let releaseLateOpen = null;
+          window.ProofnoteStore.openDocument = (id) => new Promise((resolve) => {
+            releaseLateOpen = async () => resolve(await originalLateOpen.call(window.ProofnoteStore, id));
+          });
+          window.ProofnoteStore.saveDocument = async (id, savedDocument) => {
+            const title = savedDocument.blocks.find((block) => block.type === "title");
+            lateTransitionSaves.push(title && title.content);
+            return originalLateSave.call(window.ProofnoteStore, id, savedDocument);
+          };
+          if (lateTransitionTarget) lateTransitionTarget.click();
+          await settle(window, () => typeof releaseLateOpen === "function", 1000);
+          if (lateTransitionTitle) {
+            lateTransitionTitle.value = "Edit made during slow open";
+            lateTransitionTitle.dispatchEvent(new window.Event("input", { bubbles: true }));
+          }
+          if (releaseLateOpen) await releaseLateOpen();
+          await settle(window, () => {
+            const active = document.querySelector('.pn-document-open[aria-current="true"]');
+            return Boolean(active && active.textContent.trim() !== lateTransitionOriginalName);
+          }, 1500);
+          window.ProofnoteStore.openDocument = originalLateOpen;
+          window.ProofnoteStore.saveDocument = originalLateSave;
+          check(
+            "editor-document-switch-flushes-edits-made-during-store-open",
+            Boolean(lateTransitionTitle)
+              && Boolean(lateTransitionTarget)
+              && lateTransitionSaves.includes("Edit made during slow open")
+              && editorSource.includes('const finalSaved = await saveActiveDocumentNow();'),
+            JSON.stringify(lateTransitionSaves)
+          );
+
+          ''').strip('\n')
+          regression = textwrap.indent(regression, '    ') + '\n'
+          t = t.replace(anchor, regression + anchor, 1)
+          test.write_text(t)
           PY
       - run: npm ci
       - run: npm test
@@ -63,6 +248,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/document-model.js tests/document-model.js
-          git commit -m "fix: report unsupported image sources"
+          git add src/document-editor.js tests/document-editor.js
+          git commit -m "fix: preserve edits across slow document transitions"
           git push origin HEAD:blue-team-hardening-20260916
