@@ -130,6 +130,27 @@ async function main() {
       && !idbRecords.some((record) => record.id === "current-document"),
     JSON.stringify(idbRecords)
   );
+
+  // A malformed row elsewhere in the old object store is not the v1 current
+  // document. Migration must only trust the historical `current-document`
+  // key, otherwise unrelated corruption can be resurrected as user content.
+  const corruptIndexedDB = new IDBFactory();
+  const corruptV1 = await openDatabase(corruptIndexedDB, "proofnote-document-store", 1, (db) => db.createObjectStore("documents"));
+  const corruptTx = corruptV1.transaction("documents", "readwrite");
+  corruptTx.objectStore("documents").put({ document: { metadata: { name: "Unrelated corrupt row" }, blocks: [] } }, "not-current-document");
+  corruptTx.objectStore("documents").put({ id: "   ", document: { metadata: { name: "Whitespace id row" }, blocks: [] } }, "space-id");
+  await transactionComplete(corruptTx);
+  corruptV1.close();
+  const corruptWindow = { indexedDB: corruptIndexedDB, localStorage: memoryStorage(new Map()) };
+  vm.runInNewContext(source, { window: corruptWindow, JSON, Promise, Date, Error, Math, Map, String, Object, Array });
+  const CorruptLibrary = corruptWindow.ProofnoteStore;
+  const corruptInitial = await CorruptLibrary.initialiseDocumentLibrary({ metadata: { name: "Clean seed" }, blocks: [] });
+  check(
+    "store-indexeddb-migration-only-trusts-the-v1-current-key",
+    Boolean(corruptInitial.record && corruptInitial.record.document.metadata.name === "Clean seed")
+      && (await CorruptLibrary.listDocuments()).every((record) => record.id.trim())
+  );
+
   const healthyIndexedDB = indexedWindow.indexedDB;
   indexedWindow.indexedDB = { open() { throw new Error("temporary IndexedDB failure"); } };
   const failedStickySave = await IndexedLibrary.saveDocument(idbInitial.record && idbInitial.record.id, { metadata: { name: "Must not split backend" }, blocks: [] });
