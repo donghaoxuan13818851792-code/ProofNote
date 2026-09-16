@@ -7,6 +7,8 @@
   const Store = root.ProofnoteStore;
   if (!Model || !Store) return;
 
+  // Increment this small, user-facing version for each released workspace update.
+  const APP_VERSION = "v1.13";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Equation", "公式"], ["code", "Code", "代码"],
@@ -15,6 +17,25 @@
     ["semantic", "Semantic block", "语义模块"], ["list", "List", "列表"], ["key-value", "Key–value", "键值列表"], ["stats", "Stats", "统计卡片"]
   ];
   const TYPE_LABEL = Object.fromEntries(TYPE_OPTIONS.map(([type, en, zh]) => [type, { en, zh }]));
+  // Code is a reading surface rather than a mini IDE. Keep the supported
+  // language set intentionally small, known, and shared by the Inspector,
+  // canvas label, AI contract, and Prism export renderer.
+  const CODE_LANGUAGE_OPTIONS = [
+    ["text", "Plain text", "纯文本"], ["python", "Python", "Python"],
+    ["javascript", "JavaScript", "JavaScript"], ["typescript", "TypeScript", "TypeScript"],
+    ["c", "C", "C"], ["cpp", "C++", "C++"], ["java", "Java", "Java"],
+    ["bash", "Bash", "Bash"], ["sql", "SQL", "SQL"], ["json", "JSON", "JSON"],
+    ["html", "HTML", "HTML"], ["css", "CSS", "CSS"]
+  ];
+  const CODE_LANGUAGE_ALIASES = {
+    text: "text", plain: "text", plaintext: "text", txt: "text",
+    python: "python", py: "python",
+    javascript: "javascript", js: "javascript",
+    typescript: "typescript", ts: "typescript",
+    c: "c", cpp: "cpp", "c++": "cpp", cxx: "cpp",
+    java: "java", bash: "bash", sh: "bash", shell: "bash",
+    sql: "sql", json: "json", html: "html", xml: "html", markup: "html", css: "css"
+  };
   // The inline/page-bottom picker is intentionally a focused authoring menu,
   // not a catalogue of every block the document format can represent.  Title
   // and subtitle belong to the document masthead; the remaining hidden types
@@ -173,28 +194,62 @@
     field.appendChild(select);
     return field;
   }
+  function canonicalCodeLanguage(value) {
+    const source = String(value == null ? "" : value).trim().toLowerCase();
+    return CODE_LANGUAGE_ALIASES[source] || "";
+  }
+  function codeLanguageOptions() {
+    return CODE_LANGUAGE_OPTIONS.map(([key, en, zh]) => [key, tr(zh, en)]);
+  }
+  function codeLanguageSelectValue(value) {
+    return canonicalCodeLanguage(value) || "text";
+  }
+  function codeLanguageDisplay(value) {
+    const source = String(value == null ? "" : value).trim();
+    if (!source) return "CODE";
+    const language = canonicalCodeLanguage(source);
+    const option = CODE_LANGUAGE_OPTIONS.find(([key]) => key === language);
+    return option ? tr(option[2], option[1]) : source.toUpperCase();
+  }
+  function codePrismLanguage(value) {
+    const language = canonicalCodeLanguage(value);
+    return language === "html" ? "markup" : language;
+  }
+  function highlightedCodeHtml(content, language) {
+    const source = String(content == null ? "" : content);
+    const prism = root.Prism;
+    const grammarName = codePrismLanguage(language);
+    if (!grammarName || grammarName === "text" || !prism || !prism.languages || !prism.languages[grammarName]) return escapeHtml(source);
+    try {
+      return prism.highlight(source, prism.languages[grammarName], grammarName);
+    } catch (_) {
+      // Exporting a document must never depend on a grammar successfully
+      // parsing every edge case; raw escaped code is always a safe fallback.
+      return escapeHtml(source);
+    }
+  }
 
   function mount() {
     document.body.classList.add("proofnote-document-mode");
     const app = element("div", { id: "proofnoteDocumentApp" });
     app.innerHTML = `
       <header class="pn-workspace-toolbar">
-        <div class="pn-wordmark"><strong>Proofnote</strong></div>
+        <div class="pn-wordmark"><strong>Proofnote</strong><span class="pn-app-version" aria-label="Proofnote version ${APP_VERSION.slice(1)}">${APP_VERSION}</span></div>
         <p id="pnStatus" class="pn-status" role="status"></p>
         <div class="pn-toolbar-menu">
           <button class="pn-toolbar-actions" id="pnActionsToggle" type="button" aria-expanded="false" aria-controls="pnActionMenu" aria-label="${tr("文档操作", "Document actions")}" title="${tr("文档操作", "Document actions")}">•••</button>
           <div class="pn-action-menu" id="pnActionMenu" role="menu" aria-label="${tr("文档操作", "Document actions")}" hidden>
             <div class="pn-action-menu-label">${tr("文件", "File")}</div>
             <button class="pn-action-menu-item" id="pnImport" type="button" role="menuitem">${tr("导入 JSON", "Import JSON")}</button>
-            <button class="pn-action-menu-item" id="pnExport" type="button" role="menuitem">${tr("导出文档", "Export document")}</button>
             <button class="pn-action-menu-item" id="pnExportHtml" type="button" role="menuitem">${tr("导出 HTML", "Export HTML")}</button>
-            <button class="pn-action-menu-item" id="pnExportLegacy" type="button" role="menuitem">${tr("导出 Solution Note", "Export Solution Note")}</button>
+            <div class="pn-action-menu-submenu-wrap">
+              <button class="pn-action-menu-item pn-action-menu-submenu-trigger" id="pnExportMore" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="pnExportMoreMenu"><span>${tr("更多导出", "More exports")}</span><span class="pn-action-menu-arrow" aria-hidden="true">›</span></button>
+              <div class="pn-action-menu pn-action-menu-submenu" id="pnExportMoreMenu" role="menu" aria-label="${tr("更多导出", "More exports")}" hidden>
+                <button class="pn-action-menu-item" id="pnExport" type="button" role="menuitem">${tr("备份项目（Proofnote 文件）", "Back up project (Proofnote file)")}</button>
+              </div>
+            </div>
             <div class="pn-action-menu-rule" aria-hidden="true"></div>
             <button class="pn-action-menu-item" id="pnCopyAi" type="button" role="menuitem">${tr("复制 AI 格式说明", "Copy AI format")}</button>
-            <div class="pn-action-menu-rule" aria-hidden="true"></div>
-            <div class="pn-action-menu-label">${tr("文档信息", "Document info")}</div>
-            <button class="pn-action-menu-item" id="pnEditMetadata" type="button" role="menuitem">${tr("编辑文档元数据", "Edit document metadata")}</button>
-            <p class="pn-action-menu-note">Proofnote Document Format 1.0</p>
           </div>
         </div>
         <button class="pn-toolbar-lang" id="pnLang" type="button">${english() ? "切换至中文" : "Switch to English"}</button>
@@ -280,7 +335,7 @@
       <div class="pn-undo-toast" id="pnUndoToast" role="status" hidden><span id="pnUndoCopy"></span><button class="pn-undo-button" id="pnUndoButton" type="button">${tr("撤销", "Undo")}</button></div>`;
     document.body.appendChild(app);
     els = {
-      app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), templates: app.querySelector("#pnTemplates"), documents: app.querySelector("#pnDocuments"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
+      app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), exportMore: app.querySelector("#pnExportMore"), exportMoreMenu: app.querySelector("#pnExportMoreMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), templates: app.querySelector("#pnTemplates"), documents: app.querySelector("#pnDocuments"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
       outline: app.querySelector("#pnOutline"), canvasPane: app.querySelector(".pn-canvas-pane"), docPage: app.querySelector("#pnDocPage"), canvas: app.querySelector("#pnCanvas"), inspector: app.querySelector("#pnInspector"), inspectorTopLabel: app.querySelector("#pnInspectorTopLabel"), pageHeader: app.querySelector("#pnPageHeader"), footer: app.querySelector("#pnFooterName"), footerStatus: app.querySelector("#pnFooterStatus"), modal: app.querySelector("#pnImportModal"), confirmModal: app.querySelector("#pnConfirmModal"), confirmTitle: app.querySelector("#pnConfirmTitle"), confirmCopy: app.querySelector("#pnConfirmCopy"), confirmCancel: app.querySelector("#pnConfirmCancel"), confirmAccept: app.querySelector("#pnConfirmAccept"), newProjectModal: app.querySelector("#pnNewProjectModal"), newProjectName: app.querySelector("#pnNewProjectName"), newProjectCancel: app.querySelector("#pnNewProjectCancel"), newProjectCreate: app.querySelector("#pnCreateProject"),
       importText: app.querySelector("#pnImportText"), importFile: app.querySelector("#pnImportFile"), importReport: app.querySelector("#pnImportReport"),
       outlineMenu: app.querySelector("#pnOutlineMenu"), undoToast: app.querySelector("#pnUndoToast"), undoCopy: app.querySelector("#pnUndoCopy"), undoButton: app.querySelector("#pnUndoButton")
@@ -291,6 +346,15 @@
   function bindToolbar(app) {
     app.querySelector("#pnUtilityToggle").addEventListener("click", () => setUtilityOpen(!els.utility.classList.contains("is-open")));
     els.actionToggle.addEventListener("click", () => setActionMenuOpen(els.actionMenu.hidden));
+    els.exportMore.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setExportMoreOpen(els.exportMoreMenu.hidden, true);
+    });
+    els.exportMore.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight") { event.preventDefault(); setExportMoreOpen(true, true); }
+      if (event.key === "Escape") { event.preventDefault(); setExportMoreOpen(false); els.actionToggle.focus(); }
+    });
     els.templateMenuToggle.addEventListener("click", () => setTemplateMenuOpen(els.templateMenu.hidden));
     els.detailClose.addEventListener("click", () => setDetailOpen(false));
     app.addEventListener("click", (event) => {
@@ -357,8 +421,6 @@
     app.querySelector("#pnExportHtml").addEventListener("click", () => { exportHtml(); setActionMenuOpen(false); });
     app.querySelector("#pnCopyAi").addEventListener("click", () => { copyAiInstructions(); setActionMenuOpen(false); });
     app.querySelector("#pnExportTemplate").addEventListener("click", () => { exportTemplate(); setTemplateMenuOpen(false); });
-    app.querySelector("#pnExportLegacy").addEventListener("click", () => { exportLegacy(); setActionMenuOpen(false); });
-    app.querySelector("#pnEditMetadata").addEventListener("click", () => { setActionMenuOpen(false); selectProofMetadata(); });
     app.querySelector("#pnLang").addEventListener("click", () => { try { root.localStorage.setItem("sn-lang", english() ? "zh" : "en"); } catch (_) {} root.location.reload(); });
     // A debounce timer is convenient during editing, but a tab can be hidden
     // or closed before it fires. Queue the current immutable snapshot on both
@@ -456,6 +518,14 @@
   function setActionMenuOpen(open) {
     els.actionMenu.hidden = !open;
     els.actionToggle.setAttribute("aria-expanded", String(Boolean(open)));
+    if (!open) setExportMoreOpen(false);
+  }
+  function setExportMoreOpen(open, focusFirstItem) {
+    if (!els.exportMore || !els.exportMoreMenu) return;
+    els.exportMoreMenu.hidden = !open;
+    els.exportMore.setAttribute("aria-expanded", String(Boolean(open)));
+    if (!open || !focusFirstItem) return;
+    root.requestAnimationFrame(() => els.exportMoreMenu.querySelector('[role="menuitem"]')?.focus());
   }
   function setTemplateMenuOpen(open) {
     els.templateMenu.hidden = !open;
@@ -759,7 +829,7 @@
       name,
       documentType: "Project",
       date: localToday(),
-      proofMetadata: { fields: ["date"] },
+      proofMetadata: { fields: ["author", "date"] },
       runningHeader: { left: name, right: "Project" },
       headerSubtitle: { visible: true },
       blocks: [
@@ -896,6 +966,23 @@
     if (block.type === "semantic") return String(block.title || block.label || "").trim();
     return "";
   }
+  function outlineEditorialNumber(node) {
+    if (!node || node.level !== 0 || !isEditorialPrimary(node.block)) return "";
+    return editorialSectionNumber(node.index);
+  }
+  function outlineDisplayTitle(node) {
+    if (!node) return "";
+    // Older AI documents often put an ordinal into H1 text. Editorial
+    // documents own their folio numbers, so reuse the same stripped title
+    // that appears on paper rather than showing two competing numerals.
+    if (outlineEditorialNumber(node) && node.block.type === "heading") {
+      // An empty editorial H1 is still a visible chapter on the paper: its
+      // canvas placeholder reads “Untitled section”. Keep that same useful
+      // fallback in the Outline rather than rendering a numbered blank row.
+      return editorialDisplayTitle(node.block, "content").trim() || node.title;
+    }
+    return node.title;
+  }
   // The outline is intentionally a view over the ordered block list, not a
   // second tree-shaped document model. Templates influence participation via
   // their structural blocks (headings and named semantic blocks); content
@@ -911,9 +998,13 @@
       let title = "";
       if (block.type === "heading") {
         title = outlineTitle(block);
-        // An empty heading is not a meaningful outline node, and it should not
-        // create an invisible parent that indents the following content.
-        if (!title) { semanticLevel = 0; return; }
+        // A blank generic heading is not useful navigation. Editorial H1s are
+        // different: they are already a visible, numbered chapter on paper,
+        // so retain them in the Outline with the same placeholder. Otherwise
+        // a document can visibly have 01 / 02 / 03 while the navigator skips
+        // 02, which is both misleading and breaks section operations.
+        if (!title && !isEditorialPrimary(block)) { semanticLevel = 0; return; }
+        if (!title) title = tr("未命名章节", "Untitled section");
         level = Math.max(0, Number(block.level || 1) - 1);
         semanticLevel = level + 1;
       } else if (block.type === "semantic" && block.kind === "section") {
@@ -1040,30 +1131,6 @@
     state.blocks.splice(range.end, 0, ...copies);
     finishStructuralChange(copies[0].id, false);
   }
-  function removeHeadingOnly(blockId) {
-    const range = getSectionRange(blockId);
-    if (!range) return;
-    clearStructuralUndo();
-    const removed = state.blocks[range.start];
-    const replacements = [];
-    // A semantic section owns its title and its body in one block. Removing
-    // only its heading must keep that authored body on the page rather than
-    // silently discarding it with the semantic wrapper.
-    if (removed.type === "semantic") {
-      if (String(removed.content || "").trim()) replacements.push(Model.createBlock("paragraph", { content: removed.content }));
-      if (String(removed.summary || "").trim()) replacements.push(Model.createBlock("paragraph", { content: removed.summary }));
-    }
-    // Promote headings inside the removed range one level. This keeps an H2
-    // section reachable after its H1 parent is removed, rather than leaving a
-    // detached root-level H2 in the outline.
-    state.blocks.slice(range.start + 1, range.end).forEach((block) => {
-      if (block.type === "heading" && Number(block.level) > 1) block.level = Number(block.level) - 1;
-    });
-    state.blocks.splice(range.start, 1, ...replacements);
-    const next = replacements[0] || state.blocks[range.start] || state.blocks[range.start - 1] || null;
-    finishStructuralChange(next ? next.id : "", false);
-  }
-
   function moveStructuralNode(blockId, delta) {
     const range = getSectionRange(blockId);
     if (!range || !delta) return;
@@ -1167,7 +1234,7 @@
     [
       ["paragraph", tr("正文", "Text")], ["equation", tr("公式", "Equation")], ["table", tr("表格", "Table")],
       ["code", tr("代码", "Code")], ["image", tr("图片", "Image")], ["list", tr("列表", "List")],
-      ["quote", tr("引用", "Quote")], ["callout", tr("提示", "Callout")], ["semantic", tr("语义模块", "Semantic block")]
+      ["quote", tr("引用", "Quote")], ["callout", tr("提示", "Tips")]
     ].forEach(([type, name]) => addOutlineMenuButton(submenu, name, "add-content-" + type, () => addContentToSection(node.id, type)));
     wrap.append(trigger, submenu);
     // The chooser must not disappear while the pointer crosses from the
@@ -1196,25 +1263,19 @@
     const primary = isPrimaryStructureNode(node);
     const secondary = isSecondaryStructureNode(node);
     if (primary) {
-      addOutlineMenuButton(menu, tr("在后方添加章节", "Add section after"), "add-section-after", () => addSectionAfter(node.id));
-      addOutlineMenuButton(menu, tr("添加小节", "Add subsection"), "add-subsection", () => addSubsection(node.id, "child"));
+      addOutlineMenuButton(menu, tr("添加同级章节", "Add sibling section"), "add-section-after", () => addSectionAfter(node.id));
+      addOutlineMenuButton(menu, tr("添加子章节", "Add child section"), "add-subsection", () => addSubsection(node.id, "child"));
       addContentMenu(menu, node);
       addOutlineMenuRule(menu);
-      addOutlineMenuButton(menu, tr("重命名", "Rename"), "rename", () => focusOutlineNodeTitle(node.id));
       addOutlineMenuButton(menu, tr("复制章节", "Duplicate section"), "duplicate-section", () => duplicateStructuralNode(node.id));
+      addOutlineMenuRule(menu);
     } else if (secondary) {
-      addOutlineMenuButton(menu, tr("在后方添加小节", "Add subsection after"), "add-subsection-after", () => addSubsection(node.id, "after"));
+      addOutlineMenuButton(menu, tr("添加同级小节", "Add sibling subsection"), "add-subsection-after", () => addSubsection(node.id, "after"));
       addContentMenu(menu, node);
       addOutlineMenuRule(menu);
-      addOutlineMenuButton(menu, tr("重命名", "Rename"), "rename", () => focusOutlineNodeTitle(node.id));
       addOutlineMenuButton(menu, tr("复制小节", "Duplicate subsection"), "duplicate-subsection", () => duplicateStructuralNode(node.id));
-    } else {
-      // H3 remains navigable and collapsible, but it is not promoted to a
-      // third fully-editable structural tier in this first version.
-      addOutlineMenuButton(menu, tr("重命名", "Rename"), "rename", () => focusOutlineNodeTitle(node.id));
+      addOutlineMenuRule(menu);
     }
-    addOutlineMenuRule(menu);
-    addOutlineMenuButton(menu, tr("仅移除标题", "Remove heading only"), "remove-heading", () => removeHeadingOnly(node.id));
     addOutlineMenuButton(menu, tr("删除章节与内容…", "Delete section and contents…"), "delete-section", () => deleteSectionAndContents(node.id), { danger: true });
   }
   function openOutlineMenu(node, position) {
@@ -1269,6 +1330,8 @@
     const wrapper = element("div", { class: "pn-outline-node" });
     wrapper.style.setProperty("--pn-outline-level", String(node.level));
     const row = element("div", { class: "pn-outline-row" });
+    const editorialNumber = outlineEditorialNumber(node);
+    const title = outlineDisplayTitle(node);
     const collapsed = collapsedOutlineIds.has(node.id);
     if (node.children.length) {
       const disclosure = button("▸", "pn-outline-disclosure" + (collapsed ? "" : " is-expanded"), (event) => {
@@ -1281,10 +1344,11 @@
     } else {
       row.appendChild(element("span", { class: "pn-outline-disclosure-spacer", "aria-hidden": "true" }));
     }
-    const item = button("", "pn-outline-item", () => focusBlock(node.id), node.title);
+    const item = button("", "pn-outline-item", () => focusBlock(node.id), title);
     item.dataset.blockId = node.id;
-    item.setAttribute("aria-label", node.title);
-    item.appendChild(element("span", { class: "pn-outline-label" }, node.title));
+    item.setAttribute("aria-label", (editorialNumber ? editorialNumber + " " : "") + title);
+    if (editorialNumber) item.appendChild(element("span", { class: "pn-outline-number", "aria-hidden": "true" }, editorialNumber));
+    item.appendChild(element("span", { class: "pn-outline-label" }, title));
     item.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1295,7 +1359,7 @@
       event.stopPropagation();
       openOutlineMenu(node, { clientX: event.clientX, clientY: event.clientY, target: more });
     }, tr("章节操作", "Section actions"));
-    more.setAttribute("aria-label", tr("打开“" + node.title + "”的结构操作", "Open structure actions for “" + node.title + "”"));
+    more.setAttribute("aria-label", tr("打开“" + title + "”的结构操作", "Open structure actions for “" + title + "”"));
     row.appendChild(more);
     wrapper.appendChild(row);
     if (node.children.length) {
@@ -1472,6 +1536,15 @@
     // documents remain neutral unless their block explicitly opts in.
     return isProofNoteDocument() || (isProjectDocument() && block && block.type === "semantic" && ["introduction", "section"].includes(block.kind))
       ? "editorial" : "card";
+  }
+  function semanticPresentationValue(block) {
+    return block && (block.appearance === "editorial" || block.appearance === "card") ? block.appearance : "auto";
+  }
+  function setSemanticPresentation(block, value) {
+    if (!block) return;
+    if (value === "auto") delete block.appearance;
+    else block.appearance = value;
+    changed({ structure: true, inspector: true });
   }
   function isEditorialPrimary(block) {
     // Level-one headings are a compatibility path for older/generated JSON
@@ -1759,7 +1832,7 @@
     }
     if (block.type === "code") {
       body.className = "pn-code pn-canvas-code";
-      body.appendChild(element("span", { class: "pn-code-language" }, block.language || "CODE"));
+      body.appendChild(element("span", { class: "pn-code-language" }, codeLanguageDisplay(block.language)));
       body.appendChild(canvasField(block, "content", { fieldClass: "pn-canvas-code-field", controlClass: "pn-canvas-code-input", rows: 6, placeholder: label("粘贴或输入代码", "Paste or write code") }));
       const codeCopy = button("", "pn-code-copy", async () => {
         const copied = await copyBlockText(block.content);
@@ -2226,16 +2299,15 @@
     overflow.append(overflowSummary, overflowMenu);
     context.appendChild(overflow);
     els.inspector.appendChild(context);
+    // The contextual title already identifies this block. The Inspector keeps
+    // to editable properties instead of becoming a second conversion/actions
+    // surface alongside the canvas and Outline menus.
     const structure = element("section", { class: "pn-inspector-group", "aria-label": tr("结构", "Structure") });
     structure.appendChild(element("div", { class: "pn-inspector-group-title" }, tr("结构", "Structure")));
-    els.inspector.appendChild(structure);
-    const type = selectField(tr("内容块类型", "Block type"), block.type, TYPE_OPTIONS.map(([key]) => [key, optionText(key)]), (value) => {
-      const keep = { id: block.id, content: block.content, title: block.title, summary: block.summary, label: block.label, bodyVisible: block.bodyVisible };
-      state.blocks[index] = Model.createBlock(value, keep);
-      selectedBlockId = block.id;
-      changed({ structure: true, outline: true, inspector: true });
-    });
-    type.classList.add("pn-inspector-field"); structure.appendChild(type);
+    const appendStructure = (control) => {
+      structure.appendChild(control);
+      if (!structure.parentNode) els.inspector.appendChild(structure);
+    };
     const label = (zh, en) => tr(zh, en);
     if (block.type === "title" && hasDocumentMetadataHeader() && !proofMetadataFields().length) {
       const metadata = element("section", { class: "pn-inspector-group", "aria-label": tr("文档元数据", "Document metadata") });
@@ -2247,43 +2319,28 @@
       els.inspector.appendChild(metadata);
     }
     if (block.type === "heading") {
-      structure.appendChild(selectField(label("层级", "Level"), String(block.level), [["1", "H1"], ["2", "H2"], ["3", "H3"]], (value) => { block.level = Number(value); block.preset = "heading-" + value; changed({ structure: true, outline: true, inspector: true }); }));
+      appendStructure(selectField(label("层级", "Level"), String(block.level), [["1", "H1"], ["2", "H2"], ["3", "H3"]], (value) => { block.level = Number(value); block.preset = "heading-" + value; changed({ structure: true, outline: true, inspector: true }); }));
     }
     if (block.type === "semantic") {
-      structure.appendChild(selectField(label("语义类型", "Semantic type"), block.kind, [["section", label("章节", "Section")], ["introduction", label("引言", "Introduction")], ["problem", label("问题", "Problem")], ["theorem", "Theorem"], ["proof", "Proof"], ["result", label("结果", "Result")], ["verification", label("验证", "Verification")]], (value) => { block.kind = value; block.preset = "semantic-" + value; changed({ structure: true, outline: true, inspector: true }); }));
-      const appearance = element("section", { class: "pn-inspector-group", "aria-label": label("外观", "Appearance") });
-      appearance.appendChild(element("div", { class: "pn-inspector-group-title" }, label("外观", "Appearance")));
-      appearance.appendChild(selectField(label("呈现方式", "Presentation"), semanticAppearance(block), [["editorial", label("出版式", "Editorial")], ["card", label("卡片", "Card")]], (value) => { block.appearance = value; changed({ structure: true, inspector: true }); }));
-      if (isEditorialPrimary(block)) appearance.appendChild(inspectorToggle(label("显示正文", "Show body"), editorialBodyVisible(block), (visible) => setEditorialBodyVisible(block, visible)));
+      appendStructure(selectField(label("语义类型", "Semantic type"), block.kind, [["section", label("章节", "Section")], ["introduction", label("引言", "Introduction")], ["problem", label("问题", "Problem")], ["theorem", "Theorem"], ["proof", "Proof"], ["result", label("结果", "Result")], ["verification", label("验证", "Verification")]], (value) => { block.kind = value; block.preset = "semantic-" + value; changed({ structure: true, outline: true, inspector: true }); }));
       const advanced = element("details", { class: "pn-inspector-advanced" });
-      advanced.open = Boolean(block.label);
+      // This is a low-frequency disclosure, never a second default settings
+      // form. Even when a label has been set, open it deliberately.
+      advanced.open = false;
       advanced.appendChild(element("summary", {}, label("高级选项", "Advanced")));
-      advanced.appendChild(inputField(label("标签", "Label"), block.label, (value) => update(block, "label", value, { structure: true, outline: true }), { placeholder: "—" }));
-      appearance.appendChild(advanced);
-      els.inspector.appendChild(appearance);
+      advanced.appendChild(selectField(label("呈现方式", "Presentation"), semanticPresentationValue(block), [["auto", label("自动", "Auto")], ["editorial", label("出版式", "Editorial")], ["card", label("卡片", "Card")]], (value) => setSemanticPresentation(block, value)));
+      if (isEditorialPrimary(block)) advanced.appendChild(inspectorToggle(label("显示正文", "Show body"), editorialBodyVisible(block), (visible) => setEditorialBodyVisible(block, visible)));
+      advanced.appendChild(inputField(label("标签", "Label"), block.label, (value) => update(block, "label", value, { structure: true, outline: true }), { placeholder: label("可选标签", "Optional label") }));
+      // Keep low-frequency controls visually subordinate to Structure rather
+      // than letting them read as peer fields within the same section.
+      els.inspector.appendChild(advanced);
     }
-    if (block.type === "callout") structure.appendChild(selectField(label("样式", "Style"), block.kind, [["note", label("说明", "Note")], ["tip", label("提示", "Tip")], ["warning", label("注意", "Warning")], ["info", label("信息", "Info")]], (value) => { block.kind = value; block.preset = "callout-" + value; changed({ structure: true, inspector: true }); }));
-    if (block.type === "code") structure.appendChild(inputField(label("语言", "Language"), block.language, (value) => update(block, "language", value, { structure: true }), { placeholder: "—" }));
-    if (block.type === "quote") structure.appendChild(inputField(label("出处", "Citation"), block.citation, (value) => update(block, "citation", value, { structure: true }), { placeholder: "—" }));
-    if (block.type === "image") buildImageInspector(structure, block);
-    if (block.type === "list") structure.appendChild(selectField(label("列表类型", "List type"), block.ordered ? "ordered" : "unordered", [["unordered", label("项目符号", "Bullets")], ["ordered", label("编号", "Numbered")]], (value) => { block.ordered = value === "ordered"; changed({ structure: true, inspector: true }); }));
+    if (block.type === "callout") appendStructure(selectField(label("样式", "Style"), block.kind, [["note", label("说明", "Note")], ["tip", label("提示", "Tip")], ["warning", label("注意", "Warning")], ["info", label("信息", "Info")]], (value) => { block.kind = value; block.preset = "callout-" + value; changed({ structure: true, inspector: true }); }));
+    if (block.type === "code") appendStructure(selectField(label("语言", "Language"), codeLanguageSelectValue(block.language), codeLanguageOptions(), (value) => update(block, "language", value, { structure: true })));
+    if (block.type === "quote") appendStructure(inputField(label("出处", "Citation"), block.citation, (value) => update(block, "citation", value, { structure: true }), { placeholder: "—" }));
+    if (block.type === "image") { buildImageInspector(structure, block); if (!structure.parentNode) els.inspector.appendChild(structure); }
+    if (block.type === "list") appendStructure(selectField(label("列表类型", "List type"), block.ordered ? "ordered" : "unordered", [["unordered", label("项目符号", "Bullets")], ["ordered", label("编号", "Numbered")]], (value) => { block.ordered = value === "ordered"; changed({ structure: true, inspector: true }); }));
     if (block.type === "table") buildTableInspector(els.inspector, block);
-    const page = element("section", { class: "pn-inspector-group pn-inspector-page", "aria-label": label("页面", "Page") });
-    page.appendChild(element("div", { class: "pn-inspector-group-title" }, label("页面", "Page")));
-    const flow = element("div", { class: "pn-inspector-property" });
-    flow.append(element("span", { class: "pn-inspector-property-label" }, label("流动", "Flow")), element("span", { class: "pn-inspector-property-value" }, block.type === "page-break" ? label("新页开始", "New page") : label("正常", "Normal")));
-    page.appendChild(flow);
-    els.inspector.appendChild(page);
-    const actions = element("section", { class: "pn-inspector-actions", "aria-label": label("内容块操作", "Block actions") });
-    actions.appendChild(button(label("复制", "Duplicate"), "pn-inspector-action", () => {
-      if (structuralNode) duplicateStructuralNode(block.id);
-      else duplicateBlock(index);
-    }));
-    actions.appendChild(button(structuralNode ? label("删除章节与内容…", "Delete section and contents…") : label("删除内容块", "Delete block"), "pn-inspector-action pn-danger", () => {
-      if (structuralNode) deleteSectionAndContents(block.id);
-      else removeBlock(index);
-    }));
-    els.inspector.appendChild(actions);
   }
   function inspectorToggle(labelText, checked, onChange) {
     const row = element("label", { class: "pn-inspector-toggle" });
@@ -2348,7 +2405,7 @@
       case "heading": return isEditorialPrimary(block) ? renderEditorialPrimary(block, index, "content") : "<section class=\"pn-heading pn-heading-" + block.level + "\"><h" + (block.level + 1) + ">" + inline(block.content || tr("未命名章节", "Untitled heading")) + "</h" + (block.level + 1) + "></section>";
       case "paragraph": return paragraphs(block.content);
       case "equation": return block.content.trim() ? "<div class=\"pn-equation\">" + math(block.content) + "</div>" : "";
-      case "code": return block.content ? "<pre class=\"pn-code\"><span class=\"pn-code-language\">" + escapeHtml(block.language || "CODE") + "</span><code>" + escapeHtml(block.content) + "</code></pre>" : "";
+      case "code": return renderCode(block);
       case "table": return renderTable(block);
       case "image": return renderImage(block);
       case "quote": return block.content.trim() ? "<figure class=\"pn-quote\"><blockquote>“" + inline(block.content) + "”</blockquote>" + (block.citation.trim() ? "<figcaption>— " + inline(block.citation) + "</figcaption>" : "") + "</figure>" : "";
@@ -2361,6 +2418,14 @@
       case "stats": return renderStats(block);
       default: return "";
     }
+  }
+  function renderCode(block) {
+    const content = String(block && block.content || "");
+    if (!content) return "";
+    const language = canonicalCodeLanguage(block.language) || "text";
+    return "<pre class=\"pn-code pn-code-highlighted language-" + escapeHtml(language) + "\"><span class=\"pn-code-language\">"
+      + escapeHtml(codeLanguageDisplay(block.language)) + "</span><code class=\"language-" + escapeHtml(language) + "\">"
+      + highlightedCodeHtml(content, block.language) + "</code></pre>";
   }
   function renderTable(block) {
     const columns = block.columns || [];
@@ -2422,8 +2487,19 @@
     const item = (title, value, extraClass) => "<div class=\"pn-proof-metadata-item " + (extraClass || "") + "\"><dt>" + escapeHtml(title) + "</dt><dd>" + (String(value || "").trim() ? inline(value) : "&mdash;") + "</dd></div>";
     const source = values.source.trim() ? "<dl class=\"pn-proof-source\"><dt>" + escapeHtml(tr("来源", "Source")) + "</dt><dd>" + inline(values.source) + "</dd></dl>" : "";
     const labels = { author: tr("作者", "Author"), date: tr("日期", "Date"), status: tr("状态", "Status") };
-    const items = fields.map((field) => item(labels[field], values[field], field === "status" ? "pn-proof-metadata-status" : "")).join("");
-    return "<section class=\"pn-proof-metadata\"><dl class=\"pn-proof-metadata-grid\" style=\"grid-template-columns:repeat(" + fields.length + ",minmax(0,1fr))\">" + items + "</dl>" + source + "</section>";
+    // Project metadata is optional publication furniture, not an unfinished
+    // template. Export only populated Project fields and omit the whole
+    // section when neither a field nor a source has a value. Proof Note keeps
+    // its deliberate visible placeholders on its specialised template.
+    const exportedFields = isProjectDocument()
+      ? fields.filter((field) => String(values[field] || "").trim())
+      : fields;
+    if (!exportedFields.length && !source) return "";
+    const items = exportedFields.map((field) => item(labels[field], values[field], field === "status" ? "pn-proof-metadata-status" : "")).join("");
+    const grid = items
+      ? "<dl class=\"pn-proof-metadata-grid\" style=\"grid-template-columns:repeat(" + exportedFields.length + ",minmax(0,1fr))\">" + items + "</dl>"
+      : "";
+    return "<section class=\"pn-proof-metadata\">" + grid + source + "</section>";
   }
   function renderDocumentChrome() {
     if (!state) return;
@@ -2488,17 +2564,6 @@
     const template = selected || Model.makeTemplate(state, { name: state.metadata.name || tr("我的模板", "My template") });
     download((template.template.name || "proofnote-template").toLowerCase().replace(/[^a-z0-9]+/g, "-") + ".template.json", JSON.stringify(template, null, 2));
   }
-  function exportLegacy() {
-    const exported = Model.documentToSolutionNote(state);
-    const validation = root.__snTest && root.__snTest.validateRaw ? root.__snTest.validateRaw(exported.note) : { errors: [], warnings: [] };
-    if (validation.errors && validation.errors.length) {
-      setStatus(tr("兼容格式导出失败；请导出 Document JSON 备份。", "Compatibility export failed — export Document JSON as a backup."), "error");
-      return;
-    }
-    const notices = exported.warnings.concat(validation.warnings || []);
-    download(slug() + ".solution-note.json", JSON.stringify(exported.note, null, 2));
-    setStatus(notices.length ? tr("已导出兼容格式；请查看兼容性提示。", "Compatibility export complete; review compatibility notices.") : tr("已导出兼容 Solution Note", "Solution Note exported"), notices.length ? "warning" : "saved");
-  }
   const AI_DOCUMENT_INSTRUCTIONS = `Return one valid JSON object in Proofnote Document Format 1.0. Do not return Markdown fences or commentary.
 
 Required envelope:
@@ -2512,6 +2577,8 @@ Required envelope:
 Use ordered blocks. Supported block types: title, subtitle, heading (with level 1, 2, or 3), paragraph, equation, code, table, image, quote, divider, page-break, callout, semantic, list, key-value, and stats.
 
 Use semantic.kind only as section, introduction, problem, theorem, proof, result, or verification. Use callout.kind only as note, tip, warning, or info. A semantic block may optionally use appearance "editorial" or "card"; otherwise the selected template decides. Do not add CSS, fonts, font sizes, colours, margins, coordinates, or HTML. Proofnote owns the visual presets.
+
+For code blocks, preserve the raw code in content. When the language is known, use one of: text, python, javascript, typescript, c, cpp, java, bash, sql, json, html, or css; otherwise use text. Do not add syntax-highlighted HTML to code content.
 
 For LaTeX inside prose, return valid JSON: escape every literal backslash. For example, JSON source must contain "\\\\(x \\\\le \\\\sqrt{2}\\\\)" for inline math. Preserve code as code, using only normal JSON escaping.`;
   // The Project prompt is self-contained in project-ai-instructions.js, so
@@ -2570,17 +2637,33 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
   // scoped to the Project wrapper so other imported/general documents retain
   // their neutral preset.
   const EXPORT_PROJECT_EDITORIAL_CSS = `
-    .pn-project-document{max-width:760px;padding:62px 30px 96px;--pn-doc-body-size:17px;--pn-doc-body-leading:1.68;--pn-doc-title-size:42px;--pn-doc-summary-size:20px;--pn-doc-section-1-size:28px;--pn-doc-section-2-size:22px;--pn-doc-section-3-size:18px}
+    .pn-project-document{max-width:820px;padding:62px 30px 96px;--pn-doc-body-size:17px;--pn-doc-body-leading:1.68;--pn-doc-title-size:42px;--pn-doc-section-1-size:28px;--pn-doc-section-2-size:22px;--pn-doc-section-3-size:18px}
+    .pn-project-document .pn-document-title,.pn-project-document .pn-document-subtitle,.pn-project-document .pn-proof-metadata,.pn-project-document .pn-editorial-section-head,.pn-project-document .pn-editorial-section>p,.pn-project-document .pn-editorial-section-summary,.pn-project-document .pn-editorial-detail,.pn-project-document .pn-list,.pn-project-document .pn-quote,.pn-project-document .pn-callout,.pn-project-document .pn-semantic{max-width:760px}
+    .pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:calc(100% + 60px);max-width:none;margin-left:-30px;margin-right:-30px}
     .pn-project-document .pn-proof-metadata{margin:16px 0 36px}
     .pn-project-document .pn-editorial-section{margin:0 0 48px}
     .pn-project-document .pn-editorial-section-head{margin-bottom:18px;padding-bottom:8px}
     .pn-project-document .pn-editorial-section p{margin-bottom:15px}
     .pn-project-document .pn-semantic{margin:20px 0;padding:20px 22px;border-color:#facb8d;background:#fff3e4}
+    @media print{.pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:auto;margin-left:0;margin-right:0}}
   `;
   // Keep downloaded documents in step with the quieter, denser semantic cards
   // on the editing canvas. Empty summaries are omitted by renderBlock(), so an
   // editor-only placeholder can never leak into the exported document.
   const EXPORT_POLISH_CSS = `.pn-semantic{border-color:#fde6c8;background:#fff9f1}`;
+  // Prism only gives us semantic token spans. The palette remains deliberately
+  // restrained so an exported Proofnote reads like a typeset document rather
+  // than an IDE screenshot.
+  const EXPORT_CODE_SYNTAX_CSS = `
+    .pn-code-highlighted code{display:block;white-space:pre-wrap;tab-size:2}
+    .pn-code .token.comment,.pn-code .token.prolog,.pn-code .token.doctype,.pn-code .token.cdata{color:rgba(32,31,29,.47);font-style:italic}
+    .pn-code .token.keyword,.pn-code .token.atrule{color:#765a2d}
+    .pn-code .token.string,.pn-code .token.char,.pn-code .token.attr-value{color:#567061}
+    .pn-code .token.number,.pn-code .token.boolean,.pn-code .token.constant,.pn-code .token.symbol{color:#875f40}
+    .pn-code .token.function,.pn-code .token.class-name{color:#476171}
+    .pn-code .token.property,.pn-code .token.attr-name,.pn-code .token.variable{color:#705b78}
+    .pn-code .token.operator,.pn-code .token.punctuation{color:rgba(32,31,29,.72)}
+  `;
   function renderStandaloneDocument() {
     const proofNote = isProofNoteDocument();
     const project = isProjectDocument();
@@ -2594,7 +2677,8 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     }).join("\n");
     if (!proofNote) {
       const header = project ? projectRunningHeader() : null;
-      const running = header ? "<div class=\"pn-export-running pn-project-running\"><span class=\"pn-running-brand\">" + escapeHtml(header.left) + "</span><span class=\"pn-running-type\">" + escapeHtml(header.right) + "</span></div>" : "";
+      const hasRunningContent = header && [header.left, header.right].some((value) => String(value || "").trim());
+      const running = hasRunningContent ? "<div class=\"pn-export-running pn-project-running\"><span class=\"pn-running-brand\">" + escapeHtml(header.left) + "</span><span class=\"pn-running-type\">" + escapeHtml(header.right) + "</span></div>" : "";
       return "<article class=\"pn-document" + (project ? " pn-project-document" : "") + "\">" + running + blocks + "</article>";
     }
     const type = escapeHtml(state.metadata.documentType || "Solution Note");
@@ -2607,7 +2691,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     try { katexCss = root.SOLUTION_NOTE_KATEX_EMBED ? decodeBase64(root.SOLUTION_NOTE_KATEX_EMBED.css) : ""; } catch (_) {}
     try { fontsCss = root.SOLUTION_NOTE_FONTS_EMBED ? decodeBase64(root.SOLUTION_NOTE_FONTS_EMBED.css) : ""; } catch (_) {}
     const title = escapeHtml(state.metadata.name || "Proofnote document");
-    const html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + title + "</title><style>" + katexCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + fontsCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS + "</style></head><body>" + renderStandaloneDocument() + "</body></html>";
+    const html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + title + "</title><style>" + katexCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + fontsCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS + EXPORT_CODE_SYNTAX_CSS + "</style></head><body>" + renderStandaloneDocument() + "</body></html>";
     download(slug() + ".html", html, "text/html");
   }
 

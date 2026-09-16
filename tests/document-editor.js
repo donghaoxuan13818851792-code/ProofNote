@@ -10,6 +10,11 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const modelSource = fs.readFileSync(path.join(root, "src", "document-model.js"), "utf8");
 const storeSource = fs.readFileSync(path.join(root, "src", "document-store.js"), "utf8");
 const projectAiInstructionsSource = fs.readFileSync(path.join(root, "src", "project-ai-instructions.js"), "utf8");
+const prismSource = fs.readFileSync(path.join(root, "vendor", "prism", "prism.js"), "utf8");
+const prismLanguageSources = [
+  "prism-typescript.min.js", "prism-c.min.js", "prism-cpp.min.js", "prism-java.min.js",
+  "prism-bash.min.js", "prism-sql.min.js", "prism-json.min.js"
+].map((name) => fs.readFileSync(path.join(root, "vendor", "prism", name), "utf8"));
 const editorSource = fs.readFileSync(path.join(root, "src", "document-editor.js"), "utf8");
 const editorCss = fs.readFileSync(path.join(root, "src", "document-editor.css"), "utf8");
 const docPageSource = fs.readFileSync(path.join(root, "src", "doc-page.js"), "utf8");
@@ -68,6 +73,8 @@ async function main() {
     window.eval(modelSource);
     window.eval(storeSource);
     window.eval(projectAiInstructionsSource);
+    window.eval(prismSource);
+    prismLanguageSources.forEach((source) => window.eval(source));
     const projectAiInstructions = window.PROOFNOTE_PROJECT_AI_INSTRUCTIONS;
     const Model = window.ProofnoteDocument;
     const fixture = Model.blankDocument({
@@ -88,7 +95,8 @@ async function main() {
         Model.createBlock("image", { src: "data:image/png;base64,AA==", alt: "A test image", caption: "Figure 1" }),
         Model.createBlock("heading", { level: 2, content: "Equipment" }),
         Model.createBlock("heading", { level: 3, content: "Details" }),
-        Model.createBlock("paragraph", { content: "A closing paragraph." })
+        Model.createBlock("paragraph", { content: "A closing paragraph." }),
+        Model.createBlock("heading", { level: 1, content: "" })
       ]
     });
     window.localStorage.setItem("proofnote-document:current:v1", JSON.stringify(fixture));
@@ -110,9 +118,11 @@ async function main() {
     const outline = document.querySelector("#pnOutline");
     let canvasBlocks = canvasBlockNodes(document);
     const initialCanvasBlockIds = new Set(canvasBlocks.map((block) => block.dataset.blockId));
-    const globalActionIds = ["pnImport", "pnExport", "pnExportHtml", "pnExportLegacy", "pnCopyAi", "pnEditMetadata"];
+    const globalActionIds = ["pnImport", "pnExportHtml", "pnExportMore", "pnExport", "pnCopyAi"];
 
-    check("editor-external-scripts-boot", Boolean(document.querySelector("#proofnoteDocumentApp")) && Boolean(window.ProofnoteDocument) && Boolean(window.ProofnoteStore), "document-model.js, document-store.js, and document-editor.js did not all boot");
+    check("editor-external-scripts-boot", Boolean(document.querySelector("#proofnoteDocumentApp")) && Boolean(window.ProofnoteDocument) && Boolean(window.ProofnoteStore) && Boolean(window.Prism)
+      && html.includes('./vendor/prism/prism.js?v=1.30.0')
+      && html.indexOf('./vendor/prism/prism.js?v=1.30.0') < html.indexOf('./src/document-editor.js?v=workspace-20260915-42'), "document-model.js, document-store.js, Prism, and document-editor.js did not all boot in browser load order");
     check(
       "editor-document-typography-is-shared",
       [
@@ -143,18 +153,24 @@ async function main() {
       "editor-outline-is-a-document-structure-tree",
       editorCss.includes(".pn-utility { background: color-mix(in srgb, var(--color-bg) 94%, var(--color-surface)); font-family: var(--pn-doc-body); }")
         && editorCss.includes(".pn-outline-disclosure.is-expanded")
+        && editorCss.includes(".pn-outline-children::before")
+        && editorCss.includes("left: calc((var(--pn-outline-level) * 13px) + 11px)")
+        && editorCss.includes(".pn-outline-number")
         && editorCss.includes(".pn-outline-item.is-active")
         && editorCss.includes(".pn-sidebar-tabs { display: grid; grid-template-columns: 1fr 1fr;")
         && editorSource.includes("buildOutlineTree")
+        && editorSource.includes("function outlineEditorialNumber")
+        && Array.from(outline.children).map((node) => node.firstElementChild?.querySelector(".pn-outline-number")?.textContent || "").join(",") === "01,02,03,04"
         && editorSource.includes("setOutlineCollapsed")
         && editorSource.includes("updateViewportOutlineActive")
         && document.querySelectorAll("#pnOutlinePanel .pn-sidebar-heading").length === 1
         && Boolean(outline)
-        && outline.querySelectorAll(".pn-outline-item").length === 6
+        && outline.querySelectorAll(".pn-outline-item").length === 7
         && outline.textContent.includes("Canvas problem")
         && outline.textContent.includes("Canvas result")
         && outline.textContent.includes("Method")
         && outline.textContent.includes("Details")
+        && /Untitled section|未命名章节/.test(outline.textContent)
         && !outline.textContent.includes("Canvas QA")
         && !outline.querySelector(".pn-outline-kind")
         && /Document navigation|文档导航/.test(document.querySelector("#pnUtilityToggle").textContent),
@@ -295,6 +311,25 @@ async function main() {
         }),
       "Import/export/AI controls must live in #pnActionMenu, not inside the contextual Inspector"
     );
+    const actionToggle = document.querySelector("#pnActionsToggle");
+    const exportMore = document.querySelector("#pnExportMore");
+    const exportMoreMenu = document.querySelector("#pnExportMoreMenu");
+    if (actionToggle && actionMenu && actionMenu.hidden) actionToggle.click();
+    if (exportMore) exportMore.click();
+    await settle(window, () => exportMoreMenu && exportMoreMenu.hidden === false);
+    check(
+      "editor-export-menu-prioritizes-html-and-keeps-a-project-backup",
+      Boolean(exportMore)
+        && Boolean(exportMoreMenu)
+        && exportMoreMenu.hidden === false
+        && Boolean(exportMoreMenu.querySelector("#pnExport"))
+        && !document.querySelector("#pnExportLegacy")
+        && editorSource.includes('download(slug() + ".proofnote.json"')
+        && editorCss.includes(".pn-action-menu-submenu-wrap")
+        && editorCss.includes("right: calc(100% - 1px)"),
+      exportMoreMenu ? exportMoreMenu.textContent : "missing backup submenu"
+    );
+    if (actionToggle && actionMenu && !actionMenu.hidden) actionToggle.click();
     check(
       "editor-images-require-explicit-remote-approval",
       editorSource.includes("block.remoteApproved === true")
@@ -319,11 +354,14 @@ async function main() {
       "the library should show mature templates separately from locally stored documents, without exposing Blank Document as a template"
     );
     check(
-      "editor-format-details-are-contextual",
+      "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && actionMenu.textContent.includes("Document Format 1.0")
-        && !document.querySelector("#pnStatus").textContent.includes("Format"),
-      "the format version should live in Document info, not beside the Proofnote wordmark"
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.13"
+        && editorSource.includes('const APP_VERSION = "v1.13";')
+        && !document.querySelector("#pnEditMetadata")
+        && !document.querySelector("#pnExportLegacy")
+        && !/Document info|文档信息|Proofnote Document Format/.test(actionMenu.textContent),
+      "the global menu should contain only file actions; document properties live on the paper"
     );
     check(
       "editor-inspector-is-absent-without-selection",
@@ -354,6 +392,27 @@ async function main() {
           && afterInspector.length > 0
           && afterInspector !== beforeInspector,
         "selecting a canvas block must reveal and populate #pnDetail without a permanently reserved right rail"
+      );
+      const semanticStructure = inspector && inspector.querySelector(".pn-inspector-group");
+      const semanticAdvanced = inspector && inspector.querySelector(".pn-inspector-advanced");
+      const semanticDirectFields = semanticStructure
+        ? Array.from(semanticStructure.children).filter((child) => child.classList.contains("pn-field"))
+        : [];
+      check(
+        "editor-semantic-inspector-is-property-only",
+        Boolean(semanticStructure)
+          && Boolean(semanticAdvanced)
+          && semanticAdvanced.open === false
+          && semanticAdvanced.querySelectorAll(".pn-field").length === 2
+          && semanticAdvanced.querySelector(".pn-inspector-toggle")
+          && semanticAdvanced.previousElementSibling === semanticStructure
+          && semanticDirectFields.length === 1
+          && /Semantic type|语义类型/.test(semanticDirectFields[0].textContent)
+          && !/Block type|内容块类型/.test(semanticDirectFields.map((field) => field.textContent).join(" "))
+          && !inspector.querySelector(".pn-inspector-page")
+          && !inspector.querySelector(".pn-inspector-actions")
+          && !/Duplicate|复制|Delete block|删除内容块|删除章节与内容/.test(inspector.textContent),
+        inspector ? inspector.textContent : "semantic Inspector missing"
       );
 
       const editable = problem.querySelector("textarea, input");
@@ -466,6 +525,27 @@ async function main() {
       listBlock ? listBlock.textContent : "missing list"
     );
 
+    const codeCanvasBlock = document.querySelector("#pnCanvas .pn-canvas-code")?.closest(".pn-canvas-block");
+    if (codeCanvasBlock) codeCanvasBlock.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle(window, () => inspector && Array.from(inspector.querySelectorAll(".pn-field")).some((field) => /Language|语言/.test(field.textContent) && field.querySelector("select")));
+    const codeLanguageSelect = Array.from(inspector ? inspector.querySelectorAll(".pn-field") : []).find((field) => /Language|语言/.test(field.textContent))?.querySelector("select");
+    const codeLanguageInitiallyNormalised = codeLanguageSelect && codeLanguageSelect.value === "javascript"
+      && /JavaScript/.test(document.querySelector("#pnCanvas .pn-canvas-code .pn-code-language")?.textContent || "");
+    if (codeLanguageSelect) {
+      codeLanguageSelect.value = "python";
+      codeLanguageSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+    }
+    await settle(window, () => /Python/.test(document.querySelector("#pnCanvas .pn-canvas-code .pn-code-language")?.textContent || ""));
+    check(
+      "editor-code-language-uses-a-small-known-dropdown",
+      Boolean(codeLanguageSelect)
+        && codeLanguageInitiallyNormalised
+        && Array.from(codeLanguageSelect.options).map((option) => option.value).join(",") === "text,python,javascript,typescript,c,cpp,java,bash,sql,json,html,css"
+        && /Python/.test(document.querySelector("#pnCanvas .pn-canvas-code .pn-code-language")?.textContent || "")
+        && editorSource.includes("const CODE_LANGUAGE_OPTIONS")
+        && editorSource.includes("function highlightedCodeHtml"),
+      inspector ? inspector.textContent : "missing code language selector"
+    );
     const equationPreview = document.querySelector("#pnCanvas .pn-equation-preview");
     const codeCopy = document.querySelector("#pnCanvas .pn-code-copy");
     const imageBlock = document.querySelector("#pnCanvas .pn-canvas-image");
@@ -528,26 +608,8 @@ async function main() {
     // Exercise the real Outline menu so sibling/child boundaries cannot regress
     // into a simple index + 1 insertion.
     const findOutlineItem = (title, occurrence) => Array.from(document.querySelectorAll("#pnOutline .pn-outline-item"))
-      .filter((item) => item.textContent.trim() === title)[occurrence || 0] || null;
+      .filter((item) => item.querySelector(".pn-outline-label")?.textContent.trim() === title)[occurrence || 0] || null;
     const outlineMenu = document.querySelector("#pnOutlineMenu");
-    // Semantic sections carry title and body in the same data block. Removing
-    // only the heading must turn that body into ordinary content, not erase it.
-    const resultItemBeforeRemoval = findOutlineItem("Canvas result");
-    const resultMoreBeforeRemoval = resultItemBeforeRemoval && resultItemBeforeRemoval.closest(".pn-outline-row").querySelector(".pn-outline-more");
-    if (resultMoreBeforeRemoval) resultMoreBeforeRemoval.click();
-    await settle(window, () => outlineMenu && !outlineMenu.hidden);
-    const removeSemanticHeading = outlineMenu && outlineMenu.querySelector('[data-command="remove-heading"]');
-    if (removeSemanticHeading) removeSemanticHeading.click();
-    await settle(window, () => !findOutlineItem("Canvas result"));
-    check(
-      "editor-outline-remove-semantic-heading-preserves-body",
-      Boolean(removeSemanticHeading)
-        && !findOutlineItem("Canvas result")
-        && canvasBlockNodes(document).some((block) => blockHasControlValue(block, "The active outline item must follow the selected block."))
-        && editorSource.includes("if (removed.type === \"semantic\")"),
-      document.querySelector("#pnCanvas").textContent
-    );
-
     const methodItem = findOutlineItem("Method");
     if (methodItem) methodItem.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 80, clientY: 120 }));
     await settle(window, () => outlineMenu && !outlineMenu.hidden);
@@ -559,7 +621,12 @@ async function main() {
         && Boolean(outlineMenu.querySelector('[data-command="add-subsection"]'))
         && Boolean(outlineMenu.querySelector('[data-command="add-content-paragraph"]'))
         && Boolean(outlineMenu.querySelector('[data-command="add-content-table"]'))
-        && Boolean(outlineMenu.querySelector('[data-command="add-content-code"]')),
+        && Boolean(outlineMenu.querySelector('[data-command="add-content-code"]'))
+        && !outlineMenu.querySelector('[data-command="add-content-semantic"]')
+        && !outlineMenu.querySelector('[data-command="rename"]')
+        && !outlineMenu.querySelector('[data-command="remove-heading"]')
+        && editorSource.includes('tr("添加同级章节", "Add sibling section")')
+        && editorSource.includes('tr("添加子章节", "Add child section")'),
       outlineMenu ? outlineMenu.textContent : "missing outline menu"
     );
     // Some browsers emit a follow-up click after contextmenu. That click must
@@ -635,19 +702,6 @@ async function main() {
       duplicatedBlocks.map((block) => block.dataset.blockId).join(",")
     );
 
-    const copiedProcedureItem = findOutlineItem("Procedure", 1);
-    const copiedProcedureMore = copiedProcedureItem && copiedProcedureItem.closest(".pn-outline-row").querySelector(".pn-outline-more");
-    if (copiedProcedureMore) copiedProcedureMore.click();
-    await settle(window, () => outlineMenu && !outlineMenu.hidden);
-    const removeHeadingOnly = outlineMenu && outlineMenu.querySelector('[data-command="remove-heading"]');
-    if (removeHeadingOnly) removeHeadingOnly.click();
-    await settle(window, () => canvasBlockNodes(document).filter((block) => blockHasControlValue(block, "Procedure")).length === 1);
-    check(
-      "editor-outline-remove-heading-only-preserves-subtree-content",
-      canvasBlockNodes(document).filter((block) => blockHasControlValue(block, "Procedure content")).length === 2,
-      document.querySelector("#pnCanvas").textContent
-    );
-
     const primaryMethodItem = findOutlineItem("Method");
     const primaryMethodMore = primaryMethodItem && primaryMethodItem.closest(".pn-outline-row").querySelector(".pn-outline-more");
     const codesBeforePrimaryInsert = document.querySelectorAll("#pnCanvas > .pn-canvas-block.pn-canvas-code").length;
@@ -712,7 +766,7 @@ async function main() {
         && Boolean(editorialSection && editorialSection.querySelector(".pn-editorial-section"))
         && Boolean(editorialSection && editorialSection.querySelector(".pn-editorial-section-number"))
         && Boolean(editorialSection && editorialSection.querySelector(".pn-editorial-section-body-input"))
-        && Array.from(document.querySelectorAll("#pnOutline .pn-outline-item")).some((item) => untitledSectionPattern.test(item.textContent.trim()))
+        && Array.from(document.querySelectorAll("#pnOutline .pn-outline-label")).some((label) => untitledSectionPattern.test(label.textContent.trim()))
         && editorSource.includes('kind: "section"'),
       editorialSection ? editorialSection.textContent : "missing editorial section"
     );
@@ -817,6 +871,7 @@ async function main() {
         && blockHasControlValue(document.querySelector("#pnCanvas .pn-canvas-proof-header"), "A concise statement of the result.")
         && canvasBlockNodes(document).some((block) => block.classList.contains("pn-canvas-semantic") && block.querySelector(".pn-editorial-section") && blockHasControlValue(block, "Introduction"))
         && !canvasBlockNodes(document).some((block) => block.classList.contains("pn-canvas-heading") && blockHasControlValue(block, "Introduction"))
+        && Boolean(document.querySelector("#pnCanvas .pn-proof-metadata-author-input"))
         && Boolean(document.querySelector("#pnCanvas .pn-proof-metadata-date-input"))
         && document.querySelector("#pnCanvas .pn-proof-metadata-date-input").value === new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)
         && document.querySelector("#pnPageHeader .pn-running-left").value === "Field notes"
@@ -855,9 +910,12 @@ async function main() {
         && editorCss.includes(".pn-project-document .pn-editorial-section { margin-bottom: 36pt; }")
         && editorCss.includes(".pn-project-document .pn-semantic")
         && editorSource.includes("const EXPORT_PROJECT_EDITORIAL_CSS")
-        && editorSource.includes(".pn-project-document{max-width:760px")
+        && editorSource.includes(".pn-project-document{max-width:820px")
+        && editorSource.includes(".pn-project-document .pn-document-title,.pn-project-document .pn-document-subtitle")
+        && editorSource.includes(".pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:calc(100% + 60px);max-width:none;margin-left:-30px;margin-right:-30px}")
+        && editorSource.includes("@media print{.pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:auto;margin-left:0;margin-right:0}}")
         && editorSource.includes("EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS"),
-      "Blank Projects must use the restored editorial measure on both the canvas and exported HTML"
+      "Blank Projects must keep a 760px reading rail while complex export blocks may use the 820px outer measure"
     );
     check(
       "editor-editorial-renderer-is-scoped-to-editorial-presets",
@@ -909,7 +967,8 @@ async function main() {
         { type: "subtitle", content: "A compact research summary." },
         { type: "semantic", kind: "introduction", title: "Introduction", content: "Opening context." },
         { type: "heading", level: 1, content: "1. Core prime-family bounds" },
-        { type: "paragraph", content: "The main bound follows." }
+        { type: "paragraph", content: "The main bound follows." },
+        { type: "code", language: "javascript", content: "const answer = \"ready\";" }
       ]
     };
     const importText = document.querySelector("#pnImportText");
@@ -962,13 +1021,27 @@ async function main() {
       "editor-project-import-export-applies-the-project-editorial-wrapper",
       Boolean(exportProjectHtml)
         && exportedProjectHtml.includes('<article class="pn-document pn-project-document">')
-        && exportedProjectHtml.includes('class="pn-export-running pn-project-running"')
+        && exportedProjectHtml.includes('.pn-project-document{max-width:820px')
+        && exportedProjectHtml.includes('.pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:calc(100% + 60px);max-width:none;margin-left:-30px;margin-right:-30px}')
+        && !exportedProjectHtml.includes('class="pn-export-running pn-project-running"')
+        && !exportedProjectHtml.includes('class="pn-proof-metadata"')
         && exportedProjectHtml.includes('class="pn-editorial-section pn-editorial-section-introduction"')
         && exportedProjectHtml.includes('class="pn-editorial-section pn-editorial-section-heading"')
         && exportedProjectHtml.includes('<span class="pn-editorial-section-number">01</span><h2>Introduction</h2>')
         && exportedProjectHtml.includes('<span class="pn-editorial-section-number">02</span><h2>Core prime-family bounds</h2>')
         && !exportedProjectHtml.includes("<h2>1. Core prime-family bounds</h2>"),
       exportedProjectHtml.slice(0, 1500)
+    );
+    check(
+      "editor-html-export-renders-code-with-prism-without-mutating-source-code",
+      exportedProjectHtml.includes('class="pn-code pn-code-highlighted language-javascript"')
+        && exportedProjectHtml.includes('<span class="token keyword">const</span>')
+        && exportedProjectHtml.includes('<span class="token string">"ready"</span>')
+        && exportedProjectHtml.includes("EXPORT_CODE_SYNTAX_CSS") === false
+        && exportedProjectHtml.includes(".pn-code .token.keyword")
+        && editorSource.includes("Prism")
+        && projectAiInstructions.includes("Keep content as raw code"),
+      exportedProjectHtml.slice(-1800)
     );
     const firstTemplate = templateLibrary && templateLibrary.querySelector(".pn-template-item");
     const documentCountBeforeTemplate = documentLibrary ? documentLibrary.querySelectorAll(".pn-document-item").length : 0;

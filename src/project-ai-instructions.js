@@ -48,7 +48,7 @@ Choose a block according to its function and meaning. A good document may use on
 - paragraph: normal explanation, background, reasoning, interpretation, and continuous prose.
 - heading: internal hierarchy only; never a top-level Project section.
 - equation: important standalone formulas, definitions, bounds, or displayed derivations.
-- code: source code, commands, configuration, scripts, or technical snippets. Preserve supplied code unless modification is requested.
+- code: source code, commands, configuration, scripts, or technical snippets. Preserve supplied code unless modification is requested. Use a known language identifier when possible: text, python, javascript, typescript, c, cpp, java, bash, sql, json, html, or css; otherwise use text. Keep content as raw code, never syntax-highlighted HTML.
 - table: genuinely two-dimensional comparisons, datasets, measurements, benchmarks, parameters, or classifications. Do not make prose into a table just for organisation.
 - list: steps, grouped points, requirements, procedures, checklists, or concise enumerations. Use ordered lists only when order matters.
 - quote: genuine quotations only. Do not invent quotation wording.

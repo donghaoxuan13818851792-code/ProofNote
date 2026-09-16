@@ -10,5 +10,8 @@
   "devDependencies": {
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.1.1"
+  },
+  "dependencies": {
+    "prismjs": "^1.30.0"
   }
 }
