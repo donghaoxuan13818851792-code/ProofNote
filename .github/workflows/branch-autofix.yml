@@ -28,8 +28,6 @@ jobs:
           editor = Path('src/document-editor.js')
           text = editor.read_text()
 
-          # Duplicating any library row activates the duplicate, so it is a
-          # document transition even when the source is not currently open.
           start = text.index('  async function duplicateLibraryDocument(id) {')
           source_line = '    const source = documents.find((record) => record.id === id);\n'
           source_pos = text.index(source_line, start)
@@ -46,10 +44,6 @@ jobs:
           )
           text = text[:start] + replacement + text[end:]
 
-          # A Store-level Project rename synchronizes metadata, title, and
-          # running header. Reload the persisted record into the active editor
-          # instead of updating only metadata.name and leaving stale page chrome
-          # that a later autosave could write back.
           rename_start = text.index('    if (id === currentDocumentId) {\n      state.metadata.name = renamed.record.document.metadata.name;')
           rename_end = text.index('    await refreshDocuments();', rename_start)
           rename_replacement = (
@@ -63,8 +57,6 @@ jobs:
           )
           text = text[:rename_start] + rename_replacement + text[rename_end:]
 
-          # Repeatedly duplicating the same source should not produce several
-          # indistinguishable rows with the same automatic "copy" name.
           old_copy_name = '    const copiedName = documentName(source) + tr(" 副本", " copy");'
           new_copy_name = '    const copiedName = uniqueLibraryDocumentName(documentName(source) + tr(" 副本", " copy"));'
           if old_copy_name not in text and new_copy_name not in text:
@@ -75,7 +67,6 @@ jobs:
           test = Path('tests/document-editor.js')
           text = test.read_text()
 
-          # Keep the duplicate-transition regression idempotent across reruns.
           if 'editor-duplicating-another-document-flushes-active-edits-first' not in text:
               token = '    check(\n      "editor-autosave-flushes-on-document-lifecycle",'
               if token not in text:
@@ -143,7 +134,7 @@ jobs:
               await settle(window, () => Boolean(documentLibrary && documentLibrary.querySelector(".pn-document-rename")));
               const currentProjectRenameInput = documentLibrary && documentLibrary.querySelector(".pn-document-rename");
               if (currentProjectRenameInput) currentProjectRenameInput.value = "Library project rename";
-              const saveProjectRename = currentProjectRow && Array.from(currentProjectRow.querySelectorAll("button")).find((control) => /Save|保存/.test(control.textContent));
+              const saveProjectRename = documentLibrary && documentLibrary.querySelector(".pn-document-rename-save");
               if (saveProjectRename) saveProjectRename.click();
               await settle(window, () => document.querySelector("#pnFooterName")?.textContent === "Library project rename"
                 && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Library project rename"
