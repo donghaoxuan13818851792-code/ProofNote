@@ -920,10 +920,12 @@
     setStatus(tr("文档已重命名", "Document renamed"), "saved");
   }
   async function duplicateLibraryDocument(id) {
-    if (id === currentDocumentId) {
-      const saved = await saveActiveDocumentNow();
-      if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再复制。", "Autosave failed — export a backup before duplicating."), "error"); return; }
-    }
+    // Activating a duplicate is a document transition even when the
+    // source row is not the currently open document. Flush the active
+    // record first so its pending edits cannot be lost when the copy
+    // replaces the in-memory editor state.
+    const saved = await saveActiveDocumentNow();
+    if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再复制。", "Autosave failed — export a backup before duplicating."), "error"); return; }
     const source = documents.find((record) => record.id === id);
     const copiedName = documentName(source) + tr(" 副本", " copy");
     const duplicate = await Store.duplicateDocument(id, copiedName);

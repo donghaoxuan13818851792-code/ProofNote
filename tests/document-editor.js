@@ -1393,6 +1393,48 @@ async function main() {
         && editorSource.includes("flushCurrentDocumentUntilClean"),
       JSON.stringify(deferredSaves.map((save) => titleFromSnapshot(save)))
     );
+    // Duplicating a different library row still activates the new copy. Make
+    // the active document dirty through a structural insertion (a guaranteed
+    // changed() path), then verify its save completes before duplication.
+    await new Promise((resolve) => window.setTimeout(resolve, 450));
+    const duplicateSourceRow = Array.from(document.querySelectorAll(".pn-document-item")).find((row) => Boolean(row.querySelector('.pn-document-open[aria-current="false"]')));
+    const duplicateSourceActions = duplicateSourceRow && duplicateSourceRow.querySelector(".pn-document-more");
+    const duplicateOther = duplicateSourceActions && Array.from(duplicateSourceActions.querySelectorAll("button")).find((control) => /Duplicate|制作副本/.test(control.textContent));
+    const originalTransitionSave = window.ProofnoteStore.saveDocument;
+    const originalTransitionDuplicate = window.ProofnoteStore.duplicateDocument;
+    const duplicateTransitionEvents = [];
+    window.ProofnoteStore.saveDocument = async (id, savedDocument) => {
+      duplicateTransitionEvents.push("save");
+      return originalTransitionSave.call(window.ProofnoteStore, id, savedDocument);
+    };
+    window.ProofnoteStore.duplicateDocument = async (id, name) => {
+      duplicateTransitionEvents.push("duplicate");
+      return originalTransitionDuplicate.call(window.ProofnoteStore, id, name);
+    };
+    const dirtyBlockCount = canvasBlockNodes(document).length;
+    const dirtyPicker = canvas.querySelector(".pn-insert-last .pn-insert-trigger");
+    if (dirtyPicker) dirtyPicker.click();
+    const dirtyChoice = Array.from(canvas.querySelectorAll(".pn-insert-choice")).find((choice) => /Paragraph|正文/.test(choice.textContent));
+    if (dirtyChoice) dirtyChoice.click();
+    if (duplicateSourceActions) duplicateSourceActions.open = true;
+    if (duplicateOther) duplicateOther.click();
+    await settle(window, () => duplicateTransitionEvents.includes("duplicate"), 1500);
+    window.ProofnoteStore.saveDocument = originalTransitionSave;
+    window.ProofnoteStore.duplicateDocument = originalTransitionDuplicate;
+    const duplicateSaveIndex = duplicateTransitionEvents.indexOf("save");
+    const duplicateCallIndex = duplicateTransitionEvents.indexOf("duplicate");
+    check(
+      "editor-duplicating-another-document-flushes-active-edits-first",
+      Boolean(duplicateOther)
+        && Boolean(dirtyPicker)
+        && Boolean(dirtyChoice)
+        && canvasBlockNodes(document).length >= dirtyBlockCount
+        && duplicateSaveIndex >= 0
+        && duplicateCallIndex > duplicateSaveIndex
+        && editorSource.includes("Activating a duplicate is a document transition"),
+      JSON.stringify(duplicateTransitionEvents)
+    );
+
     check(
       "editor-autosave-flushes-on-document-lifecycle",
       editorSource.includes('document.addEventListener("visibilitychange"')
