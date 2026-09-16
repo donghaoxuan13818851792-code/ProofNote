@@ -164,6 +164,27 @@ async function main() {
   };
   loadLegacyBoundary(legacySurface);
   check("legacy-boundary-hardening-is-active", Model.__legacyBoundaryHardened === true);
+  check("portable-object-graph-hardening-is-active", Model.__portableGraphHardened === true);
+
+  const deepCompatibility = documentWith([]);
+  deepCompatibility.compatibility = {};
+  let compatibilityCursor = deepCompatibility.compatibility;
+  for (let depth = 0; depth < Model.LIMITS.maxDepth; depth += 1) {
+    compatibilityCursor.next = {};
+    compatibilityCursor = compatibilityCursor.next;
+  }
+  const deepCompatibilityValidation = Model.validateDocumentRaw(deepCompatibility);
+  check("portable-extension-payload-obeys-exact-depth-bound", deepCompatibilityValidation.errors.length > 0);
+
+  const wideCompatibility = documentWith([]);
+  wideCompatibility.compatibility = { entries: Array.from({ length: Model.LIMITS.maxBlocks + 1 }, () => null) };
+  const wideCompatibilityValidation = Model.validateDocumentRaw(wideCompatibility);
+  check("portable-extension-arrays-cannot-be-silently-truncated", wideCompatibilityValidation.errors.length > 0);
+
+  const longCompatibility = documentWith([]);
+  longCompatibility.compatibility = { note: tooLong };
+  const longCompatibilityValidation = Model.validateDocumentRaw(longCompatibility);
+  check("portable-extension-text-obeys-normal-string-bound", longCompatibilityValidation.errors.length > 0);
 
   const deepLegacy = legacyNote();
   let cursor = deepLegacy;
