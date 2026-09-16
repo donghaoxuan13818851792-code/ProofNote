@@ -848,7 +848,7 @@ async function main() {
     );
     check(
       "editor-project-preset-restores-editorial-reading-rhythm",
-      editorSource.includes('if (block.type === "heading") return block.level === 1;')
+      editorSource.includes('if (block.type === "heading") return (isProofNoteDocument() || isProjectDocument()) && block.level === 1;')
         && editorCss.includes("--pn-doc-body-size: 12.75pt;")
         && editorCss.includes("--pn-doc-body-leading: 1.68;")
         && editorCss.includes("--pn-doc-title-size: 31.5pt;")
@@ -858,6 +858,12 @@ async function main() {
         && editorSource.includes(".pn-project-document{max-width:760px")
         && editorSource.includes("EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS"),
       "Blank Projects must use the restored editorial measure on both the canvas and exported HTML"
+    );
+    check(
+      "editor-editorial-renderer-is-scoped-to-editorial-presets",
+      editorSource.includes('return isProofNoteDocument() || (isProjectDocument() && block && block.type === "semantic" && ["introduction", "section"].includes(block.kind))')
+        && editorSource.includes('if (block.type === "heading") return (isProofNoteDocument() || isProjectDocument()) && block.level === 1;'),
+      "Imported and general documents must retain neutral H1 and semantic rendering unless they explicitly choose an appearance"
     );
     check(
       "editor-editorial-section-compatibility-preserves-the-folio-number",
@@ -878,17 +884,91 @@ async function main() {
     if (projectClipboardDescriptor) Object.defineProperty(window.navigator, "clipboard", projectClipboardDescriptor);
     else delete window.navigator.clipboard;
     check(
-      "editor-project-copy-ai-uses-document-architect-brief",
+      "editor-project-copy-ai-uses-one-coherent-document-architect-brief",
       editorSource.includes("function aiInstructionsForCurrentDocument()")
         && editorSource.includes("isProjectDocument() ? PROJECT_AI_DOCUMENT_INSTRUCTIONS : AI_DOCUMENT_INSTRUCTIONS")
         && editorSource.includes("const instructions = aiInstructionsForCurrentDocument();")
+        && !editorSource.includes("PROJECT_AI_EDITORIAL_SECTION_GUIDANCE")
         && projectAiInstructions.includes("You are acting as an editor and document architect for Proofnote.")
         && projectAiInstructions.includes("Return exactly one valid JSON object in Proofnote Document Format 1.0.")
         && copiedProjectAiInstructions.includes('"documentType": "Project"')
         && copiedProjectAiInstructions.includes('"kind": "section"')
         && copiedProjectAiInstructions.includes('"appearance": "editorial"')
-        && copiedProjectAiInstructions.includes("inline KaTeX delimiters"),
-      "Blank projects must copy the complete document-architect brief plus the Project editorial-structure rules while Proof Note retains its template-specific format reference"
+        && copiedProjectAiInstructions.includes("inline KaTeX delimiters")
+        && copiedProjectAiInstructions.includes("\\u005c")
+        && copiedProjectAiInstructions.includes("Do not use a level-1 heading")
+        && !copiedProjectAiInstructions.includes("level 1 for major sections"),
+      "Blank projects must copy one coherent Project brief with editorial section rules and JSON-safe LaTeX serialization"
+    );
+    const importedProjectPayload = {
+      format: "proofnote-document",
+      version: "1.0",
+      metadata: { name: "Imported prime-family notes" },
+      blocks: [
+        { type: "title", content: "Prime-family notes" },
+        { type: "subtitle", content: "A compact research summary." },
+        { type: "semantic", kind: "introduction", title: "Introduction", content: "Opening context." },
+        { type: "heading", level: 1, content: "1. Core prime-family bounds" },
+        { type: "paragraph", content: "The main bound follows." }
+      ]
+    };
+    const importText = document.querySelector("#pnImportText");
+    const confirmImport = document.querySelector("#pnConfirmImport");
+    if (importText) importText.value = JSON.stringify(importedProjectPayload);
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => canvas.classList.contains("pn-project-document")
+      && Boolean(document.querySelector("#pnCanvas .pn-canvas-semantic .pn-editorial-section"))
+      && Boolean(document.querySelector("#pnCanvas .pn-canvas-heading .pn-editorial-section")));
+    const importedHeading = document.querySelector("#pnCanvas .pn-canvas-heading .pn-editorial-section-title-input");
+    const projectImportState = {
+      project: canvas.classList.contains("pn-project-document"),
+      introduction: Boolean(document.querySelector("#pnCanvas .pn-canvas-semantic .pn-editorial-section")),
+      genericIntroduction: Boolean(document.querySelector("#pnCanvas .pn-semantic-introduction")),
+      heading: Boolean(document.querySelector("#pnCanvas .pn-canvas-heading .pn-editorial-section")),
+      genericHeading: Boolean(document.querySelector("#pnCanvas .pn-heading-1")),
+      headingValue: importedHeading && importedHeading.value
+    };
+    check(
+      "editor-project-import-preserves-project-identity-and-editorial-fallbacks",
+      Boolean(importText && confirmImport)
+        && canvas.classList.contains("pn-project-document")
+        && Boolean(document.querySelector("#pnCanvas .pn-canvas-semantic .pn-editorial-section"))
+        && !document.querySelector("#pnCanvas .pn-semantic-introduction")
+        && Boolean(document.querySelector("#pnCanvas .pn-canvas-heading .pn-editorial-section"))
+        && !document.querySelector("#pnCanvas .pn-heading-1")
+        && importedHeading?.value === "Core prime-family bounds"
+        && editorSource.includes("const preserveProjectIdentity = isProjectDocument();")
+        && editorSource.includes('if (preserveProjectIdentity) next.metadata.documentType = "Project";'),
+      JSON.stringify(projectImportState)
+    );
+    const originalCreateObjectUrl = window.URL.createObjectURL;
+    const originalRevokeObjectUrl = window.URL.revokeObjectURL;
+    const originalAnchorClick = window.HTMLAnchorElement.prototype.click;
+    let exportedProjectBlob = null;
+    window.URL.createObjectURL = (blob) => {
+      exportedProjectBlob = blob;
+      return "blob:proofnote-project-export";
+    };
+    window.URL.revokeObjectURL = () => {};
+    window.HTMLAnchorElement.prototype.click = function () {};
+    const exportProjectHtml = document.querySelector("#pnExportHtml");
+    if (exportProjectHtml) exportProjectHtml.click();
+    await settle(window, () => Boolean(exportedProjectBlob));
+    const exportedProjectHtml = exportedProjectBlob ? await exportedProjectBlob.text() : "";
+    window.URL.createObjectURL = originalCreateObjectUrl;
+    window.URL.revokeObjectURL = originalRevokeObjectUrl;
+    window.HTMLAnchorElement.prototype.click = originalAnchorClick;
+    check(
+      "editor-project-import-export-applies-the-project-editorial-wrapper",
+      Boolean(exportProjectHtml)
+        && exportedProjectHtml.includes('<article class="pn-document pn-project-document">')
+        && exportedProjectHtml.includes('class="pn-export-running pn-project-running"')
+        && exportedProjectHtml.includes('class="pn-editorial-section pn-editorial-section-introduction"')
+        && exportedProjectHtml.includes('class="pn-editorial-section pn-editorial-section-heading"')
+        && exportedProjectHtml.includes('<span class="pn-editorial-section-number">01</span><h2>Introduction</h2>')
+        && exportedProjectHtml.includes('<span class="pn-editorial-section-number">02</span><h2>Core prime-family bounds</h2>')
+        && !exportedProjectHtml.includes("<h2>1. Core prime-family bounds</h2>"),
+      exportedProjectHtml.slice(0, 1500)
     );
     const firstTemplate = templateLibrary && templateLibrary.querySelector(".pn-template-item");
     const documentCountBeforeTemplate = documentLibrary ? documentLibrary.querySelectorAll(".pn-document-item").length : 0;

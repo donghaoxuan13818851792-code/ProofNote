@@ -1467,17 +1467,16 @@
   }
   function semanticAppearance(block) {
     if (block && (block.appearance === "editorial" || block.appearance === "card")) return block.appearance;
-    // Structural sections and introductions are continuous reading surfaces.
-    // Treat legacy/generated variants as editorial even if the AI omitted the
-    // presentation field; an explicit Card choice still wins.
-    return isProofNoteDocument() || (block && block.type === "semantic" && ["introduction", "section"].includes(block.kind))
+    // Structural sections and introductions are continuous reading surfaces
+    // only in the editorial Project and Proof Note presets. Imported/general
+    // documents remain neutral unless their block explicitly opts in.
+    return isProofNoteDocument() || (isProjectDocument() && block && block.type === "semantic" && ["introduction", "section"].includes(block.kind))
       ? "editorial" : "card";
   }
   function isEditorialPrimary(block) {
-    // Level-one headings are a compatibility path for older/generated JSON.
-    // New Project instructions use semantic.section instead, but either form
-    // should retain the editorial folio number and rule on the paper.
-    if (block.type === "heading") return block.level === 1;
+    // Level-one headings are a compatibility path for older/generated JSON
+    // inside the editorial presets. General imports retain their own H1 look.
+    if (block.type === "heading") return (isProofNoteDocument() || isProjectDocument()) && block.level === 1;
     if (block.type !== "semantic" || semanticAppearance(block) !== "editorial") return false;
     if (["section", "introduction"].includes(block.kind)) return true;
     return (isProofNoteDocument() || isProjectDocument()) && ["introduction", "problem", "result", "theorem"].includes(block.kind);
@@ -2515,36 +2514,12 @@ Use ordered blocks. Supported block types: title, subtitle, heading (with level 
 Use semantic.kind only as section, introduction, problem, theorem, proof, result, or verification. Use callout.kind only as note, tip, warning, or info. A semantic block may optionally use appearance "editorial" or "card"; otherwise the selected template decides. Do not add CSS, fonts, font sizes, colours, margins, coordinates, or HTML. Proofnote owns the visual presets.
 
 For LaTeX inside prose, return valid JSON: escape every literal backslash. For example, JSON source must contain "\\\\(x \\\\le \\\\sqrt{2}\\\\)" for inline math. Preserve code as code, using only normal JSON escaping.`;
-  // A newly created project is a general-purpose document, so it benefits
-  // from the longer editorial brief. This addendum makes the document model
-  // choose the Project renderer rather than merely describing its content.
-  // Proof Note keeps its focused format reference because it is specialised.
-  const PROJECT_AI_EDITORIAL_SECTION_GUIDANCE = `
-
-BLANK PROJECT EDITORIAL STRUCTURE — THESE RULES OVERRIDE ANY EARLIER CONFLICTING GUIDANCE ABOUT HEADING LEVELS, METADATA, OR INLINE MATHEMATICS.
-
-This response will be imported as a Blank Project. In the metadata object, include "documentType": "Project".
-
-For every major top-level section, use a semantic block with this shape:
-
-{
-  "type": "semantic",
-  "kind": "section",
-  "title": "A descriptive section title",
-  "content": "Opening prose when useful.",
-  "appearance": "editorial"
-}
-
-Do not use a level-1 heading for a major section. Do not prefix any major-section title with "1.", "01", roman numerals, or another ordinal: Proofnote supplies the small editorial section number itself. Reserve heading level 2 and level 3 for genuinely internal subsections.
-
-When the material needs an introduction, use a semantic block with "kind": "introduction" and "appearance": "editorial" so it reads as continuous opening prose rather than a card.
-
-For mathematical notation inside paragraphs, table cells, and list items, use inline KaTeX delimiters such as \\(...\\) instead of plain-text approximations such as G_n or k(p) <= p-1. Use a standalone equation block only for display mathematics that deserves its own line.
-
-Prefer a continuous reading flow of paragraphs, inline mathematics, and a small number of meaningful sections. Use cards, callouts, and tables only when they communicate genuinely exceptional information; do not begin a document with a status table unless the supplied material is inherently tabular.`;
-  const PROJECT_AI_DOCUMENT_INSTRUCTIONS = (typeof root.PROOFNOTE_PROJECT_AI_INSTRUCTIONS === "string"
+  // The Project prompt is self-contained in project-ai-instructions.js, so
+  // models receive one coherent document contract rather than a base prompt
+  // followed by a conflicting visual override.
+  const PROJECT_AI_DOCUMENT_INSTRUCTIONS = typeof root.PROOFNOTE_PROJECT_AI_INSTRUCTIONS === "string"
     ? root.PROOFNOTE_PROJECT_AI_INSTRUCTIONS
-    : AI_DOCUMENT_INSTRUCTIONS) + PROJECT_AI_EDITORIAL_SECTION_GUIDANCE;
+    : AI_DOCUMENT_INSTRUCTIONS;
   function aiInstructionsForCurrentDocument() {
     return isProjectDocument() ? PROJECT_AI_DOCUMENT_INSTRUCTIONS : AI_DOCUMENT_INSTRUCTIONS;
   }
@@ -2660,6 +2635,10 @@ Prefer a continuous reading flow of paragraphs, inline mathematics, and a small 
       els.importReport.textContent = tr("JSON 文本超过 25MB 导入上限。", "JSON text exceeds the 25 MB import limit.");
       return;
     }
+    // The place where a person imports content determines the active
+    // document's preset. An AI response is content, not an authority on
+    // whether the current Blank Project should stop being a Project.
+    const preserveProjectIdentity = isProjectDocument();
     let raw;
     try { raw = JSON.parse(els.importText.value); } catch (error) { els.importReport.textContent = tr("JSON 无法解析：", "Could not parse JSON: ") + error.message; return; }
     let next, warnings = [];
@@ -2683,6 +2662,7 @@ Prefer a continuous reading flow of paragraphs, inline mathematics, and a small 
       if (validation.errors.length) { els.importReport.textContent = tr("Document 校验失败：", "Document validation failed: ") + validation.errors.map((item) => item.path + " — " + item.message).join("; "); return; }
       warnings = validation.warnings;
       next = Model.normalizeDocument(raw);
+      if (preserveProjectIdentity) next.metadata.documentType = "Project";
     }
     const saved = await saveActiveDocumentNow();
     if (saved === "failed") { els.importReport.textContent = tr("当前文档无法保存；请先导出备份。", "The current document could not be saved; export a backup first."); return; }
