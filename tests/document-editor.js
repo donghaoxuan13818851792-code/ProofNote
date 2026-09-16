@@ -1082,6 +1082,48 @@ async function main() {
     const importText = document.querySelector("#pnImportText");
     const confirmImport = document.querySelector("#pnConfirmImport");
     const importReport = document.querySelector("#pnImportReport");
+// Importing a template is additive: a portable id collision must not
+// silently overwrite a template already saved on this device.
+const existingCollisionTemplate = {
+  format: "proofnote-template",
+  version: "1.0",
+  template: { id: "collision-template", name: "Original local template", description: "keep me" },
+  document: {
+    format: "proofnote-document",
+    version: "1.0",
+    metadata: { name: "Original local template document" },
+    blocks: [{ type: "title", content: "Original local template document" }]
+  }
+};
+await window.ProofnoteStore.saveTemplate(existingCollisionTemplate);
+const incomingCollisionTemplate = {
+  format: "proofnote-template",
+  version: "1.0",
+  template: { id: "collision-template", name: "Imported collision template", description: "new import" },
+  document: {
+    format: "proofnote-document",
+    version: "1.0",
+    metadata: { name: "Imported collision template document" },
+    blocks: [{ type: "title", content: "Imported collision template document" }]
+  }
+};
+if (importText) importText.value = JSON.stringify(incomingCollisionTemplate);
+if (confirmImport) confirmImport.click();
+await settle(window, () => /recoverable notice|可恢复提示/.test(document.querySelector("#pnStatus")?.textContent || ""), 1500);
+const collisionTemplatesAfterImport = await window.ProofnoteStore.listTemplates();
+const preservedCollisionTemplate = collisionTemplatesAfterImport.find((item) => item.template?.id === "collision-template");
+const newlyImportedCollisionTemplate = collisionTemplatesAfterImport.find((item) => item.template?.name === "Imported collision template");
+check(
+  "editor-template-import-id-collision-does-not-overwrite-local-template",
+  preservedCollisionTemplate?.template?.name === "Original local template"
+    && preservedCollisionTemplate?.template?.description === "keep me"
+    && Boolean(newlyImportedCollisionTemplate)
+    && newlyImportedCollisionTemplate.template.id !== "collision-template"
+    && /recoverable notice|可恢复提示/.test(document.querySelector("#pnStatus")?.textContent || "")
+    && editorSource.includes("an imported portable file must never")
+    && editorSource.includes("storedTemplateIds.has(template.template.id)"),
+  JSON.stringify(collisionTemplatesAfterImport.map((item) => item.template))
+);
     const blankProjectImportPayload = {
       format: "proofnote-document",
       version: "1.0",

@@ -3286,12 +3286,28 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     } else if (raw && raw.format === Model.TEMPLATE_FORMAT) {
       const validation = Model.validateTemplateRaw(raw);
       if (validation.errors.length) { renderSchemaDiagnostics(tr("无法导入模板", "Could not import template"), validation.errors, warnings.concat(validation.warnings || [])); return; }
-      const template = Model.normalizeTemplate(raw);
+      warnings = warnings.concat(validation.warnings || []);
+      let template = Model.normalizeTemplate(raw);
+      // Import is additive. `saveTemplate` is intentionally an upsert for
+      // explicit template edits, but an imported portable file must never
+      // overwrite an existing local template merely because both carry the
+      // same portable id.
+      const storedTemplateIds = new Set((await Store.listTemplates())
+        .map((item) => item && item.template && item.template.id)
+        .filter((id) => typeof id === "string" && id));
+      if (storedTemplateIds.has(template.template.id)) {
+        const importedInfo = { name: template.template.name, description: template.template.description };
+        do { template = Model.makeTemplate(template.document, importedInfo); }
+        while (storedTemplateIds.has(template.template.id));
+        warnings.push({
+          path: "template.id",
+          message: tr("模板 ID 已存在；已作为新模板导入。", "Template ID already exists; imported as a new template.")
+        });
+      }
       const backend = await Store.saveTemplate(template);
-      if (backend === "failed") { showImportMessage(tr("模板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."), "error"); return; }
+      if (backend === "failed") { showImportMessage(tr("樁板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."), "error"); return; }
       await refreshTemplates();
       closeImport();
-      warnings = warnings.concat(validation.warnings || []);
       setStatus(warnings.length ? tr("模板已保存；有 " + warnings.length + " 条可恢复提示。", "Template saved with " + warnings.length + " recoverable notice(s).") : tr("模板已保存到此设备。", "Template saved on this device."), warnings.length ? "warning" : "saved");
       return;
     } else {
