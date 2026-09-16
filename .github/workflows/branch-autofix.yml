@@ -25,22 +25,10 @@ jobs:
           from pathlib import Path
           p = Path('src/document-editor.js')
           s = p.read_text()
-          old = '''      onConfirm: async () => {
-            const backend = await Store.deleteDocument(id);
-            if (backend === "failed") { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
-            if (id === currentDocumentId) {
-              const opened = await openRemainingDocumentAfterDeletion();
-              if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
-              setStatus(tr("文档已删除", "Document deleted"), "saved");
-            } else {
-              await refreshDocuments();
-              setStatus(tr("文档已删除", "Document deleted"), "saved");
-            }
-          }
-          '''
-          # The workflow YAML adds four indentation spaces to the script text;
-          # Python's heredoc removes none. Normalize the source snippet once.
-          old = old.replace('\n    ', '\n')
+          fn = s.index('  function requestDeleteLibraryDocument(id) {')
+          start = s.index('      onConfirm: async () => {', fn)
+          end_marker = '      }\n    });\n  }\n  async function saveCurrentAsTemplate'
+          end = s.index(end_marker, start) + len('      }\n')
           new = '''      onConfirm: async () => {
             const deletingCurrent = id === currentDocumentId;
             if (deletingCurrent) {
@@ -63,10 +51,10 @@ jobs:
             }
           }
           '''
+          # YAML removes the common block indentation; de-indent only the
+          # continuation lines inside the Python literal itself.
           new = new.replace('\n    ', '\n')
-          if old not in s:
-              raise SystemExit('delete confirmation source pattern not found')
-          p.write_text(s.replace(old, new, 1))
+          p.write_text(s[:start] + new + s[end:])
           PY
       - run: npm ci
       - run: npm test
