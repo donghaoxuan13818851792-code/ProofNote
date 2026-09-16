@@ -163,7 +163,7 @@ const proofTemplate = builtIns.find((template) => template.template.id === "proo
 check("document-template-controls-running-header", Boolean(blankTemplate) && blankTemplate.document.metadata.templateName === "" && Boolean(proofTemplate) && proofTemplate.document.metadata.templateName === "Proof Note", JSON.stringify({ blank: blankTemplate && blankTemplate.document.metadata, proof: proofTemplate && proofTemplate.document.metadata }));
 check("document-proof-template-is-editorial", Boolean(proofTemplate) && proofTemplate.document.metadata.documentType === "Solution Note" && proofTemplate.document.metadata.status === "Draft" && proofTemplate.document.blocks.filter((block) => block.type === "semantic").every((block) => block.appearance === "editorial"), JSON.stringify(proofTemplate && proofTemplate.document));
 const invalidTemplate = Model.validateTemplateRaw({ format: Model.TEMPLATE_FORMAT, version: Model.VERSION, template: { name: "Bad" }, document: { format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad" }, blocks: [{ type: "table", rows: "not rows" }] } });
-check("document-template-raw-validation", invalidTemplate.warnings.some((warning) => warning.path === "blocks[0].rows"), JSON.stringify(invalidTemplate));
+check("document-template-raw-validation", invalidTemplate.warnings.some((warning) => warning.path === "document.blocks[0].rows"), JSON.stringify(invalidTemplate));
 
 const pass = results.filter((result) => result.pass).length;
 results.forEach((result) => {

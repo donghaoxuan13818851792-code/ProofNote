@@ -462,9 +462,13 @@
     });
     return allowed;
   }
-  function filterImageLengthFalsePositives(errors, document) {
-    const allowed = allowedLargeImagePaths(document);
+  function filterImageLengthFalsePositives(errors, document, pathPrefix) {
+    const prefix = String(pathPrefix || "");
+    const allowed = new Set(Array.from(allowedLargeImagePaths(document), (path) => prefix + path));
     return (errors || []).filter((issue) => !(allowed.has(issue.path) && issue.message === "Text exceeds the maximum supported length."));
+  }
+  function prefixDocumentIssue(issue) {
+    return Object.assign({}, issue, { path: issue && issue.path ? "document." + issue.path : "document" });
   }
   function hardenDocumentValidation(raw, baseResult) {
     const result = baseResult || { errors: [], warnings: [] };
@@ -529,15 +533,19 @@
   };
   Model.validateTemplateRaw = function (raw) {
     const base = originalValidateTemplateRaw.call(Model, raw);
-    const errors = filterImageLengthFalsePositives(base.errors, raw && raw.document);
+    const errors = filterImageLengthFalsePositives(base.errors, raw && raw.document, "document.");
     const warnings = (base.warnings || []).slice();
     if (raw && raw.document) {
       const oldDocument = originalValidateDocumentRaw.call(Model, raw.document);
       const hardenedDocument = Model.validateDocumentRaw(raw.document);
       const oldErrorKeys = new Set(filterImageLengthFalsePositives(oldDocument.errors, raw.document).map((issue) => issue.path + "\u0000" + issue.message));
       const oldWarningKeys = new Set((oldDocument.warnings || []).map((issue) => issue.path + "\u0000" + issue.message));
-      hardenedDocument.errors.forEach((issue) => { if (!oldErrorKeys.has(issue.path + "\u0000" + issue.message)) uniquePush(errors, issue); });
-      hardenedDocument.warnings.forEach((issue) => { if (!oldWarningKeys.has(issue.path + "\u0000" + issue.message)) uniquePush(warnings, issue); });
+      hardenedDocument.errors.forEach((issue) => {
+        if (!oldErrorKeys.has(issue.path + "\u0000" + issue.message)) uniquePush(errors, prefixDocumentIssue(issue));
+      });
+      hardenedDocument.warnings.forEach((issue) => {
+        if (!oldWarningKeys.has(issue.path + "\u0000" + issue.message)) uniquePush(warnings, prefixDocumentIssue(issue));
+      });
     }
     if (raw && isObject(raw.template)) {
       if (typeof raw.template.id === "string") {

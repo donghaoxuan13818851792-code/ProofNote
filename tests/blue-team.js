@@ -162,6 +162,19 @@ async function main() {
       && templateValidation.errors.some((issue) => issue.path === "template.description")
       && templateValidation.warnings.some((issue) => issue.path === "template.id")
   );
+
+  const nestedTemplateValidation = Model.validateTemplateRaw({
+    format: Model.TEMPLATE_FORMAT,
+    version: Model.VERSION,
+    template: { id: "nested-path", name: "Nested path", description: "" },
+    document: documentWith([{ type: "future-block", content: tooLong }])
+  });
+  check(
+    "template-validation-prefixes-nested-document-diagnostics",
+    nestedTemplateValidation.errors.some((issue) => issue.path === "document.blocks[0].content"),
+    JSON.stringify(nestedTemplateValidation.errors)
+  );
+
   const reservedTemplateRaw = {
     format: Model.TEMPLATE_FORMAT,
     version: Model.VERSION,

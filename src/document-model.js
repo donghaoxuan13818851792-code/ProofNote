@@ -414,7 +414,13 @@
       if (raw.template.description !== undefined && typeof raw.template.description !== "string") warnings.push({ path: "template.description", message: "Expected a string; it will be treated as empty text." });
     }
     const documentValidation = validateDocumentRaw(raw.document);
-    return { errors: errors.concat(documentValidation.errors), warnings: warnings.concat(documentValidation.warnings) };
+    const nestedDocumentIssue = (issue) => Object.assign({}, issue, {
+      path: issue && issue.path ? "document." + issue.path : "document"
+    });
+    return {
+      errors: errors.concat(documentValidation.errors.map(nestedDocumentIssue)),
+      warnings: warnings.concat(documentValidation.warnings.map(nestedDocumentIssue))
+    };
   }
 
   function legacyTextBlocks(value) {
