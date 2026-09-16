@@ -102,9 +102,13 @@ async function main() {
 
   const reservedId = Model.normalizeDocument(documentWith([{ id: "__proofnote_header__", type: "paragraph", content: "safe" }]));
   const longId = Model.normalizeDocument(documentWith([{ id: "x".repeat(300), type: "paragraph", content: "safe" }]));
+  const whitespaceId = Model.normalizeDocument(documentWith([{ id: "   ", type: "paragraph", content: "safe" }]));
   check(
-    "editor-reserved-and-oversized-block-ids-are-regenerated",
-    reservedId.blocks[0].id !== "__proofnote_header__" && longId.blocks[0].id.length <= 256
+    "editor-invalid-block-ids-are-regenerated",
+    reservedId.blocks[0].id !== "__proofnote_header__"
+      && longId.blocks[0].id.length <= 256
+      && Boolean(whitespaceId.blocks[0].id.trim()),
+    [reservedId.blocks[0].id, longId.blocks[0].id, whitespaceId.blocks[0].id].join(" | ")
   );
 
   const project = documentWith([
@@ -157,6 +161,28 @@ async function main() {
     templateValidation.errors.some((issue) => issue.path === "template.name")
       && templateValidation.errors.some((issue) => issue.path === "template.description")
       && templateValidation.warnings.some((issue) => issue.path === "template.id")
+  );
+  const reservedTemplateRaw = {
+    format: Model.TEMPLATE_FORMAT,
+    version: Model.VERSION,
+    template: { id: "proof-note", name: "Imported custom", description: "" },
+    document: documentWith([])
+  };
+  const reservedTemplateValidation = Model.validateTemplateRaw(reservedTemplateRaw);
+  const reservedTemplate = Model.normalizeTemplate(reservedTemplateRaw);
+  const whitespaceTemplate = Model.normalizeTemplate({
+    format: Model.TEMPLATE_FORMAT,
+    version: Model.VERSION,
+    template: { id: "   ", name: "Whitespace custom", description: "" },
+    document: documentWith([])
+  });
+  check(
+    "custom-template-ids-cannot-shadow-builtins-or-stay-blank",
+    reservedTemplateValidation.warnings.some((issue) => issue.path === "template.id")
+      && reservedTemplate.template.id !== "proof-note"
+      && Boolean(reservedTemplate.template.id.trim())
+      && Boolean(whitespaceTemplate.template.id.trim()),
+    reservedTemplate.template.id + " | " + whitespaceTemplate.template.id
   );
 
   const legacySurface = {
