@@ -28,21 +28,15 @@ jobs:
           editor = Path('src/document-editor.js')
           s = editor.read_text()
 
-          # Current-document library rename: merge the canonical renamed fields
-          # into the live state, then flush again. Replacing the whole state can
-          # discard edits made while the storage rename is awaiting completion.
-          old = '''    if (id === currentDocumentId) {
-            state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
-            editRevision = 0;
-            hasUnsavedChanges = false;
-            renderAll();
-            root.requestAnimationFrame(syncCanvasScale);
-          }
-          await refreshDocuments();
-          setStatus(tr("文档已重命名", "Document renamed"), "saved");
-          '''
-          old = textwrap.dedent(old)
-          new = '''    if (id === currentDocumentId) {
+          # Reconcile a current-document rename into live state instead of
+          # replacing the whole state, which can discard edits made while the
+          # asynchronous storage rename is in flight.
+          rename_fn = s.index('  async function finishDocumentRename(id, name) {')
+          renamed_marker = '    renamingDocumentId = "";\n'
+          after_renamed = s.index(renamed_marker, rename_fn) + len(renamed_marker)
+          rename_start = s.index('    if (id === currentDocumentId) {', after_renamed)
+          rename_end = s.index('    await refreshDocuments();', rename_start)
+          rename_block = '''    if (id === currentDocumentId) {
             const persisted = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
             state.metadata.name = persisted.metadata.name;
             state.metadata.updatedAt = persisted.metadata.updatedAt;
@@ -53,9 +47,9 @@ jobs:
               if (liveTitle && persistedTitle) liveTitle.content = persistedTitle.content;
               syncProjectDocumentNameControls(state.metadata.name, null);
             }
-            // Mark the canonical rename as a newer revision. Any autosave that
-            // began during Store.renameDocument then cannot clear this pending
-            // state when its older snapshot completes.
+            // Make the rename a newer editor revision. Any autosave that began
+            // during Store.renameDocument then cannot clear this pending state
+            // when its older snapshot completes.
             changed({ outline: isProjectDocument(), chrome: true });
             const reconciled = await saveActiveDocumentNow();
             if (reconciled === "failed") {
@@ -65,129 +59,54 @@ jobs:
             renderAll();
             root.requestAnimationFrame(syncCanvasScale);
           }
-          await refreshDocuments();
-          setStatus(tr("文档已重命名", "Document renamed"), "saved");
-          '''
-          new = textwrap.dedent(new)
-          if old not in s:
-              raise SystemExit('rename reconciliation pattern not found')
-          s = s.replace(old, new, 1)
+'''
+          rename_block = textwrap.dedent(rename_block)
+          # textwrap.dedent removes the four source spaces; put them back.
+          rename_block = textwrap.indent(rename_block, '    ')
+          s = s[:rename_start] + rename_block + s[rename_end:]
 
-          # Every operation below performs its first flush before the storage
-          # action. Add a second flush after the awaited storage action and
-          # immediately before activation so edits made during slow storage I/O
-          # are not thrown away by activateDocument().
-          replacements = [
-            (
-              '''    const created = await Store.createDocument(project);
-              if (!created || !created.record || created.backend === "failed") {
-                setStatus(tr("新建项目失败。", "Could not create project."), "error");
-                return;
-              }
-              closeNewProject();
-              await activateDocument(created.record, { status: false });
-              ''',
-              '''    const created = await Store.createDocument(project);
-              if (!created || !created.record || created.backend === "failed") {
-                setStatus(tr("新建项目失败。", "Could not create project."), "error");
-                return;
-              }
-              const finalSaved = await saveActiveDocumentNow();
-              if (finalSaved === "failed") {
-                setStatus(tr("新建期间产生的编辑无法保存；新项目已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the project could not be saved; the project was created but not opened. Export the current document first."), "error");
-                return;
-              }
-              closeNewProject();
-              await activateDocument(created.record, { status: false });
-              '''
-            ),
-            (
-              '''    const created = await Store.createDocument(document);
-              if (!created || !created.record || created.backend === "failed") { setStatus(tr("无法从模板创建文档。", "Could not create a document from this template."), "error"); return; }
-              selectedTemplateId = template.template.id;
-              await activateDocument(created.record, { status: false });
-              ''',
-              '''    const created = await Store.createDocument(document);
-              if (!created || !created.record || created.backend === "failed") { setStatus(tr("无法从模板创建文档。", "Could not create a document from this template."), "error"); return; }
-              const finalSaved = await saveActiveDocumentNow();
-              if (finalSaved === "failed") { setStatus(tr("创建期间产生的编辑无法保存；新文档已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the document could not be saved; the new document was created but not opened. Export the current document first."), "error"); return; }
-              selectedTemplateId = template.template.id;
-              await activateDocument(created.record, { status: false });
-              '''
-            ),
-            (
-              '''    const opened = await Store.openDocument(id);
-              if (!opened || !opened.record || opened.backend === "failed") { setStatus(tr("无法打开文档。", "Could not open document."), "error"); return; }
-              await activateDocument(opened.record);
-              ''',
-              '''    const opened = await Store.openDocument(id);
-              if (!opened || !opened.record || opened.backend === "failed") { setStatus(tr("无法打开文档。", "Could not open document."), "error"); return; }
-              const finalSaved = await saveActiveDocumentNow();
-              if (finalSaved === "failed") { setStatus(tr("切换期间产生的编辑无法保存；请导出当前文档备份后重试。", "Edits made during the switch could not be saved; export the current document and try again."), "error"); return; }
-              await activateDocument(opened.record);
-              '''
-            ),
-            (
-              '''    const duplicate = await Store.duplicateDocument(id, copiedName);
-              if (!duplicate || !duplicate.record || duplicate.backend === "failed") { setStatus(tr("复制文档失败。", "Could not duplicate document."), "error"); return; }
-              await activateDocument(duplicate.record, { status: false });
-              ''',
-              '''    const duplicate = await Store.duplicateDocument(id, copiedName);
-              if (!duplicate || !duplicate.record || duplicate.backend === "failed") { setStatus(tr("复制文档失败。", "Could not duplicate document."), "error"); return; }
-              const finalSaved = await saveActiveDocumentNow();
-              if (finalSaved === "failed") { setStatus(tr("复制期间产生的编辑无法保存；副本已创建但尚未打开，请先导出当前文档备份。", "Edits made during duplication could not be saved; the copy was created but not opened. Export the current document first."), "error"); return; }
-              await activateDocument(duplicate.record, { status: false });
-              '''
-            ),
-            (
-              '''    const created = await Store.createDocument(next);
-              if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
-              closeImport();
-              await activateDocument(created.record, { status: false });
-              ''',
-              '''    const created = await Store.createDocument(next);
-              if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
-              const finalSaved = await saveActiveDocumentNow();
-              if (finalSaved === "failed") { showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error"); return; }
-              closeImport();
-              await activateDocument(created.record, { status: false });
-              '''
-            )
-          ]
-          for old_piece, new_piece in replacements:
-              old_piece = textwrap.dedent(old_piece)
-              new_piece = textwrap.dedent(new_piece)
-              if old_piece not in s:
-                  raise SystemExit('document transition source pattern not found: ' + old_piece.splitlines()[0])
-              s = s.replace(old_piece, new_piece, 1)
+          def insert_before(function_marker, target_marker, insertion):
+              global s
+              fn = s.index(function_marker)
+              pos = s.index(target_marker, fn)
+              s = s[:pos] + insertion + s[pos:]
 
-          # Clean up the indentation from the earlier deletion-race emergency
-          # patch while this file is already being edited. No behavior change.
-          deletion_start = s.index('      onConfirm: async () => {\n  const deletingCurrent = id === currentDocumentId;')
-          deletion_end = s.index('\n    });\n  }\n  async function saveCurrentAsTemplate', deletion_start)
-          deletion = '''      onConfirm: async () => {
-            const deletingCurrent = id === currentDocumentId;
-            if (deletingCurrent) {
-              // Deletion intentionally discards edits that have not entered the save
-              // queue yet. A save already in flight is different: it must finish
-              // before deletion, otherwise it can complete afterwards and recreate
-              // the record the author just removed.
-              clearTimeout(saveTimer);
-              try { await saveQueue; } catch (_) {}
-            }
-            const backend = await Store.deleteDocument(id);
-            if (backend === "failed") { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
-            if (deletingCurrent) {
-              const opened = await openRemainingDocumentAfterDeletion();
-              if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
-              setStatus(tr("文档已删除", "Document deleted"), "saved");
-            } else {
-              await refreshDocuments();
-              setStatus(tr("文档已删除", "Document deleted"), "saved");
-            }
-          }'''
-          deletion = textwrap.dedent(deletion)
-          s = s[:deletion_start] + deletion + s[deletion_end:]
+          # A first flush happens before each storage operation. A second flush
+          # immediately before activation captures edits made while that awaited
+          # storage operation itself was slow.
+          insert_before(
+              '  async function createNewProject() {',
+              '    closeNewProject();\n',
+              '    const finalSaved = await saveActiveDocumentNow();\n'
+              '    if (finalSaved === "failed") {\n'
+              '      setStatus(tr("新建期间产生的编辑无法保存；新项目已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the project could not be saved; the project was created but not opened. Export the current document first."), "error");\n'
+              '      return;\n'
+              '    }\n'
+          )
+          insert_before(
+              '  async function useSelectedTemplate(templateId) {',
+              '    selectedTemplateId = template.template.id;\n',
+              '    const finalSaved = await saveActiveDocumentNow();\n'
+              '    if (finalSaved === "failed") { setStatus(tr("创建期间产生的编辑无法保存；新文档已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the document could not be saved; the new document was created but not opened. Export the current document first."), "error"); return; }\n'
+          )
+          insert_before(
+              '  async function openLibraryDocument(id) {',
+              '    await activateDocument(opened.record);\n',
+              '    const finalSaved = await saveActiveDocumentNow();\n'
+              '    if (finalSaved === "failed") { setStatus(tr("切换期间产生的编辑无法保存；请导出当前文档备份后重试。", "Edits made during the switch could not be saved; export the current document and try again."), "error"); return; }\n'
+          )
+          insert_before(
+              '  async function duplicateLibraryDocument(id) {',
+              '    await activateDocument(duplicate.record, { status: false });\n',
+              '    const finalSaved = await saveActiveDocumentNow();\n'
+              '    if (finalSaved === "failed") { setStatus(tr("复制期间产生的编辑无法保存；副本已创建但尚未打开，请先导出当前文档备份。", "Edits made during duplication could not be saved; the copy was created but not opened. Export the current document first."), "error"); return; }\n'
+          )
+          insert_before(
+              '  async function importFromDialog() {',
+              '    closeImport();\n',
+              '    const finalSaved = await saveActiveDocumentNow();\n'
+              '    if (finalSaved === "failed") { showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error"); return; }\n'
+          )
           editor.write_text(s)
 
           test = Path('tests/document-editor.js')
@@ -239,8 +158,7 @@ jobs:
 
           ''').strip('\n')
           regression = textwrap.indent(regression, '    ') + '\n'
-          t = t.replace(anchor, regression + anchor, 1)
-          test.write_text(t)
+          test.write_text(t.replace(anchor, regression + anchor, 1))
           PY
       - run: npm ci
       - run: npm test
