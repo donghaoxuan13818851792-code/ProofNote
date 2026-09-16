@@ -377,10 +377,16 @@
         }
       }
       if (block.type === "image") {
-        ["src", "alt", "caption"].forEach((key) => expectString(path + "." + key, block[key]));
-        if (typeof block.src === "string" && /^data:image\//i.test(block.src) && block.src.length > LIMITS.maxImageDataUrlLength) error(path + ".src", "Embedded image exceeds the maximum supported size.");
-        if (block.remoteApproved !== undefined && typeof block.remoteApproved !== "boolean") warn(path + ".remoteApproved", "Remote-image approval is ignored unless it is a boolean.");
-      }
+  ["src", "alt", "caption"].forEach((key) => expectString(path + "." + key, block[key]));
+  if (typeof block.src === "string") {
+const source = block.src.trim();
+const supportedRemote = /^https:\/\//i.test(source);
+const supportedEmbedded = /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(source);
+if (source && !supportedRemote && !supportedEmbedded) warn(path + ".src", "Unsupported image source; use an HTTPS URL or a PNG/JPEG/GIF/WebP base64 data image.");
+if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLength) error(path + ".src", "Embedded image exceeds the maximum supported size.");
+  }
+  if (block.remoteApproved !== undefined && typeof block.remoteApproved !== "boolean") warn(path + ".remoteApproved", "Remote-image approval is ignored unless it is a boolean.");
+}
       if (block.type === "quote") expectString(path + ".citation", block.citation);
       if (block.type === "callout") {
         if (!CALLOUT_KINDS.has(block.kind)) warn(path + ".kind", "Unknown callout kind is treated as Note.");

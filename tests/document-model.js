@@ -151,6 +151,11 @@ const deeplyNestedValidation = Model.validateDocumentRaw({ format: Model.FORMAT,
 check("document-raw-validation-has-depth-limit", deeplyNestedValidation.errors.some((error) => error.message.includes("nesting")), JSON.stringify(deeplyNestedValidation.errors));
 const remoteImageRaw = { format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Image" }, blocks: [{ type: "image", src: "https://example.test/pixel.png", remoteApproved: true }] };
 check("document-import-does-not-trust-remote-image-approval", Model.normalizeDocument(remoteImageRaw).blocks[0].remoteApproved !== true && Model.normalizeDocument(remoteImageRaw, { allowRemoteImages: true }).blocks[0].remoteApproved === true, JSON.stringify(Model.normalizeDocument(remoteImageRaw)));
+const unsupportedImageSource = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Unsupported image" }, blocks: [{ type: "image", src: "http://example.test/pixel.png" }, { type: "image", src: "data:image/svg+xml;base64,PHN2Zz4=" }] });
+check("document-import-warns-on-image-sources-the-renderer-will-refuse", unsupportedImageSource.errors.length === 0
+  && unsupportedImageSource.warnings.filter((warning) => /Unsupported image source/.test(warning.message)).length === 2
+  && unsupportedImageSource.warnings.some((warning) => warning.path === "blocks[0].src")
+  && unsupportedImageSource.warnings.some((warning) => warning.path === "blocks[1].src"), JSON.stringify(unsupportedImageSource));
 
 // Templates include the expected shareable envelope and are distinct from the
 // document name carried by the template's document metadata.
