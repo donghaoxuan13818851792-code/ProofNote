@@ -19,42 +19,49 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Prevent current-document deletion resurrection
+      - name: Diagnose unsupported image sources
         run: |
           python - <<'PY'
           from pathlib import Path
-          p = Path('src/document-editor.js')
-          s = p.read_text()
-          fn = s.index('  function requestDeleteLibraryDocument(id) {')
-          start = s.index('      onConfirm: async () => {', fn)
-          end_marker = '      }\n    });\n  }\n  async function saveCurrentAsTemplate'
-          end = s.index(end_marker, start) + len('      }\n')
-          new = '''      onConfirm: async () => {
-            const deletingCurrent = id === currentDocumentId;
-            if (deletingCurrent) {
-              // Deletion intentionally discards edits that have not entered the save
-              // queue yet. A save already in flight is different: it must finish
-              // before deletion, otherwise it can complete afterwards and recreate
-              // the record the author just removed.
-              clearTimeout(saveTimer);
-              try { await saveQueue; } catch (_) {}
-            }
-            const backend = await Store.deleteDocument(id);
-            if (backend === "failed") { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
-            if (deletingCurrent) {
-              const opened = await openRemainingDocumentAfterDeletion();
-              if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
-              setStatus(tr("文档已删除", "Document deleted"), "saved");
-            } else {
-              await refreshDocuments();
-              setStatus(tr("文档已删除", "Document deleted"), "saved");
-            }
+
+          model = Path('src/document-model.js')
+          s = model.read_text()
+          old = '''      if (block.type === "image") {
+            ["src", "alt", "caption"].forEach((key) => expectString(path + "." + key, block[key]));
+            if (typeof block.src === "string" && /^data:image\\//i.test(block.src) && block.src.length > LIMITS.maxImageDataUrlLength) error(path + ".src", "Embedded image exceeds the maximum supported size.");
+            if (block.remoteApproved !== undefined && typeof block.remoteApproved !== "boolean") warn(path + ".remoteApproved", "Remote-image approval is ignored unless it is a boolean.");
           }
           '''
-          # YAML removes the common block indentation; de-indent only the
-          # continuation lines inside the Python literal itself.
-          new = new.replace('\n    ', '\n')
-          p.write_text(s[:start] + new + s[end:])
+          new = '''      if (block.type === "image") {
+            ["src", "alt", "caption"].forEach((key) => expectString(path + "." + key, block[key]));
+            if (typeof block.src === "string") {
+              const source = block.src.trim();
+              const supportedRemote = /^https:\\/\\//i.test(source);
+              const supportedEmbedded = /^data:image\\/(png|jpe?g|gif|webp);base64,/i.test(source);
+              if (source && !supportedRemote && !supportedEmbedded) warn(path + ".src", "Unsupported image source; use an HTTPS URL or a PNG/JPEG/GIF/WebP base64 data image.");
+              if (/^data:image\\//i.test(source) && source.length > LIMITS.maxImageDataUrlLength) error(path + ".src", "Embedded image exceeds the maximum supported size.");
+            }
+            if (block.remoteApproved !== undefined && typeof block.remoteApproved !== "boolean") warn(path + ".remoteApproved", "Remote-image approval is ignored unless it is a boolean.");
+          }
+          '''
+          if old not in s:
+              raise SystemExit('image validation source pattern not found')
+          model.write_text(s.replace(old, new, 1))
+
+          test = Path('tests/document-model.js')
+          s = test.read_text()
+          anchor = '''const remoteImageRaw = { format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Image" }, blocks: [{ type: "image", src: "https://example.test/pixel.png", remoteApproved: true }] };
+          check("document-import-does-not-trust-remote-image-approval", Model.normalizeDocument(remoteImageRaw).blocks[0].remoteApproved !== true && Model.normalizeDocument(remoteImageRaw, { allowRemoteImages: true }).blocks[0].remoteApproved === true, JSON.stringify(Model.normalizeDocument(remoteImageRaw)));
+          '''
+          addition = anchor + '''const unsupportedImageSource = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Unsupported image" }, blocks: [{ type: "image", src: "http://example.test/pixel.png" }, { type: "image", src: "data:image/svg+xml;base64,PHN2Zz4=" }] });
+          check("document-import-warns-on-image-sources-the-renderer-will-refuse", unsupportedImageSource.errors.length === 0
+            && unsupportedImageSource.warnings.filter((warning) => /Unsupported image source/.test(warning.message)).length === 2
+            && unsupportedImageSource.warnings.some((warning) => warning.path === "blocks[0].src")
+            && unsupportedImageSource.warnings.some((warning) => warning.path === "blocks[1].src"), JSON.stringify(unsupportedImageSource));
+          '''
+          if anchor not in s:
+              raise SystemExit('image test anchor not found')
+          test.write_text(s.replace(anchor, addition, 1))
           PY
       - run: npm ci
       - run: npm test
@@ -62,6 +69,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/document-editor.js
-          git commit -m "fix: serialize deletion behind pending saves"
+          git add src/document-model.js tests/document-model.js
+          git commit -m "fix: report unsupported image sources"
           git push origin HEAD:blue-team-hardening-20260916
