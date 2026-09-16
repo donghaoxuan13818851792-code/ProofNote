@@ -5,6 +5,7 @@ const { IDBFactory } = require("fake-indexeddb");
 
 const Model = require("../src/document-model.js");
 const storeSource = fs.readFileSync(path.join(__dirname, "..", "src", "document-store.js"), "utf8");
+const projectAiSource = fs.readFileSync(path.join(__dirname, "..", "src", "project-ai-instructions.js"), "utf8");
 const results = [];
 
 function check(name, condition, details) {
@@ -28,6 +29,11 @@ function loadStore(options) {
   vm.runInNewContext(storeSource, { window, JSON, Promise, Date, Error, Math, Map, Set, WeakSet, String, Object, Array, Boolean, RegExp });
   return window.ProofnoteStore;
 }
+function loadLegacyBoundary(legacySurface) {
+  const window = { ProofnoteDocument: Model, __snTest: legacySurface };
+  vm.runInNewContext(projectAiSource, { window, JSON, Date, Error, Math, Map, Set, WeakSet, String, Object, Array, Boolean, RegExp });
+  return window;
+}
 function documentWith(blocks, metadata) {
   return {
     format: Model.FORMAT,
@@ -35,6 +41,22 @@ function documentWith(blocks, metadata) {
     metadata: Object.assign({ name: "Boundary test" }, metadata || {}),
     blocks: blocks || []
   };
+}
+function legacyNote(overrides) {
+  const base = {
+    format: "solution-note",
+    version: "1.0",
+    meta: { title: "Legacy", status: "Solved" },
+    core: {
+      problem: "",
+      result: { type: "Theorem", statement: "", explanation: "" },
+      whyItWorks: [],
+      evidence: [],
+      reproduce: { sourceCode: "", data: "", verificationScript: "", certificate: "", discussion: "" }
+    },
+    optional: {}
+  };
+  return Object.assign(base, overrides || {});
 }
 
 async function main() {
@@ -135,6 +157,50 @@ async function main() {
     templateValidation.errors.some((issue) => issue.path === "template.name")
       && templateValidation.errors.some((issue) => issue.path === "template.description")
       && templateValidation.warnings.some((issue) => issue.path === "template.id")
+  );
+
+  const legacySurface = {
+    validateRaw() { return { errors: [], warnings: [], fieldCount: 1 }; }
+  };
+  loadLegacyBoundary(legacySurface);
+  check("legacy-boundary-hardening-is-active", Model.__legacyBoundaryHardened === true);
+
+  const deepLegacy = legacyNote();
+  let cursor = deepLegacy;
+  for (let depth = 0; depth < Model.LIMITS.maxDepth + 3; depth += 1) {
+    cursor.extra = {};
+    cursor = cursor.extra;
+  }
+  const deepLegacyValidation = legacySurface.validateRaw(deepLegacy);
+  check("legacy-import-rejects-excessive-nesting-before-recursive-code", deepLegacyValidation.errors.length > 0);
+
+  const longLegacy = legacyNote();
+  longLegacy.core.problem = tooLong;
+  const longLegacyValidation = legacySurface.validateRaw(longLegacy);
+  check("legacy-import-enforces-string-bounds", longLegacyValidation.errors.length > 0);
+
+  const oversizedLegacyList = legacyNote();
+  oversizedLegacyList.core.evidence = [{ type: "bullets", items: Array.from({ length: Model.LIMITS.maxListItems + 1 }, () => "x") }];
+  const oversizedLegacyListValidation = legacySurface.validateRaw(oversizedLegacyList);
+  check("legacy-import-blocks-list-truncation", oversizedLegacyListValidation.errors.length > 0);
+
+  const lossyLegacyTable = legacyNote();
+  lossyLegacyTable.core.evidence = [{ type: "table", text: "| A | B |\n|---|---|\n| 1 | 2 | EXTRA |" }];
+  const lossyLegacyTableValidation = legacySurface.validateRaw(lossyLegacyTable);
+  check("legacy-import-blocks-table-cell-loss", lossyLegacyTableValidation.errors.length > 0);
+
+  const aggregateLegacy = legacyNote();
+  aggregateLegacy.core.whyItWorks = Array.from({ length: 1995 }, (_, index) => "step " + index);
+  aggregateLegacy.optional.proof = Array.from({ length: 20 }, (_, index) => ({ type: "paragraph", text: "extra " + index }));
+  const aggregateLegacyValidation = legacySurface.validateRaw(aggregateLegacy);
+  check("legacy-import-validates-migrated-block-count-before-storage", aggregateLegacyValidation.errors.length > 0);
+
+  const legacyWithUiPayload = legacyNote({ ui: { sections: { proof: true }, unrelated: { nested: "should not persist" } } });
+  const migratedLegacy = Model.migrateSolutionNote(legacyWithUiPayload);
+  check(
+    "legacy-migration-keeps-only-known-ui-compatibility-state",
+    migratedLegacy.compatibility
+      && JSON.stringify(migratedLegacy.compatibility.sourceUi) === JSON.stringify({ sections: { proof: true } })
   );
 
   const pass = results.filter((result) => result.pass).length;
