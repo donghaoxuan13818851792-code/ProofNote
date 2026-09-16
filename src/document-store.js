@@ -57,7 +57,13 @@
     }
     return next;
   }
-  function validRecord(value) { return Boolean(value && typeof value === "object" && typeof value.id === "string" && value.id && value.document && typeof value.document === "object"); }
+  function validRecord(value) {
+    return Boolean(
+      value && typeof value === "object"
+      && typeof value.id === "string" && value.id.trim()
+      && value.document && typeof value.document === "object" && !Array.isArray(value.document)
+    );
+  }
   function ordered(records) {
     return records.filter(validRecord).sort((first, second) => String(second.updatedAt || second.lastOpenedAt || "").localeCompare(String(first.updatedAt || first.lastOpenedAt || "")));
   }
@@ -154,15 +160,22 @@
     const db = await openDatabase();
     try {
       const tx = db.transaction(["documents", "settings"], "readonly");
-      const documentRequest = tx.objectStore("documents").getAll();
+      const documents = tx.objectStore("documents");
+      const documentRequest = documents.getAll();
+      // v1 stored exactly one legacy value under the `current-document` key.
+      // Read that key directly instead of guessing that any malformed modern
+      // row is a migration source; unrelated corruption must never be revived
+      // as the active document.
+      const legacyRequest = documents.get(CURRENT_KEY);
       const currentRequest = tx.objectStore("settings").get(CURRENT_DOCUMENT_ID_KEY);
-      const values = await Promise.all([requestValue(documentRequest), requestValue(currentRequest)]);
+      const values = await Promise.all([requestValue(documentRequest), requestValue(legacyRequest), requestValue(currentRequest)]);
       await transactionDone(tx);
       const rows = Array.isArray(values[0]) ? values[0] : [];
+      const legacy = values[1] && values[1].document && !validRecord(values[1]) ? values[1] : null;
       return {
         records: rows.filter(validRecord),
-        legacy: rows.find((row) => row && row.document && !validRecord(row)) || null,
-        currentId: values[1] && typeof values[1].value === "string" ? values[1].value : ""
+        legacy,
+        currentId: values[2] && typeof values[2].value === "string" ? values[2].value : ""
       };
     } finally { db.close(); }
   }
@@ -399,6 +412,7 @@
 
   const MAX_ID_LENGTH = 256;
   const RESERVED_BLOCK_IDS = new Set(["__proofnote_header__"]);
+  const RESERVED_TEMPLATE_IDS = new Set(["blank-document", "proof-note", "research-note", "lab-report", "essay-report"]);
   const limits = Model.LIMITS || {};
   const maxStringLength = limits.maxStringLength || 200000;
   const maxImageDataUrlLength = limits.maxImageDataUrlLength || 14 * 1024 * 1024;
@@ -412,7 +426,10 @@
   function isObject(value) { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }
   function generatedId(prefix) { return (prefix || "item") + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 9); }
   function idIsUnsafe(value) {
-    return typeof value === "string" && (value.length > MAX_ID_LENGTH || RESERVED_BLOCK_IDS.has(value));
+    return typeof value === "string" && (!value.trim() || value.length > MAX_ID_LENGTH || RESERVED_BLOCK_IDS.has(value));
+  }
+  function templateIdIsUnsafe(value) {
+    return typeof value !== "string" || !value.trim() || value.length > MAX_ID_LENGTH || RESERVED_TEMPLATE_IDS.has(value);
   }
   function sanitizeBlock(raw) {
     if (!isObject(raw)) return raw;
@@ -501,7 +518,7 @@
     const seen = new Set();
     (document.blocks || []).forEach((block) => {
       if (!block) return;
-      while (!block.id || block.id.length > MAX_ID_LENGTH || RESERVED_BLOCK_IDS.has(block.id) || seen.has(block.id)) block.id = generatedId("block");
+      while (!block.id || !String(block.id).trim() || block.id.length > MAX_ID_LENGTH || RESERVED_BLOCK_IDS.has(block.id) || seen.has(block.id)) block.id = generatedId("block");
       seen.add(block.id);
       if (block.type === "list") block.ordered = block.ordered === true;
     });
@@ -523,7 +540,11 @@
       hardenedDocument.warnings.forEach((issue) => { if (!oldWarningKeys.has(issue.path + "\u0000" + issue.message)) uniquePush(warnings, issue); });
     }
     if (raw && isObject(raw.template)) {
-      if (typeof raw.template.id === "string" && raw.template.id.length > MAX_ID_LENGTH) uniquePush(warnings, { path: "template.id", message: "Template ID is too long and will be regenerated." });
+      if (typeof raw.template.id === "string") {
+        if (!raw.template.id.trim()) uniquePush(warnings, { path: "template.id", message: "Empty template ID will be regenerated." });
+        if (raw.template.id.length > MAX_ID_LENGTH) uniquePush(warnings, { path: "template.id", message: "Template ID is too long and will be regenerated." });
+        if (RESERVED_TEMPLATE_IDS.has(raw.template.id)) uniquePush(warnings, { path: "template.id", message: "Built-in template ID is reserved and will be regenerated." });
+      }
       if (typeof raw.template.name === "string" && raw.template.name.length > maxStringLength) uniquePush(errors, { path: "template.name", message: "Text exceeds the maximum supported length." });
       if (typeof raw.template.description === "string" && raw.template.description.length > maxStringLength) uniquePush(errors, { path: "template.description", message: "Text exceeds the maximum supported length." });
     }
@@ -531,14 +552,15 @@
   };
   Model.makeTemplate = function (rawDocument, template) {
     const info = Object.assign({}, template || {});
-    if (typeof info.id === "string" && info.id.length > MAX_ID_LENGTH) info.id = "";
+    if (typeof info.id === "string" && templateIdIsUnsafe(info.id)) info.id = "";
     const result = originalMakeTemplate.call(Model, sanitizeDocument(rawDocument), info);
+    if (result && result.template && templateIdIsUnsafe(result.template.id)) result.template.id = generatedId("template");
     result.document = Model.normalizeDocument(result.document);
     return result;
   };
   Model.normalizeTemplate = function (raw) {
     const result = originalNormalizeTemplate.call(Model, raw);
-    if (result && result.template && (typeof result.template.id !== "string" || !result.template.id || result.template.id.length > MAX_ID_LENGTH)) result.template.id = generatedId("template");
+    if (result && result.template && templateIdIsUnsafe(result.template.id)) result.template.id = generatedId("template");
     if (result && result.document) result.document = Model.normalizeDocument(result.document);
     return result;
   };
