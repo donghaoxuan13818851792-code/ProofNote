@@ -131,7 +131,7 @@ async function main() {
       && html.includes('window.Prism = { manual: true }')
       && html.includes('./vendor/prism/prism-python.min.js?v=1.30.0')
       && html.includes('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1')
-      && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260916-51'), "document-model.js, document-store.js, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
+      && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260916-52'), "document-model.js, document-store.js, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
     check(
       "editor-document-typography-is-shared",
       [
@@ -367,8 +367,8 @@ async function main() {
     check(
       "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.22"
-        && editorSource.includes('const APP_VERSION = "v1.22";')
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.23"
+        && editorSource.includes('const APP_VERSION = "v1.23";')
         && !document.querySelector("#pnEditMetadata")
         && !document.querySelector("#pnExportLegacy")
         && !/Document info|文档信息|Proofnote Document Format/.test(actionMenu.textContent),
@@ -411,6 +411,19 @@ async function main() {
         "editor-canvas-rich-text-reveals-native-editor-on-intent",
         readingParagraph.classList.contains("is-selected") && document.activeElement === readingParagraph.querySelector(".pn-canvas-paragraph-input"),
         "clicking a reading preview must reveal and focus the native textarea"
+      );
+      const readingInput = readingParagraph.querySelector(".pn-canvas-paragraph-input");
+      if (readingInput) {
+        readingInput.value = "For \\(G_n\\), the revised bound is \\(k(n) \\le n+1\\).";
+        readingInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+        readingInput.dispatchEvent(new window.Event("blur"));
+      }
+      check(
+        "editor-rich-preview-refreshes-after-edit-and-blur",
+        Boolean(readingInput)
+          && /n\+1/.test(readingPreview.textContent || "")
+          && editorSource.includes('control.addEventListener("blur", refreshPreview)'),
+        readingPreview.textContent || "rich preview did not refresh after the editor lost focus"
       );
     }
 
@@ -1055,7 +1068,7 @@ async function main() {
     const importedProjectPayload = {
       format: "proofnote-document",
       version: "1.0",
-      metadata: { name: "Imported prime-family notes", language: "zh-CN" },
+      metadata: { name: "Imported prime-family notes", documentType: "Project", language: "zh-CN" },
       blocks: [
         { type: "title", content: "当前核心通用结构" },
         { type: "subtitle", content: "A compact research summary." },
@@ -1069,6 +1082,38 @@ async function main() {
     const importText = document.querySelector("#pnImportText");
     const confirmImport = document.querySelector("#pnConfirmImport");
     const importReport = document.querySelector("#pnImportReport");
+    const blankProjectImportPayload = {
+      format: "proofnote-document",
+      version: "1.0",
+      metadata: { name: "Third-party metadata" },
+      blocks: [
+        { type: "title", content: "Imported from blank Project" },
+        { type: "paragraph", content: "This is a new imported document." }
+      ]
+    };
+    const documentCountBeforeBlankProjectImport = documentLibrary ? documentLibrary.querySelectorAll(".pn-document-item").length : 0;
+    const blankProjectSourceDate = document.querySelector("#pnCanvas .pn-proof-metadata-date-input")?.value || "";
+    if (importText) importText.value = JSON.stringify(blankProjectImportPayload);
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => canvas.classList.contains("pn-project-document")
+      && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Imported from blank Project"
+      && document.querySelector("#pnFooterName")?.textContent === "Imported from blank Project");
+    const documentNamesAfterBlankProjectImport = documentLibrary
+      ? Array.from(documentLibrary.querySelectorAll(".pn-document-open")).map((item) => item.textContent) : [];
+    check(
+      "editor-blank-project-import-creates-a-new-project-without-copying-document-metadata",
+        Boolean(blankProjectSourceDate)
+        && canvas.classList.contains("pn-project-document")
+        && documentLibrary?.querySelectorAll(".pn-document-item").length === documentCountBeforeBlankProjectImport + 1
+        && documentNamesAfterBlankProjectImport.includes("Footer rename")
+        && documentNamesAfterBlankProjectImport.includes("Imported from blank Project")
+        && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Imported from blank Project"
+        && document.querySelector("#pnPageHeader .pn-running-right")?.value === "Project"
+        && document.querySelector("#pnFooterName")?.textContent === "Imported from blank Project"
+        && !document.querySelector("#pnCanvas .pn-proof-metadata")
+        && editorSource.includes("function isBlankProjectImportSource()"),
+      JSON.stringify({ sourceDate: blankProjectSourceDate, header: document.querySelector("#pnPageHeader .pn-running-left")?.value, footer: document.querySelector("#pnFooterName")?.textContent, documentNamesAfterBlankProjectImport })
+    );
     const invalidLatexJson = [
       "{",
       '  "format": "proofnote-document",',
@@ -1213,9 +1258,9 @@ async function main() {
         && document.querySelector("#pnPageHeader .pn-running-right")?.value === "Project"
         && document.querySelector("#pnFooterName")?.textContent === "当前核心通用结构"
         && /Import as new document|导入为新文档/.test(confirmImport?.textContent || "")
-        && editorSource.includes("const importingIntoProject = isProjectDocument();")
+        && editorSource.includes("const importProjectContext = isBlankProjectImportSource() ? projectImportContext() : null;")
         && editorSource.includes("function prepareImportedProjectDocument(document, context)")
-        && editorSource.includes("if (importProjectContext) prepareImportedProjectDocument(next, importProjectContext);"),
+        && editorSource.includes('next.metadata.documentType = "Project";'),
       JSON.stringify(projectImportState)
     );
     const originalCreateObjectUrl = window.URL.createObjectURL;
@@ -1246,7 +1291,7 @@ async function main() {
         && exportedProjectHtml.includes('@media print{.pn-project-document{max-width:none;padding:16mm 15mm}.pn-project-document .pn-table-wrap,.pn-project-document .pn-equation,.pn-project-document .pn-code{width:auto;margin-left:0;margin-right:0}}')
         && exportedProjectHtml.includes('class="pn-export-running pn-project-running"')
         && exportedProjectHtml.includes('<span class="pn-running-brand">当前核心通用结构</span><span class="pn-running-type">Project</span>')
-        && exportedProjectHtml.includes('class="pn-proof-metadata"')
+        && !exportedProjectHtml.includes('class="pn-proof-metadata"')
         && exportedProjectHtml.includes('class="pn-editorial-section pn-editorial-section-introduction"')
         && exportedProjectHtml.includes('class="pn-editorial-section pn-editorial-section-heading"')
         && exportedProjectHtml.includes('<span class="pn-editorial-section-number">01</span><h2>Introduction</h2>')

@@ -8,7 +8,7 @@
   if (!Model || !Store) return;
 
   // Increment this small, user-facing version for each released workspace update.
-  const APP_VERSION = "v1.22";
+  const APP_VERSION = "v1.23";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Standalone equation", "独立公式"], ["code", "Code", "代码"],
@@ -1562,11 +1562,18 @@
       "aria-label": opts.editLabel || tr("编辑内容", "Edit content"),
       html: richCanvasText(value, opts.placeholder || "", opts.singleLine)
     });
+    const control = field.querySelector("textarea, input");
+    // The editor owns the source string; the preview is only a reading view.
+    // Refresh it on blur, when the reading surface becomes visible again,
+    // without re-typesetting mathematical prose on every keystroke.
+    const refreshPreview = () => {
+      if (control) preview.innerHTML = richCanvasText(control.value, opts.placeholder || "", opts.singleLine);
+    };
+    if (control) control.addEventListener("blur", refreshPreview);
     const revealEditor = (event) => {
       if (event) event.preventDefault();
       selectBlock(block.id);
       root.requestAnimationFrame(() => {
-        const control = field.querySelector("textarea, input");
         if (control) control.focus();
       });
     };
@@ -1611,14 +1618,25 @@
     return {
       runningHeader: projectRunningHeader(),
       proofMetadata: { fields },
-      headerSubtitle: { visible: !(metadata.headerSubtitle && metadata.headerSubtitle.visible === false) },
-      author: String(metadata.author || ""),
-      date: String(metadata.date || ""),
-      status: String(metadata.status || "")
+      headerSubtitle: { visible: !(metadata.headerSubtitle && metadata.headerSubtitle.visible === false) }
     };
   }
+  function isBlankProjectImportSource() {
+    if (!isProjectDocument() || !state || !Array.isArray(state.blocks)) return false;
+    // A freshly created Project has only its masthead and an empty
+    // Introduction. Once a real block has content or structure, importing is
+    // a general document-import operation rather than a Blank Project preset.
+    return state.blocks.every((block) => {
+      if (!block || typeof block !== "object") return false;
+      if (block.type === "title" || block.type === "subtitle") return true;
+      return block.type === "semantic"
+        && block.kind === "introduction"
+        && !String(block.content || "").trim()
+        && !String(block.summary || "").trim();
+    });
+  }
   function prepareImportedProjectDocument(document, context) {
-    if (!document || !document.metadata || !context) return document;
+    if (!document || !document.metadata) return document;
     // A Project has one canonical name across the library, running header,
     // page footer, and paper title. AI JSON supplies content; importing it
     // into a Blank Project must not leave any of those chrome surfaces empty.
@@ -1627,15 +1645,20 @@
     const name = uniqueLibraryDocumentName(requestedName);
     document.metadata.name = name;
     document.metadata.documentType = "Project";
+    const importedHeader = document.metadata.runningHeader && typeof document.metadata.runningHeader === "object"
+      ? document.metadata.runningHeader : {};
+    const inheritedRight = context && context.runningHeader ? context.runningHeader.right : "";
     document.metadata.runningHeader = {
       left: name,
-      right: String(context.runningHeader && context.runningHeader.right || "").trim() || "Project"
+      right: String(importedHeader.right || inheritedRight || "").trim() || "Project"
     };
-    document.metadata.proofMetadata = { fields: context.proofMetadata.fields.slice() };
-    document.metadata.headerSubtitle = { visible: context.headerSubtitle.visible !== false };
-    ["author", "date", "status"].forEach((field) => {
-      if (!String(document.metadata[field] || "").trim()) document.metadata[field] = context[field];
-    });
+    // Visible fields and subtitle treatment are display preferences. Author,
+    // date, status and source belong to this imported document and must never
+    // be copied from the Project used to start the import.
+    if (context) {
+      document.metadata.proofMetadata = { fields: context.proofMetadata.fields.slice() };
+      document.metadata.headerSubtitle = { visible: context.headerSubtitle.visible !== false };
+    }
     if (title) title.content = name;
     else document.blocks.unshift(Model.createBlock("title", { content: name }));
     return document;
@@ -3242,12 +3265,11 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       showImportMessage(tr("JSON 文本超过 25MB 导入上限。", "JSON text exceeds the 25 MB import limit."), "error");
       return;
     }
-    // An import never replaces the active library record. When that source is
-    // a Blank Project, its Project chrome remains the destination preset:
-    // imported JSON is content, not an authority on whether this new project
-    // document should lose its page furniture.
-    const importingIntoProject = isProjectDocument();
-    const importProjectContext = importingIntoProject ? projectImportContext() : null;
+    // An import never replaces the active library record. Only a freshly
+    // created Blank Project contributes its display preset to the new record;
+    // importing from an established Project must not silently inherit document
+    // metadata or otherwise change the imported document's own identity.
+    const importProjectContext = isBlankProjectImportSource() ? projectImportContext() : null;
     const inspected = inspectImportJson(els.importText.value);
     if (inspected.diagnostic) { renderImportDiagnostics(inspected.diagnostic); return; }
     const raw = inspected.raw;
@@ -3276,7 +3298,12 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     }
     const saved = await saveActiveDocumentNow();
     if (saved === "failed") { showImportMessage(tr("当前文档无法保存；请先导出备份。", "The current document could not be saved; export a backup first."), "error"); return; }
-    if (importProjectContext) prepareImportedProjectDocument(next, importProjectContext);
+    if (importProjectContext) {
+      next.metadata.documentType = "Project";
+      prepareImportedProjectDocument(next, importProjectContext);
+    } else if (next.metadata.documentType === "Project") {
+      prepareImportedProjectDocument(next, null);
+    }
     const created = await Store.createDocument(next);
     if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
     closeImport();
