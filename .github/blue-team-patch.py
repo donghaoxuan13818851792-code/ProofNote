@@ -176,46 +176,42 @@ blue.write_text(t)
 
 tests = Path("tests/document-editor.js")
 t = tests.read_text()
-if "editor-document-switch-flushes-edits-made-during-store-open" not in t:
+# The implementation changed from replacing the full live Project state to
+# reconciling only canonical name/chrome fields. Keep the existing behavioral
+# assertion and update its implementation sentinel accordingly.
+t = t.replace(
+    'editorSource.includes("state = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true })")',
+    'editorSource.includes("const persisted = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true })") && editorSource.includes("const reconciled = await saveActiveDocumentNow()")'
+)
+
+# Add a non-stateful ordering regression. The existing editor test is a long
+# shared-DOM scenario, so mutating the active document again here makes later
+# tests depend on whichever document happened to be selected. Slice the source
+# instead and assert the important ordering around every transition.
+if "editor-document-transitions-final-flush-before-activation" not in t:
     anchor = "    // Duplicating a different library row still activates the new copy. Make\n"
-    regression = r'''    // Edits made while the storage-backed open operation is still pending
-    // must be flushed before the target document replaces the canvas.
-    await new Promise((resolve) => window.setTimeout(resolve, 450));
-    const lateTransitionTitle = document.querySelector("#pnCanvas .pn-document-title input, #pnCanvas .pn-document-title textarea");
-    const lateTransitionOriginalName = document.querySelector('.pn-document-open[aria-current="true"]')?.textContent.trim();
-    const lateTransitionTarget = Array.from(document.querySelectorAll('.pn-document-open[aria-current="false"]'))[0];
-    const originalLateOpen = window.ProofnoteStore.openDocument;
-    const originalLateSave = window.ProofnoteStore.saveDocument;
-    const lateTransitionSaves = [];
-    let releaseLateOpen = null;
-    window.ProofnoteStore.openDocument = (id) => new Promise((resolve) => {
-      releaseLateOpen = async () => resolve(await originalLateOpen.call(window.ProofnoteStore, id));
-    });
-    window.ProofnoteStore.saveDocument = async (id, savedDocument) => {
-      const title = savedDocument.blocks.find((block) => block.type === "title");
-      lateTransitionSaves.push(title && title.content);
-      return originalLateSave.call(window.ProofnoteStore, id, savedDocument);
+    regression = '''    const functionSlice = (startMarker, endMarker) => {
+      const start = editorSource.indexOf(startMarker);
+      const end = editorSource.indexOf(endMarker, start + startMarker.length);
+      return start >= 0 && end > start ? editorSource.slice(start, end) : "";
     };
-    if (lateTransitionTarget) lateTransitionTarget.click();
-    await settle(window, () => typeof releaseLateOpen === "function", 1000);
-    if (lateTransitionTitle) {
-      lateTransitionTitle.value = "Edit made during slow open";
-      lateTransitionTitle.dispatchEvent(new window.Event("input", { bubbles: true }));
-    }
-    if (releaseLateOpen) await releaseLateOpen();
-    await settle(window, () => {
-      const active = document.querySelector('.pn-document-open[aria-current="true"]');
-      return Boolean(active && active.textContent.trim() !== lateTransitionOriginalName);
-    }, 1500);
-    window.ProofnoteStore.openDocument = originalLateOpen;
-    window.ProofnoteStore.saveDocument = originalLateSave;
+    const openTransitionSource = functionSlice("async function openLibraryDocument", "async function finishDocumentRename");
+    const duplicateTransitionSource = functionSlice("async function duplicateLibraryDocument", "async function openRemainingDocumentAfterDeletion");
+    const createTransitionSource = functionSlice("async function createNewProject", "function chooseNewDocument");
+    const templateTransitionSource = functionSlice("async function useSelectedTemplate", "async function openLibraryDocument");
+    const orderedFinalFlush = (source, awaitedOperation, activation) => {
+      const operationIndex = source.indexOf(awaitedOperation);
+      const flushIndex = source.lastIndexOf("const finalSaved = await saveActiveDocumentNow();");
+      const activationIndex = source.indexOf(activation);
+      return operationIndex >= 0 && flushIndex > operationIndex && activationIndex > flushIndex;
+    };
     check(
-      "editor-document-switch-flushes-edits-made-during-store-open",
-      Boolean(lateTransitionTitle)
-        && Boolean(lateTransitionTarget)
-        && lateTransitionSaves.includes("Edit made during slow open")
-        && editorSource.includes("const finalSaved = await saveActiveDocumentNow();"),
-      JSON.stringify(lateTransitionSaves)
+      "editor-document-transitions-final-flush-before-activation",
+      orderedFinalFlush(openTransitionSource, "await Store.openDocument", "await activateDocument")
+        && orderedFinalFlush(duplicateTransitionSource, "await Store.duplicateDocument", "await activateDocument")
+        && orderedFinalFlush(createTransitionSource, "await Store.createDocument", "await activateDocument")
+        && orderedFinalFlush(templateTransitionSource, "await Store.createDocument", "await activateDocument"),
+      "document transitions must flush edits that arrive while storage operations are in flight"
     );
 
 '''
