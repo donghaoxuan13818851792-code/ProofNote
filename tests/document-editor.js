@@ -10,10 +10,11 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const modelSource = fs.readFileSync(path.join(root, "src", "document-model.js"), "utf8");
 const storeSource = fs.readFileSync(path.join(root, "src", "document-store.js"), "utf8");
 const projectAiInstructionsSource = fs.readFileSync(path.join(root, "src", "project-ai-instructions.js"), "utf8");
+const jsoncParserSource = fs.readFileSync(path.join(root, "vendor", "jsonc-parser", "jsonc-parser.js"), "utf8");
 const prismSource = fs.readFileSync(path.join(root, "vendor", "prism", "prism.js"), "utf8");
 const prismLanguageSources = [
   "prism-typescript.min.js", "prism-c.min.js", "prism-cpp.min.js", "prism-java.min.js",
-  "prism-bash.min.js", "prism-sql.min.js", "prism-json.min.js"
+  "prism-bash.min.js", "prism-sql.min.js", "prism-json.min.js", "prism-python.min.js"
 ].map((name) => fs.readFileSync(path.join(root, "vendor", "prism", name), "utf8"));
 const editorSource = fs.readFileSync(path.join(root, "src", "document-editor.js"), "utf8");
 const editorCss = fs.readFileSync(path.join(root, "src", "document-editor.css"), "utf8");
@@ -73,6 +74,10 @@ async function main() {
     window.eval(modelSource);
     window.eval(storeSource);
     window.eval(projectAiInstructionsSource);
+    const jsoncScript = document.createElement("script");
+    jsoncScript.text = jsoncParserSource;
+    document.head.appendChild(jsoncScript);
+    window.Prism = { manual: true };
     window.eval(prismSource);
     prismLanguageSources.forEach((source) => window.eval(source));
     const projectAiInstructions = window.PROOFNOTE_PROJECT_AI_INSTRUCTIONS;
@@ -120,9 +125,12 @@ async function main() {
     const initialCanvasBlockIds = new Set(canvasBlocks.map((block) => block.dataset.blockId));
     const globalActionIds = ["pnImport", "pnExportHtml", "pnExportMore", "pnExport", "pnCopyAi"];
 
-    check("editor-external-scripts-boot", Boolean(document.querySelector("#proofnoteDocumentApp")) && Boolean(window.ProofnoteDocument) && Boolean(window.ProofnoteStore) && Boolean(window.Prism)
-      && html.includes('./vendor/prism/prism.js?v=1.30.0')
-      && html.indexOf('./vendor/prism/prism.js?v=1.30.0') < html.indexOf('./src/document-editor.js?v=workspace-20260915-42'), "document-model.js, document-store.js, Prism, and document-editor.js did not all boot in browser load order");
+    check("editor-external-scripts-boot", Boolean(document.querySelector("#proofnoteDocumentApp")) && Boolean(window.ProofnoteDocument) && Boolean(window.ProofnoteStore) && Boolean(window.ProofnoteJsoncParser?.parse) && Boolean(window.Prism)
+      && Boolean(window.Prism.languages.python)
+      && html.includes('window.Prism = { manual: true }')
+      && html.includes('./vendor/prism/prism-python.min.js?v=1.30.0')
+      && html.includes('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1')
+      && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260915-46'), "document-model.js, document-store.js, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
     check(
       "editor-document-typography-is-shared",
       [
@@ -297,7 +305,9 @@ async function main() {
         && !/INSERTABLE_BLOCK_TYPES[^;]*"image"/.test(editorSource)
         && !/INSERTABLE_BLOCK_TYPES[^;]*"key-value"/.test(editorSource)
         && !/INSERTABLE_BLOCK_TYPES[^;]*"stats"/.test(editorSource)
-        && /\["callout", "Tips", "提示"\]/.test(editorSource),
+        && /\["equation", "Standalone equation", "独立公式"\]/.test(editorSource)
+        && /\["quote", "Citation", "引文"\]/.test(editorSource)
+        && /\["callout", "Callout", "注释框"\]/.test(editorSource),
       "the canvas picker must stay narrower than the document type registry"
     );
     check("editor-inspector-anchor", Boolean(inspector) && Boolean(detail), "missing contextual #pnInspector or #pnDetail");
@@ -356,8 +366,8 @@ async function main() {
     check(
       "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.13"
-        && editorSource.includes('const APP_VERSION = "v1.13";')
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.17"
+        && editorSource.includes('const APP_VERSION = "v1.17";')
         && !document.querySelector("#pnEditMetadata")
         && !document.querySelector("#pnExportLegacy")
         && !/Document info|文档信息|Proofnote Document Format/.test(actionMenu.textContent),
@@ -456,6 +466,33 @@ async function main() {
       }
     }
 
+    const compactResultBlock = Array.from(canvasBlockNodes(document)).find((block) => blockHasControlValue(block, "Canvas result"));
+    if (compactResultBlock) compactResultBlock.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle(window, () => inspector && inspector.querySelector(".pn-inspector-advanced select"));
+    const semanticPresentation = inspector && inspector.querySelector(".pn-inspector-advanced select");
+    if (semanticPresentation) {
+      semanticPresentation.value = "card";
+      semanticPresentation.dispatchEvent(new window.Event("change", { bubbles: true }));
+    }
+    await settle(window, () => document.querySelector("#pnCanvas .pn-canvas-semantic .pn-component-add-summary"));
+    const addSemanticNote = document.querySelector("#pnCanvas .pn-canvas-semantic .pn-component-add-summary");
+    const summaryBeforeAdd = document.querySelector("#pnCanvas .pn-canvas-semantic .pn-canvas-component-summary-input");
+    if (addSemanticNote) addSemanticNote.click();
+    await settle(window, () => Boolean(document.querySelector("#pnCanvas .pn-canvas-semantic .pn-canvas-component-summary-input")));
+    check(
+      "editor-semantic-card-hides-empty-notes-until-requested",
+      Boolean(compactResultBlock)
+        && Boolean(semanticPresentation)
+        && !summaryBeforeAdd
+        && Boolean(addSemanticNote)
+        && Boolean(document.querySelector("#pnCanvas .pn-canvas-semantic .pn-canvas-component-summary-input"))
+        && editorSource.includes("function semanticSummaryVisible")
+        && editorSource.includes("pn-component-add-summary")
+        && editorCss.includes(".pn-canvas-component-body-input { display: block; min-height: 1.6em")
+        && editorCss.includes(".pn-component-add-summary"),
+      document.querySelector("#pnCanvas .pn-canvas-semantic")?.textContent || "missing semantic card"
+    );
+
     // Existing blocks should be authorable, not just renderable. These checks
     // exercise the in-canvas controls that stay quiet until a block is used.
     let tableBlock = document.querySelector("#pnCanvas .pn-canvas-table");
@@ -521,7 +558,10 @@ async function main() {
         && Boolean(addListItem)
         && Boolean(listBlock)
         && listBlock.querySelectorAll(".pn-canvas-list-input").length === 3
-        && listBlock.querySelectorAll(".pn-collection-remove").length === 3,
+        && listBlock.querySelectorAll(".pn-collection-remove").length === 3
+        && Boolean(listBlock.querySelector(".pn-canvas-list-row > .pn-collection-remove"))
+        && editorCss.includes(".pn-canvas-list-row > .pn-collection-remove { position: absolute")
+        && editorCss.includes(".pn-canvas-block:hover .pn-canvas-list-row:hover > .pn-collection-remove"),
       listBlock ? listBlock.textContent : "missing list"
     );
 
@@ -598,7 +638,12 @@ async function main() {
     check(
       "editor-hover-only-controls-are-not-keyboard-focusable-while-hidden",
       ["pn-code-copy", "pn-table-column-remove", "pn-collection-tools", "pn-collection-remove", "pn-insert-trigger"].every((className) => {
-        const rule = editorCss.slice(editorCss.indexOf("." + className), editorCss.indexOf("}", editorCss.indexOf("." + className)) + 1);
+        const ruleStart = className === "pn-collection-remove"
+          ? editorCss.indexOf(".pn-collection-remove { display: grid")
+          : className === "pn-collection-tools"
+            ? editorCss.indexOf(".pn-collection-tools { display: flex")
+            : editorCss.indexOf("." + className);
+        const rule = editorCss.slice(ruleStart, editorCss.indexOf("}", ruleStart) + 1);
         return rule.includes("visibility: hidden");
       }),
       "hidden controls must use visibility:hidden, not opacity alone"
@@ -891,6 +936,29 @@ async function main() {
         && document.querySelector("#pnPageHeader .pn-running-left").value === "Field notes(1)",
       documentLibrary ? documentLibrary.textContent : "missing automatic duplicate name"
     );
+    const projectHeaderName = document.querySelector("#pnPageHeader .pn-running-left");
+    const projectFooterName = document.querySelector("#pnFooterName");
+    const projectCanvasTitle = document.querySelector("#pnCanvas .pn-canvas-title-input");
+    if (projectHeaderName) {
+      projectHeaderName.value = "Header rename";
+      projectHeaderName.dispatchEvent(new window.Event("input", { bubbles: true }));
+    }
+    await settle(window, () => projectFooterName?.textContent === "Header rename" && projectCanvasTitle?.value === "Header rename");
+    if (projectFooterName) {
+      projectFooterName.textContent = "Footer rename";
+      projectFooterName.dispatchEvent(new window.Event("input", { bubbles: true }));
+    }
+    await settle(window, () => document.querySelector("#pnPageHeader .pn-running-left")?.value === "Footer rename" && projectCanvasTitle?.value === "Footer rename");
+    check(
+      "editor-project-running-title-and-footer-share-one-document-name",
+      projectFooterName?.getAttribute("contenteditable") === "true"
+        && projectFooterName?.textContent === "Footer rename"
+        && document.querySelector("#pnPageHeader .pn-running-left")?.value === "Footer rename"
+        && projectCanvasTitle?.value === "Footer rename"
+        && editorSource.includes("function setProjectDocumentName(value, source)")
+        && editorSource.includes("function syncProjectDocumentNameControls(value, source)"),
+      JSON.stringify({ footer: projectFooterName?.textContent, header: document.querySelector("#pnPageHeader .pn-running-left")?.value, title: projectCanvasTitle?.value })
+    );
     check(
       "editor-project-header-shares-proofnote-editorial-rhythm",
       editorCss.includes(".pn-proofnote-document .pn-document-title,.pn-project-document .pn-document-title")
@@ -968,11 +1036,69 @@ async function main() {
         { type: "semantic", kind: "introduction", title: "Introduction", content: "Opening context." },
         { type: "heading", level: 1, content: "1. Core prime-family bounds" },
         { type: "paragraph", content: "The main bound follows." },
-        { type: "code", language: "javascript", content: "const answer = \"ready\";" }
+        { type: "code", language: "javascript", content: "const answer = \"ready\";" },
+        { type: "code", language: "python", content: "def solve(x):\n    return x + 1" }
       ]
     };
     const importText = document.querySelector("#pnImportText");
     const confirmImport = document.querySelector("#pnConfirmImport");
+    const importReport = document.querySelector("#pnImportReport");
+    const invalidLatexJson = [
+      "{",
+      '  "format": "proofnote-document",',
+      '  "version": "1.0",',
+      '  "metadata": { "name": "Bad escape" },',
+      '  "blocks": [',
+      '    { "type": "equation", "content": "Let \\(G_n = n" }',
+      "  ]",
+      "}"
+    ].join("\n");
+    if (importText) importText.value = invalidLatexJson;
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => /JSON syntax error|JSON 语法错误/.test(importReport?.textContent || ""));
+    check(
+      "editor-import-reports-json-syntax-with-a-source-location-and-latex-fix",
+      /JSON syntax error|JSON 语法错误/.test(importReport?.textContent || "")
+        && /Line 6|第 6 行/.test(importReport?.textContent || "")
+        && /\\u005c\(/.test(importReport?.textContent || "")
+        && Boolean(importReport?.querySelector(".pn-import-diagnostic-snippet"))
+        && Boolean(importReport?.querySelector(".pn-import-diagnostic-copy"))
+        && editorSource.includes("jsonSyntaxDetails")
+        && editorSource.includes("STRICT_JSON_PARSE_OPTIONS"),
+      importReport?.textContent || "missing JSON syntax diagnostic"
+    );
+    const silentlyCorruptedLatexJson = [
+      "{",
+      '  "format": "proofnote-document",',
+      '  "version": "1.0",',
+      '  "metadata": { "name": "Corrupted LaTeX" },',
+      '  "blocks": [',
+      '    { "type": "equation", "content": "\\boxed{x}" }',
+      "  ]",
+      "}"
+    ].join("\n");
+    if (importText) importText.value = silentlyCorruptedLatexJson;
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => /Possible malformed LaTeX|可能已损坏的 LaTeX/.test(importReport?.textContent || ""));
+    check(
+      "editor-import-stops-silently-corrupted-latex-escapes",
+      /Possible malformed LaTeX|可能已损坏的 LaTeX/.test(importReport?.textContent || "")
+        && /\\u005cboxed/.test(importReport?.textContent || "")
+        && editorSource.includes("potentialLatexCorruptions"),
+      importReport?.textContent || "missing LaTeX corruption diagnostic"
+    );
+    const invalidSchemaJson = JSON.stringify({ format: "proofnote-document", version: "1.0", metadata: { name: "Bad structure" }, blocks: "not an array" }, null, 2);
+    if (importText) importText.value = invalidSchemaJson;
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => /Document structure error|文档结构错误/.test(importReport?.textContent || ""));
+    check(
+      "editor-import-renders-schema-errors-as-structured-path-diagnostics",
+      /Document structure error|文档结构错误/.test(importReport?.textContent || "")
+        && /blocks/.test(importReport?.textContent || "")
+        && Boolean(importReport?.querySelector(".pn-import-diagnostic-list"))
+        && editorSource.includes("renderSchemaDiagnostics"),
+      importReport?.textContent || "missing schema diagnostic"
+    );
     if (importText) importText.value = JSON.stringify(importedProjectPayload);
     if (confirmImport) confirmImport.click();
     await settle(window, () => canvas.classList.contains("pn-project-document")
@@ -1037,6 +1163,8 @@ async function main() {
       exportedProjectHtml.includes('class="pn-code pn-code-highlighted language-javascript"')
         && exportedProjectHtml.includes('<span class="token keyword">const</span>')
         && exportedProjectHtml.includes('<span class="token string">"ready"</span>')
+        && exportedProjectHtml.includes('class="pn-code pn-code-highlighted language-python"')
+        && exportedProjectHtml.includes('<span class="token keyword">def</span>')
         && exportedProjectHtml.includes("EXPORT_CODE_SYNTAX_CSS") === false
         && exportedProjectHtml.includes(".pn-code .token.keyword")
         && editorSource.includes("Prism")

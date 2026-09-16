@@ -8,12 +8,12 @@
   if (!Model || !Store) return;
 
   // Increment this small, user-facing version for each released workspace update.
-  const APP_VERSION = "v1.13";
+  const APP_VERSION = "v1.17";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
-    ["paragraph", "Paragraph", "正文"], ["equation", "Equation", "公式"], ["code", "Code", "代码"],
-    ["table", "Table", "表格"], ["image", "Image", "图片"], ["quote", "Quote", "引用"],
-    ["divider", "Divider", "分隔线"], ["page-break", "Page break", "分页"], ["callout", "Tips", "提示"],
+    ["paragraph", "Paragraph", "正文"], ["equation", "Standalone equation", "独立公式"], ["code", "Code", "代码"],
+    ["table", "Table", "表格"], ["image", "Image", "图片"], ["quote", "Citation", "引文"],
+    ["divider", "Divider", "分隔线"], ["page-break", "Page break", "分页"], ["callout", "Callout", "注释框"],
     ["semantic", "Semantic block", "语义模块"], ["list", "List", "列表"], ["key-value", "Key–value", "键值列表"], ["stats", "Stats", "统计卡片"]
   ];
   const TYPE_LABEL = Object.fromEntries(TYPE_OPTIONS.map(([type, en, zh]) => [type, { en, zh }]));
@@ -293,7 +293,7 @@
           <doc-page margin="0.85in" size="a4" id="pnDocPage">
             <div slot="header" class="pn-page-chrome" id="pnPageHeader" hidden></div>
             <article class="pn-document pn-document-canvas" id="pnCanvas" aria-label="${tr("文档内容", "Document content")}"></article>
-            <div slot="footer" class="pn-page-chrome pn-page-footer"><span id="pnFooterName"></span><span id="pnFooterStatus"></span></div>
+            <div slot="footer" class="pn-page-chrome pn-page-footer"><span class="pn-footer-name" id="pnFooterName"></span><span id="pnFooterStatus"></span></div>
           </doc-page>
         </main>
         <aside class="pn-detail" id="pnDetail" aria-label="${tr("检查器", "Inspector")}" aria-hidden="true" hidden>
@@ -311,7 +311,7 @@
           <p class="pn-modal-copy">${tr("支持 Proofnote Document、用户模板和原有 Solution Note 1.0。Solution Note 会无损优先地迁移为可编辑 blocks。", "Supports Proofnote Document, user templates, and Solution Note 1.0. Solution Notes are migrated into editable blocks.")}</p>
           <textarea class="input pn-import-text" id="pnImportText" rows="10" placeholder='{ "format": "proofnote-document", ... }'></textarea>
           <div class="pn-actions"><label class="btn btn-secondary pn-file-label">${tr("选择文件", "Choose file")}<input id="pnImportFile" type="file" accept="application/json" hidden></label><button class="btn btn-primary" id="pnConfirmImport" type="button">${tr("导入并替换", "Import and replace")}</button></div>
-          <p id="pnImportReport" class="pn-import-report" role="status"></p>
+          <section id="pnImportReport" class="pn-import-report" role="status" aria-live="polite"></section>
         </section>
       </div>
       <div class="pn-modal-backdrop" id="pnConfirmModal" hidden>
@@ -341,6 +341,22 @@
       outlineMenu: app.querySelector("#pnOutlineMenu"), undoToast: app.querySelector("#pnUndoToast"), undoCopy: app.querySelector("#pnUndoCopy"), undoButton: app.querySelector("#pnUndoButton")
     };
     bindToolbar(app);
+    bindProjectFooterNameEditing();
+  }
+
+  function bindProjectFooterNameEditing() {
+    if (!els.footer) return;
+    els.footer.addEventListener("input", () => {
+      if (!isProjectDocument()) return;
+      updateProjectRunningHeader("left", els.footer.textContent || "", els.footer);
+    });
+    els.footer.addEventListener("keydown", (event) => {
+      // A running title is one line. Enter finishes the inline edit without
+      // introducing an invisible line break into the persistent document name.
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      els.footer.blur();
+    });
   }
 
   function bindToolbar(app) {
@@ -575,7 +591,17 @@
     els.app.style.setProperty("--pn-right", open ? "276px" : "0px");
     root.requestAnimationFrame(syncCanvasScale);
   }
-  function closeImport() { els.modal.hidden = true; els.importReport.textContent = ""; }
+  function clearImportReport() {
+    if (!els.importReport) return;
+    els.importReport.replaceChildren();
+    els.importReport.className = "pn-import-report";
+  }
+  function showImportMessage(message, kind) {
+    if (!els.importReport) return;
+    els.importReport.className = "pn-import-report" + (kind ? " is-" + kind : "");
+    els.importReport.replaceChildren(element("p", { class: "pn-import-message" }, message));
+  }
+  function closeImport() { els.modal.hidden = true; clearImportReport(); }
   function openConfirm(options) {
     const opts = options || {};
     confirmActionHandler = typeof opts.onConfirm === "function" ? opts.onConfirm : null;
@@ -1232,9 +1258,9 @@
     trigger.setAttribute("aria-expanded", "false");
     trigger.appendChild(element("span", { class: "pn-outline-menu-arrow", "aria-hidden": "true" }, "›"));
     [
-      ["paragraph", tr("正文", "Text")], ["equation", tr("公式", "Equation")], ["table", tr("表格", "Table")],
+      ["paragraph", tr("正文", "Text")], ["equation", tr("独立公式", "Standalone equation")], ["table", tr("表格", "Table")],
       ["code", tr("代码", "Code")], ["image", tr("图片", "Image")], ["list", tr("列表", "List")],
-      ["quote", tr("引用", "Quote")], ["callout", tr("提示", "Tips")]
+      ["quote", tr("引文", "Citation")], ["callout", tr("注释框", "Callout")]
     ].forEach(([type, name]) => addOutlineMenuButton(submenu, name, "add-content-" + type, () => addContentToSection(node.id, type)));
     wrap.append(trigger, submenu);
     // The chooser must not disappear while the pointer crosses from the
@@ -1485,6 +1511,9 @@
     // Changing a remote URL is a new network request, so a previous explicit
     // approval can never accidentally carry over to it.
     if (block.type === "image" && key === "src") delete block.remoteApproved;
+    if (isProjectDocument() && block.type === "title" && key === "content") {
+      setProjectDocumentName(value, null);
+    }
     const affectsOutline = block.type === "title" || block.type === "heading" || block.type === "semantic";
     changed(Object.assign({ outline: affectsOutline }, options || {}));
   }
@@ -1511,20 +1540,45 @@
     const header = metadata.runningHeader && typeof metadata.runningHeader === "object" ? metadata.runningHeader : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(header, key);
     return {
+      // The left running title and page footer are both the document name.
+      // An explicitly blank runningHeader.left intentionally hides a running
+      // title in older/imported Projects. Any subsequent title edit writes the
+      // canonical metadata name to both surfaces.
       left: has("left") ? String(header.left || "") : String(metadata.name || tr("未命名文档", "Untitled document")),
       right: has("right") ? String(header.right || "") : "Project"
     };
   }
-  function updateProjectRunningHeader(side, value) {
+  function syncProjectDocumentNameControls(value, source) {
+    const name = String(value || "");
+    const controls = [
+      els.pageHeader && els.pageHeader.querySelector(".pn-running-left"),
+      els.canvas && els.canvas.querySelector(".pn-canvas-title-input"),
+      els.footer
+    ];
+    controls.filter(Boolean).forEach((control) => {
+      if (control === source) return;
+      if (control === els.footer) control.textContent = name;
+      else if (control.value !== name) control.value = name;
+    });
+  }
+  function setProjectDocumentName(value, source) {
+    if (!state || !isProjectDocument()) return;
+    const name = String(value || "");
     const current = projectRunningHeader();
-    state.metadata.runningHeader = {
-      left: side === "left" ? value : current.left,
-      right: side === "right" ? value : current.right
-    };
-    state.metadata.updatedAt = new Date().toISOString();
-    editRevision += 1;
-    hasUnsavedChanges = true;
-    scheduleSave();
+    state.metadata.name = name;
+    state.metadata.runningHeader = { left: name, right: current.right };
+    const title = state.blocks.find((block) => block && block.type === "title");
+    if (title) title.content = name;
+    syncProjectDocumentNameControls(name, source);
+  }
+  function updateProjectRunningHeader(side, value, source) {
+    if (!state || !isProjectDocument()) return;
+    const current = projectRunningHeader();
+    if (side === "left") setProjectDocumentName(value, source);
+    else state.metadata.runningHeader = { left: current.left, right: String(value || "") };
+    // Do not rerender the chrome while its input has focus: doing so would
+    // reset the caret on every character. The sibling values are patched above.
+    changed();
   }
   function hasDocumentMetadataHeader() {
     return isProofNoteDocument() || isProjectDocument();
@@ -1570,6 +1624,17 @@
     if (visible) delete block.bodyVisible;
     else block.bodyVisible = false;
     changed({ structure: true, inspector: true });
+  }
+  function semanticSummaryVisible(block) {
+    return Boolean(block && (String(block.summary || "").trim() || block.__pnSummaryDraft));
+  }
+  function showSemanticSummary(block) {
+    if (!block) return;
+    // An empty note opened by the author is an editor-only affordance. The
+    // portable document remains unchanged until the author writes its text.
+    block.__pnSummaryDraft = true;
+    changed({ structure: true, inspector: true });
+    focusCanvasControl(block.id, ".pn-canvas-component-summary-input");
   }
   function editorialSectionNumber(index) {
     let number = 0;
@@ -1827,7 +1892,13 @@
       body.appendChild(element("div", { class: "pn-component-label" }, block.label || defaultLabel));
       body.appendChild(canvasField(block, "title", { multiline: false, fieldClass: "pn-canvas-component-title", controlClass: "pn-canvas-component-title-input", placeholder: label("标题", "Title"), change: { outline: isSemantic } }));
       body.appendChild(canvasField(block, "content", { fieldClass: "pn-canvas-component-body", controlClass: "pn-canvas-component-body-input", placeholder: label("开始输入…", "Start writing…") }));
-      if (isSemantic && ["result", "verification"].includes(block.kind)) body.appendChild(canvasField(block, "summary", { fieldClass: "pn-canvas-component-summary", controlClass: "pn-canvas-component-summary-input", placeholder: label("添加备注…", "Add note…") }));
+      if (isSemantic && ["result", "verification"].includes(block.kind)) {
+        if (semanticSummaryVisible(block)) {
+          body.appendChild(canvasField(block, "summary", { fieldClass: "pn-canvas-component-summary", controlClass: "pn-canvas-component-summary-input", placeholder: label("添加备注…", "Add note…") }));
+        } else {
+          body.appendChild(button(label("＋ 添加备注", "+ Add note"), "pn-component-add-summary", () => showSemanticSummary(block)));
+        }
+      }
       return;
     }
     if (block.type === "code") {
@@ -2504,6 +2575,21 @@
   function renderDocumentChrome() {
     if (!state) return;
     const templateLabel = String(state.metadata.templateName || "").trim();
+    const renderFooterName = (value, editable) => {
+      els.footer.textContent = value;
+      els.footer.classList.toggle("pn-footer-name-editable", editable);
+      if (editable) {
+        els.footer.setAttribute("contenteditable", "true");
+        els.footer.setAttribute("role", "textbox");
+        els.footer.setAttribute("aria-label", tr("页脚文档标题", "Footer document title"));
+        els.footer.setAttribute("aria-multiline", "false");
+      } else {
+        els.footer.removeAttribute("contenteditable");
+        els.footer.removeAttribute("role");
+        els.footer.removeAttribute("aria-label");
+        els.footer.removeAttribute("aria-multiline");
+      }
+    };
     if (isProofNoteDocument()) {
       const left = element("span", { class: "pn-running-brand" }, "Proofnote");
       const right = element("span", { class: "pn-running-type" }, state.metadata.documentType || "Solution Note");
@@ -2511,7 +2597,7 @@
       els.pageHeader.classList.remove("pn-project-running");
       els.pageHeader.classList.add("pn-proofnote-running");
       els.pageHeader.hidden = false;
-      els.footer.textContent = tr("笔记 ", "Note ") + (state.metadata.noteNumber || "—");
+      renderFooterName(tr("笔记 ", "Note ") + (state.metadata.noteNumber || "—"), false);
       els.footerStatus.textContent = state.metadata.status || "";
       return;
     }
@@ -2531,14 +2617,14 @@
       els.pageHeader.classList.remove("pn-proofnote-running");
       els.pageHeader.classList.add("pn-project-running");
       els.pageHeader.hidden = false;
-      els.footer.textContent = state.metadata.name || tr("未命名文档", "UNTITLED DOCUMENT");
+      renderFooterName(state.metadata.name || tr("未命名文档", "UNTITLED DOCUMENT"), true);
       els.footerStatus.textContent = "";
       return;
     }
     els.pageHeader.textContent = templateLabel ? templateLabel.toUpperCase() : "";
     els.pageHeader.classList.remove("pn-proofnote-running", "pn-project-running");
     els.pageHeader.hidden = !templateLabel;
-    els.footer.textContent = state.metadata.name || tr("未命名文档", "UNTITLED DOCUMENT");
+    renderFooterName(state.metadata.name || tr("未命名文档", "UNTITLED DOCUMENT"), false);
     els.footerStatus.textContent = "";
   }
   function renderAll() {
@@ -2699,12 +2785,12 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     const file = els.importFile.files && els.importFile.files[0];
     if (!file) return;
     if (file.size > MAX_IMPORT_BYTES) {
-      els.importReport.textContent = tr("文件超过 25MB 导入上限。", "File exceeds the 25 MB import limit.");
+      showImportMessage(tr("文件超过 25MB 导入上限。", "File exceeds the 25 MB import limit."), "error");
       els.importFile.value = "";
       return;
     }
     const reader = new FileReader();
-    reader.onload = () => { els.importText.value = String(reader.result || ""); els.importReport.textContent = ""; };
+    reader.onload = () => { els.importText.value = String(reader.result || ""); clearImportReport(); };
     reader.readAsText(file);
   }
   function utf8ByteLength(value) {
@@ -2714,44 +2800,297 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     // boundary correct for older WebViews too (notably for non-ASCII JSON).
     return new Blob([text]).size;
   }
+  const STRICT_JSON_PARSE_OPTIONS = { allowTrailingComma: false, disallowComments: true, allowEmptyContent: false };
+  function diagnosticPath(path) {
+    if (!Array.isArray(path) || !path.length) return tr("文档根节点", "Document root");
+    return path.reduce((result, part) => {
+      return typeof part === "number" ? result + "[" + part + "]" : (result ? result + "." : "") + part;
+    }, "");
+  }
+  function importSourceExcerpt(source, requestedOffset) {
+    const text = String(source || "");
+    const offset = Math.max(0, Math.min(Number(requestedOffset) || 0, text.length));
+    const before = text.slice(0, offset);
+    const line = before.split("\n").length;
+    const column = before.length - before.lastIndexOf("\n");
+    const rows = text.split("\n");
+    const lineIndex = Math.max(0, line - 1);
+    const first = Math.max(0, lineIndex - 1);
+    const last = Math.min(rows.length - 1, lineIndex + 1);
+    const width = String(last + 1).length;
+    const excerpt = [];
+    for (let index = first; index <= last; index += 1) {
+      const raw = String(rows[index] || "").replace(/\r$/, "");
+      const isTarget = index === lineIndex;
+      const targetColumn = Math.max(0, column - 1);
+      const start = isTarget ? Math.max(0, targetColumn - 54) : 0;
+      const end = isTarget ? Math.min(raw.length, Math.max(targetColumn + 42, 96)) : Math.min(raw.length, 112);
+      const prefix = start > 0 ? "…" : "";
+      const suffix = end < raw.length ? "…" : "";
+      const shown = prefix + raw.slice(start, end) + suffix;
+      excerpt.push(String(index + 1).padStart(width) + " │ " + shown);
+      if (isTarget) {
+        const caret = prefix.length + Math.max(0, Math.min(targetColumn - start, shown.length));
+        excerpt.push(" ".repeat(width) + " │ " + " ".repeat(caret) + "^");
+      }
+    }
+    return { offset, line, column, text: excerpt.join("\n") };
+  }
+  function focusImportOffset(offset, length) {
+    if (!els.importText) return;
+    const excerpt = importSourceExcerpt(els.importText.value, offset);
+    const end = Math.max(excerpt.offset + 1, Math.min(els.importText.value.length, excerpt.offset + Math.max(1, Number(length) || 1)));
+    els.importText.focus();
+    els.importText.setSelectionRange(excerpt.offset, end);
+    const lineHeight = parseFloat(root.getComputedStyle(els.importText).lineHeight) || 18;
+    els.importText.scrollTop = Math.max(0, (excerpt.line - 2) * lineHeight);
+  }
+  function escapedBackslashAt(source, offset) {
+    let count = 0;
+    for (let index = offset - 1; index >= 0 && source[index] === "\\"; index -= 1) count += 1;
+    return count % 2 === 1;
+  }
+  function invalidJsonEscapeAt(source, start, length) {
+    const from = Math.max(0, Number(start) || 0);
+    const to = Math.min(source.length, from + Math.max(1, Number(length) || 1));
+    for (let index = from; index < to; index += 1) {
+      if (source[index] !== "\\" || escapedBackslashAt(source, index)) continue;
+      const next = source[index + 1] || "";
+      if (!'"\\/bfnrtu'.includes(next)) return { offset: index, length: Math.min(2, source.length - index) };
+      if (next === "u" && !/^[0-9a-fA-F]{4}$/.test(source.slice(index + 2, index + 6))) return { offset: index, length: Math.min(6, source.length - index) };
+    }
+    return null;
+  }
+  function jsonSyntaxDetails(parser, source, parseError) {
+    const code = parser.printParseErrorCode(parseError.error);
+    const invalidEscape = code === "InvalidEscapeCharacter" ? invalidJsonEscapeAt(source, parseError.offset, parseError.length) : null;
+    const offset = invalidEscape ? invalidEscape.offset : parseError.offset;
+    const length = invalidEscape ? invalidEscape.length : parseError.length;
+    const near = String(source || "").slice(offset, Math.min(String(source || "").length, offset + Math.max(1, length)));
+    const previous = String(source || "").slice(0, offset).replace(/\s+$/, "");
+    let message = tr("JSON 格式不符合规范。", "The JSON syntax is not valid.");
+    let help = tr("请检查标记位置附近的 JSON 语法。", "Check the JSON syntax around the marked location.");
+    if (code === "InvalidEscapeCharacter") {
+      const command = String(source || "").slice(offset).match(/^\\[^\s",}]*/)?.[0] || near || "\\";
+      const repaired = "\\u005c" + command.slice(1);
+      message = tr("发现无效的 JSON 转义：\"" + command + "\"。", "Invalid JSON escape: \"" + command + "\".");
+      help = tr("JSON 字符串中的反斜杠必须被转义。Proofnote 的 LaTeX 请写成 \"" + repaired + "\"，不要写 \"" + command + "\"。", "A backslash inside a JSON string must be escaped. For Proofnote LaTeX, write \"" + repaired + "\", not \"" + command + "\".");
+    } else if (code === "CommaExpected") {
+      message = tr("这里缺少逗号。", "A comma is missing here.");
+      help = tr("对象属性或数组项目之间请添加逗号。", "Add a comma between object properties or array items.");
+    } else if ((code === "PropertyNameExpected" || code === "ValueExpected") && /,$/.test(previous)) {
+      message = tr("发现尾随逗号。", "A trailing comma was found.");
+      help = tr("严格 JSON 不允许最后一个属性或数组项目后保留逗号。", "Strict JSON does not allow a comma after the final property or array item.");
+    } else if (code === "UnexpectedEndOfString") {
+      message = tr("字符串没有正确结束。", "A JSON string was not closed.");
+      help = tr("请补上对应的双引号，并使用 \\n 表示字符串内换行。", "Add the matching double quote, and use \\n for a newline inside a string.");
+    } else if (code === "ColonExpected") {
+      message = tr("属性名称后缺少冒号。", "A colon is missing after a property name.");
+      help = tr("JSON 对象中的键和值必须写成 \"键\": 值。", "JSON object keys and values must use \"key\": value.");
+    } else if (code === "CloseBraceExpected" || code === "CloseBracketExpected" || code === "EndOfFileExpected") {
+      message = tr("JSON 结构没有正确闭合。", "The JSON structure is not closed.");
+      help = tr("请检查是否缺少对应的 }、] 或双引号。", "Check for a missing matching }, ], or double quote.");
+    } else if (code === "InvalidCommentToken" || code === "UnexpectedEndOfComment") {
+      message = tr("发现注释；Proofnote 只接受严格 JSON。", "A comment was found; Proofnote accepts strict JSON only.");
+      help = tr("请移除 // 或 /* … */ 注释后再导入。", "Remove // or /* … */ comments before importing.");
+    }
+    const excerpt = importSourceExcerpt(source, offset);
+    return {
+      title: tr("无法导入文档", "Could not import document"),
+      heading: tr("JSON 语法错误", "JSON syntax error"),
+      position: tr("第 " + excerpt.line + " 行，第 " + excerpt.column + " 列", "Line " + excerpt.line + " · Column " + excerpt.column),
+      message, help, source, offset: excerpt.offset, length, snippet: excerpt.text,
+      text: [tr("无法导入文档", "Could not import document"), tr("JSON 语法错误", "JSON syntax error"), tr("第 " + excerpt.line + " 行，第 " + excerpt.column + " 列", "Line " + excerpt.line + " · Column " + excerpt.column), message, help].join("\n")
+    };
+  }
+  function potentialLatexCorruptions(parser, source, rawDocument) {
+    const issues = [];
+    const matcher = /\\([bfnrt])(?=[A-Za-z])/g;
+    let match;
+    while ((match = matcher.exec(source))) {
+      const offset = match.index;
+      if (escapedBackslashAt(source, offset)) continue;
+      const command = source.slice(offset + 1).match(/^[A-Za-z]+/)?.[0] || match[1];
+      const location = parser.getLocation(source, offset);
+      const path = diagnosticPath(location && location.path);
+      const blockIndex = location && Array.isArray(location.path) && location.path[0] === "blocks" ? location.path[1] : -1;
+      const block = rawDocument && Array.isArray(rawDocument.blocks) && Number.isInteger(blockIndex) ? rawDocument.blocks[blockIndex] : null;
+      // This diagnostic deliberately guards document prose and mathematics,
+      // not arbitrary metadata or source-code paths (where an escaped tab or
+      // regex token can be intentional rather than damaged LaTeX).
+      if (!block || block.type === "code") continue;
+      issues.push({
+        path, offset, length: command.length + 1,
+        message: tr("\"\\" + command + "\" 看起来像 LaTeX 命令，但 JSON 已把 \\" + match[1] + " 解释为控制字符。请改用 \"\\u005c" + command + "\"。", "\"\\" + command + "\" looks like a LaTeX command, but JSON interpreted \\" + match[1] + " as a control escape. Use \"\\u005c" + command + "\" instead.")
+      });
+    }
+    return issues;
+  }
+  function duplicateJsonKeyWarnings(parser, source) {
+    const warnings = [];
+    const tree = parser.parseTree(source, [], STRICT_JSON_PARSE_OPTIONS);
+    const walk = (node) => {
+      if (!node) return;
+      if (node.type === "object") {
+        const seen = new Set();
+        (node.children || []).forEach((property) => {
+          const keyNode = property && property.children && property.children[0];
+          const valueNode = property && property.children && property.children[1];
+          const key = keyNode && String(keyNode.value || "");
+          if (keyNode && seen.has(key)) {
+            const location = parser.getLocation(source, keyNode.offset);
+            warnings.push({ path: diagnosticPath(location && location.path), offset: keyNode.offset, length: keyNode.length, message: tr("重复的 JSON 键；后一个值已被采用。", "Duplicate JSON key; the later value was used.") });
+          }
+          seen.add(key);
+          walk(valueNode);
+        });
+        return;
+      }
+      (node.children || []).forEach(walk);
+    };
+    walk(tree);
+    return warnings;
+  }
+  function inspectImportJson(source) {
+    const parser = root.ProofnoteJsoncParser;
+    if (!parser || typeof parser.parse !== "function") {
+      return { diagnostic: { title: tr("无法导入文档", "Could not import document"), heading: tr("导入诊断未就绪", "Import diagnostics are unavailable"), message: tr("JSON 诊断组件未加载；请重新打开 Proofnote 后重试。", "The JSON diagnostics component did not load. Reopen Proofnote and try again."), text: tr("导入诊断未就绪", "Import diagnostics are unavailable") } };
+    }
+    const parseErrors = [];
+    parser.parse(source, parseErrors, STRICT_JSON_PARSE_OPTIONS);
+    if (parseErrors.length) return { diagnostic: jsonSyntaxDetails(parser, source, parseErrors[0]) };
+    let raw;
+    try { raw = JSON.parse(source); } catch (_) {
+      return { diagnostic: { title: tr("无法导入文档", "Could not import document"), heading: tr("JSON 语法错误", "JSON syntax error"), message: tr("JSON 解析器发现了无法安全恢复的问题。", "The JSON parser found an error it could not recover safely."), text: tr("JSON 语法错误", "JSON syntax error") } };
+    }
+    const latexIssues = potentialLatexCorruptions(parser, source, raw);
+    if (latexIssues.length) {
+      const first = latexIssues[0];
+      const excerpt = importSourceExcerpt(source, first.offset);
+      return { diagnostic: {
+        title: tr("导入需要修正", "Import needs a correction"), heading: tr("可能已损坏的 LaTeX", "Possible malformed LaTeX"),
+        position: tr("第 " + excerpt.line + " 行，第 " + excerpt.column + " 列", "Line " + excerpt.line + " · Column " + excerpt.column),
+        message: tr("JSON 可以解析，但数学命令可能已经被 JSON 转义悄悄改变。为避免丢失公式，Proofnote 没有导入该文档。", "The JSON parses, but a math command may have been silently changed by a JSON escape. Proofnote did not import the document to avoid losing the formula."),
+        issues: latexIssues, source, offset: first.offset, length: first.length, snippet: excerpt.text,
+        help: tr("在原始 JSON 中，每个 LaTeX 反斜杠使用 \\u005c 表示。", "In raw JSON, write every LaTeX backslash as \\u005c."),
+        text: [tr("可能已损坏的 LaTeX", "Possible malformed LaTeX"), first.path, first.message].join("\n")
+      } };
+    }
+    return { raw, warnings: duplicateJsonKeyWarnings(parser, source) };
+  }
+  function renderImportIssues(report, issues, severity) {
+    if (!issues || !issues.length) return;
+    const heading = element("h3", { class: "pn-import-diagnostic-list-title" }, severity === "warning" ? tr("可恢复提示", "Recoverable notices") : tr("需要修正", "Problems to fix"));
+    const list = element("ol", { class: "pn-import-diagnostic-list" });
+    issues.slice(0, 8).forEach((issue) => {
+      const item = Number.isFinite(issue.offset)
+        ? button("", "pn-import-diagnostic-item", () => focusImportOffset(issue.offset, issue.length))
+        : element("div", { class: "pn-import-diagnostic-item" });
+      item.appendChild(element("strong", { class: "pn-import-diagnostic-path" }, issue.path || tr("文档根节点", "Document root")));
+      item.appendChild(element("span", { class: "pn-import-diagnostic-message" }, issue.message));
+      list.appendChild(element("li", {}, undefined));
+      list.lastChild.appendChild(item);
+    });
+    report.append(heading, list);
+  }
+  async function copyImportDiagnostics(text) {
+    try {
+      let copied = false;
+      if (root.navigator && root.navigator.clipboard && root.navigator.clipboard.writeText) {
+        try { await root.navigator.clipboard.writeText(text); copied = true; } catch (_) {}
+      }
+      if (!copied) copied = copyWithLegacyClipboard(text);
+      if (!copied) throw new Error("copy failed");
+      setStatus(tr("诊断信息已复制", "Diagnostics copied"), "saved");
+      return true;
+    } catch (_) {
+      setStatus(tr("无法复制诊断信息；请手动复制。", "Could not copy diagnostics; please copy them manually."), "warning");
+      return false;
+    }
+  }
+  function renderImportDiagnostics(details) {
+    if (!els.importReport) return;
+    const report = els.importReport;
+    report.className = "pn-import-report is-diagnostic";
+    report.replaceChildren();
+    report.appendChild(element("strong", { class: "pn-import-diagnostic-title" }, details.title));
+    report.appendChild(element("h3", { class: "pn-import-diagnostic-heading" }, details.heading));
+    if (details.position) report.appendChild(element("p", { class: "pn-import-diagnostic-position" }, details.position));
+    if (details.message) report.appendChild(element("p", { class: "pn-import-diagnostic-message" }, details.message));
+    if (details.snippet) {
+      const snippet = element("pre", { class: "pn-import-diagnostic-snippet", tabindex: "0", title: tr("点击定位到错误", "Click to locate the problem") }, details.snippet);
+      snippet.addEventListener("click", () => focusImportOffset(details.offset, details.length));
+      snippet.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); focusImportOffset(details.offset, details.length); } });
+      report.appendChild(snippet);
+    }
+    renderImportIssues(report, details.issues, "error");
+    renderImportIssues(report, details.warnings, "warning");
+    if (details.help) {
+      report.appendChild(element("h3", { class: "pn-import-diagnostic-help-title" }, tr("如何修复", "How to fix it")));
+      report.appendChild(element("p", { class: "pn-import-diagnostic-help" }, details.help));
+    }
+    const copy = button(tr("复制诊断信息", "Copy diagnostics"), "pn-import-diagnostic-copy", async () => {
+      const copied = await copyImportDiagnostics(details.text || [details.title, details.heading, details.message, details.help].filter(Boolean).join("\n"));
+      if (copied) copy.textContent = tr("已复制", "Copied");
+    });
+    report.appendChild(copy);
+  }
+  function renderSchemaDiagnostics(title, errors, warnings) {
+    const problems = errors || [];
+    const notices = warnings || [];
+    const toText = (issues) => issues.map((issue) => (issue.path || tr("文档根节点", "Document root")) + " — " + issue.message);
+    renderImportDiagnostics({
+      title,
+      heading: tr("文档结构错误", "Document structure error"),
+      message: problems.length
+        ? tr("Proofnote 找到 " + problems.length + " 个需要修正的问题。", "Proofnote found " + problems.length + " problem(s) that need correction.")
+        : tr("Proofnote 找到可恢复的格式提示。", "Proofnote found recoverable format notices."),
+      issues: problems,
+      warnings: notices,
+      help: problems.length ? tr("请按路径修正字段后再次导入。不会修改当前文档。", "Correct the fields at these paths, then import again. Your current document is unchanged.") : "",
+      text: [title, tr("文档结构错误", "Document structure error")].concat(toText(problems), toText(notices)).join("\n")
+    });
+  }
   async function importFromDialog() {
     if (utf8ByteLength(els.importText.value) > MAX_IMPORT_BYTES) {
-      els.importReport.textContent = tr("JSON 文本超过 25MB 导入上限。", "JSON text exceeds the 25 MB import limit.");
+      showImportMessage(tr("JSON 文本超过 25MB 导入上限。", "JSON text exceeds the 25 MB import limit."), "error");
       return;
     }
     // The place where a person imports content determines the active
     // document's preset. An AI response is content, not an authority on
     // whether the current Blank Project should stop being a Project.
     const preserveProjectIdentity = isProjectDocument();
-    let raw;
-    try { raw = JSON.parse(els.importText.value); } catch (error) { els.importReport.textContent = tr("JSON 无法解析：", "Could not parse JSON: ") + error.message; return; }
-    let next, warnings = [];
+    const inspected = inspectImportJson(els.importText.value);
+    if (inspected.diagnostic) { renderImportDiagnostics(inspected.diagnostic); return; }
+    const raw = inspected.raw;
+    let next, warnings = inspected.warnings || [];
     if (raw && raw.format === "solution-note") {
       const legacyValidation = root.__snTest && root.__snTest.validateRaw ? root.__snTest.validateRaw(raw) : { errors: [], warnings: [] };
-      if (legacyValidation.errors.length) { els.importReport.textContent = tr("Solution Note 校验失败：", "Solution Note validation failed: ") + legacyValidation.errors.map((item) => item.path + " — " + item.message).join("; "); return; }
-      warnings = legacyValidation.warnings || [];
+      if (legacyValidation.errors.length) { renderSchemaDiagnostics(tr("无法导入 Solution Note", "Could not import Solution Note"), legacyValidation.errors, warnings.concat(legacyValidation.warnings || [])); return; }
+      warnings = warnings.concat(legacyValidation.warnings || []);
       next = Model.migrateSolutionNote(raw);
     } else if (raw && raw.format === Model.TEMPLATE_FORMAT) {
       const validation = Model.validateTemplateRaw(raw);
-      if (validation.errors.length) { els.importReport.textContent = tr("模板校验失败：", "Template validation failed: ") + validation.errors.map((item) => item.path + " — " + item.message).join("; "); return; }
+      if (validation.errors.length) { renderSchemaDiagnostics(tr("无法导入模板", "Could not import template"), validation.errors, warnings.concat(validation.warnings || [])); return; }
       const template = Model.normalizeTemplate(raw);
       const backend = await Store.saveTemplate(template);
-      if (backend === "failed") { els.importReport.textContent = tr("模板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."); return; }
+      if (backend === "failed") { showImportMessage(tr("模板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."), "error"); return; }
       await refreshTemplates();
       closeImport();
-      setStatus(validation.warnings.length ? tr("模板已保存；有 " + validation.warnings.length + " 条可恢复提示。", "Template saved with " + validation.warnings.length + " recoverable notice(s).") : tr("模板已保存到此设备。", "Template saved on this device."), validation.warnings.length ? "warning" : "saved");
+      warnings = warnings.concat(validation.warnings || []);
+      setStatus(warnings.length ? tr("模板已保存；有 " + warnings.length + " 条可恢复提示。", "Template saved with " + warnings.length + " recoverable notice(s).") : tr("模板已保存到此设备。", "Template saved on this device."), warnings.length ? "warning" : "saved");
       return;
     } else {
       const validation = Model.validateDocumentRaw(raw);
-      if (validation.errors.length) { els.importReport.textContent = tr("Document 校验失败：", "Document validation failed: ") + validation.errors.map((item) => item.path + " — " + item.message).join("; "); return; }
-      warnings = validation.warnings;
+      if (validation.errors.length) { renderSchemaDiagnostics(tr("无法导入文档", "Could not import document"), validation.errors, warnings.concat(validation.warnings || [])); return; }
+      warnings = warnings.concat(validation.warnings || []);
       next = Model.normalizeDocument(raw);
       if (preserveProjectIdentity) next.metadata.documentType = "Project";
     }
     const saved = await saveActiveDocumentNow();
-    if (saved === "failed") { els.importReport.textContent = tr("当前文档无法保存；请先导出备份。", "The current document could not be saved; export a backup first."); return; }
+    if (saved === "failed") { showImportMessage(tr("当前文档无法保存；请先导出备份。", "The current document could not be saved; export a backup first."), "error"); return; }
     const created = await Store.createDocument(next);
-    if (!created || !created.record || created.backend === "failed") { els.importReport.textContent = tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."); return; }
+    if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
     closeImport();
     await activateDocument(created.record, { status: false });
     setStatus(warnings.length ? tr("已导入为新文档；有 " + warnings.length + " 条可恢复提示。", "Imported as a new document with " + warnings.length + " recoverable notice(s).") : tr("已导入为新文档", "Imported as a new document"), warnings.length ? "warning" : "saved");
