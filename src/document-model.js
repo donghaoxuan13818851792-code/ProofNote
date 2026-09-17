@@ -21,17 +21,45 @@
   const SEMANTIC_KINDS = new Set(["section", "introduction", "problem", "theorem", "proof", "result", "verification"]);
   const CALLOUT_KINDS = new Set(["note", "tip", "warning", "info"]);
   const PROOF_METADATA_FIELDS = ["author", "date", "status"];
+  // Portable documents have an explicit extension home (`compatibility`).
+  // Unknown metadata/block fields otherwise look accepted while normalisation
+  // drops them, so diagnose them before an author chooses to continue.
+  const METADATA_FIELDS = new Set(["name", "templateName", "templateId", "documentType", "language", "noteNumber", "author", "date", "status", "source", "proofMetadata", "runningHeader", "headerSubtitle", "createdAt", "updatedAt"]);
+  const BLOCK_FIELDS = new Set(["id", "type", "preset", "content", "level", "kind", "title", "label", "summary", "appearance", "bodyVisible", "language", "header", "columns", "rows", "src", "alt", "caption", "citation", "ordered", "items", "remoteApproved"]);
+  // Local UI identifiers are not part of the portable format, but imported
+  // IDs reach selection and DOM-anchor code. Keep their constraints here at
+  // the model boundary so behaviour never depends on whether the Store script
+  // happened to be loaded first.
+  const MAX_ID_LENGTH = 256;
+  const RESERVED_BLOCK_IDS = new Set(["__proofnote_header__"]);
+  const RESERVED_TEMPLATE_IDS = new Set(["blank-document", "proof-note", "research-note", "lab-report", "essay-report"]);
   // These are deliberately generous authoring limits, not layout limits. They
   // protect the untrusted JSON boundary from accidental or hostile inputs that
   // would otherwise lock up an offline browser tab.
   const LIMITS = Object.freeze({
     maxBlocks: 2000,
     maxStringLength: 200000,
+    // TeX parsing is substantially more expensive than storing ordinary
+    // prose. Keep equation source within a separately bounded render budget
+    // so a schema-valid document cannot synchronously freeze KaTeX.
+    maxEquationLength: 12000,
     maxImageDataUrlLength: 14 * 1024 * 1024,
     maxTableColumns: 50,
     maxTableRows: 500,
+    // A table's cost is its grid, not either dimension in isolation. 500 ×
+    // 50 is valid arithmetic but creates 25,000 editable controls in the
+    // canvas, which is not a safe authoring surface for a browser document.
+    maxTableCells: 5000,
     maxListItems: 1000,
     maxDataItems: 1000,
+    // Canvas cost is shared across all blocks. Per-block limits alone still
+    // allow thousands of perfectly valid lists/data rows to create millions
+    // of controls in one synchronous render pass.
+    maxRenderUnits: 10000,
+    // Diagnostics are part of the untrusted-input boundary too. Keep enough
+    // concrete paths to repair a document without allocating an issue object
+    // for every malformed primitive in a hostile payload.
+    maxDiagnosticIssues: 64,
     maxDepth: 32,
     maxObjectKeys: 2000
   });
@@ -52,6 +80,10 @@
     // necessarily JSON. Do not recurse indefinitely for either case.
     if (level >= LIMITS.maxDepth || visited.has(value)) return null;
     visited.add(value);
+    // Callers must validate untrusted portable data before normalising it.
+    // These slices are a final defensive guard for programmatic callers, not
+    // an import-recovery strategy: `validateDocumentRaw()` rejects an input
+    // that would reach either truncation below.
     if (Array.isArray(value)) return value.slice(0, LIMITS.maxBlocks).map((item) => stripUnsafe(item, level + 1, visited));
     const output = {};
     Object.keys(value).slice(0, LIMITS.maxObjectKeys).forEach((key) => {
@@ -81,7 +113,14 @@
   // documents retain their reader-facing page furniture on another device.
   function normalizeRunningHeader(value) {
     const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-    return { left: string(source.left), right: string(source.right) };
+    // Absence is meaningful: Project documents with no running-header keys
+    // inherit their canonical document name and the default "Project" label.
+    // An explicit empty string, on the other hand, deliberately suppresses
+    // that piece of chrome. Do not erase that distinction while normalising.
+    const header = {};
+    if (Object.prototype.hasOwnProperty.call(source, "left")) header.left = string(source.left);
+    if (Object.prototype.hasOwnProperty.call(source, "right")) header.right = string(source.right);
+    return header;
   }
 
   // The subtitle is still an editable block. This setting only controls
@@ -103,7 +142,8 @@
   function createBlock(type, values) {
     const raw = Object.assign({ type: type || "paragraph" }, values || {});
     const normalizedType = BLOCK_TYPES.has(raw.type) ? raw.type : "paragraph";
-    const block = { id: string(raw.id) || id("block"), type: normalizedType, preset: defaultPreset(normalizedType, raw) };
+    const requestedId = string(raw.id);
+    const block = { id: (!requestedId.trim() || requestedId.length > MAX_ID_LENGTH || RESERVED_BLOCK_IDS.has(requestedId)) ? id("block") : requestedId, type: normalizedType, preset: defaultPreset(normalizedType, raw) };
     switch (normalizedType) {
       case "title": case "subtitle": case "paragraph": case "equation":
         block.content = string(raw.content);
@@ -124,8 +164,9 @@
         block.header = raw.header !== false;
         block.columns = Array.isArray(raw.columns) && raw.columns.length
           ? raw.columns.slice(0, LIMITS.maxTableColumns).map(string) : ["Column 1", "Column 2"];
+        const maximumRows = Math.min(LIMITS.maxTableRows, Math.max(1, Math.floor(LIMITS.maxTableCells / block.columns.length)));
         block.rows = Array.isArray(raw.rows) && raw.rows.length
-          ? raw.rows.slice(0, LIMITS.maxTableRows).map((row) => Array.isArray(row) ? block.columns.map((_, index) => string(row[index])) : block.columns.map(() => ""))
+          ? raw.rows.slice(0, maximumRows).map((row) => Array.isArray(row) ? block.columns.map((_, index) => string(row[index])) : block.columns.map(() => ""))
           : [block.columns.map(() => "")];
         break;
       case "image":
@@ -165,7 +206,7 @@
         block.summary = string(raw.summary);
         break;
       case "list":
-        block.ordered = Boolean(raw.ordered);
+        block.ordered = raw.ordered === true;
         block.items = Array.isArray(raw.items) && raw.items.length ? raw.items.slice(0, LIMITS.maxListItems).map(string) : [""];
         break;
       case "key-value":
@@ -197,6 +238,7 @@
       metadata: {
         name: string(opts.name) || "Untitled document",
         templateName: string(opts.templateName),
+        templateId: string(opts.templateId),
         documentType: string(opts.documentType),
         language: string(opts.language),
         noteNumber: string(opts.noteNumber),
@@ -222,6 +264,7 @@
     const document = blankDocument({
       name: safe.metadata && safe.metadata.name,
       templateName: safe.metadata && safe.metadata.templateName,
+      templateId: safe.metadata && safe.metadata.templateId,
       documentType: safe.metadata && safe.metadata.documentType,
       language: safe.metadata && safe.metadata.language,
       noteNumber: safe.metadata && safe.metadata.noteNumber,
@@ -242,7 +285,7 @@
     // every collision before the document reaches the UI.
     const seenIds = new Set();
     document.blocks.forEach((block) => {
-      while (!block.id || seenIds.has(block.id)) block.id = id("block");
+      while (!block.id || !String(block.id).trim() || block.id.length > MAX_ID_LENGTH || RESERVED_BLOCK_IDS.has(block.id) || seenIds.has(block.id)) block.id = id("block");
       seenIds.add(block.id);
     });
     document.format = FORMAT;
@@ -253,8 +296,14 @@
 
   function validateDocumentRaw(raw) {
     const errors = [], warnings = [];
-    const error = (path, message) => errors.push({ path, message });
-    const warn = (path, message) => warnings.push({ path, message });
+    let suppressedIssues = 0;
+    const issueLimit = Math.max(2, LIMITS.maxDiagnosticIssues - 1);
+    const addIssue = (bucket, path, message) => {
+      if (errors.length + warnings.length >= issueLimit) { suppressedIssues += 1; return; }
+      bucket.push({ path, message });
+    };
+    const error = (path, message) => addIssue(errors, path, message);
+    const warn = (path, message) => addIssue(warnings, path, message);
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
       error("", "A Proofnote document must be a JSON object.");
       return { errors, warnings };
@@ -263,55 +312,97 @@
     if (raw.version !== VERSION) error("version", 'Expected "' + VERSION + '".');
     if (!raw.metadata || typeof raw.metadata !== "object" || Array.isArray(raw.metadata)) error("metadata", "Expected a metadata object.");
     else {
-      if (typeof raw.metadata.name !== "string") error("metadata.name", "Expected a document name string.");
-      ["templateName", "documentType", "language", "noteNumber", "author", "date", "status", "source", "createdAt", "updatedAt"].forEach((key) => {
-        if (raw.metadata[key] !== undefined && typeof raw.metadata[key] !== "string") warn("metadata." + key, "Expected a string; it will be treated as empty text.");
+      Object.keys(raw.metadata).forEach((key) => {
+        if (!METADATA_FIELDS.has(key)) warn("metadata." + key, "Unknown metadata field is not part of Proofnote Document 1.0 and will be omitted. Use compatibility for extension data.");
       });
+      if (typeof raw.metadata.name !== "string") error("metadata.name", "Expected a document name string.");
+      ["templateName", "templateId", "documentType", "language", "noteNumber", "author", "date", "status", "source", "createdAt", "updatedAt"].forEach((key) => {
+        if (raw.metadata[key] !== undefined && typeof raw.metadata[key] !== "string") warn("metadata." + key, "Expected a string; it will be treated as empty text.");
+        if (typeof raw.metadata[key] === "string" && raw.metadata[key].length > LIMITS.maxStringLength) error("metadata." + key, "Text exceeds the maximum supported length.");
+      });
+      if (typeof raw.metadata.name === "string" && raw.metadata.name.length > LIMITS.maxStringLength) error("metadata.name", "Text exceeds the maximum supported length.");
       if (raw.metadata.proofMetadata !== undefined) {
         const proofMetadata = raw.metadata.proofMetadata;
         if (!proofMetadata || typeof proofMetadata !== "object" || Array.isArray(proofMetadata)) warn("metadata.proofMetadata", "Expected metadata display settings; default fields will be shown.");
-        else if (!Array.isArray(proofMetadata.fields)) warn("metadata.proofMetadata.fields", "Expected an array of visible metadata fields.");
         else {
-          if (proofMetadata.fields.length > PROOF_METADATA_FIELDS.length) warn("metadata.proofMetadata.fields", "Extra metadata fields are ignored.");
-          const seenFields = new Set();
-          proofMetadata.fields.forEach((field, index) => {
-            if (!PROOF_METADATA_FIELDS.includes(field)) warn("metadata.proofMetadata.fields[" + index + "]", "Unknown metadata field is ignored.");
-            else if (seenFields.has(field)) warn("metadata.proofMetadata.fields[" + index + "]", "Duplicate metadata field is ignored.");
-            else seenFields.add(field);
-          });
+          Object.keys(proofMetadata).forEach((key) => { if (key !== "fields") warn("metadata.proofMetadata." + key, "Unknown metadata display field is omitted."); });
+          if (!Array.isArray(proofMetadata.fields)) warn("metadata.proofMetadata.fields", "Expected an array of visible metadata fields.");
+          else {
+            if (proofMetadata.fields.length > PROOF_METADATA_FIELDS.length) warn("metadata.proofMetadata.fields", "Extra metadata fields are ignored.");
+            const seenFields = new Set();
+            proofMetadata.fields.forEach((field, index) => {
+              if (!PROOF_METADATA_FIELDS.includes(field)) warn("metadata.proofMetadata.fields[" + index + "]", "Unknown metadata field is ignored.");
+              else if (seenFields.has(field)) warn("metadata.proofMetadata.fields[" + index + "]", "Duplicate metadata field is ignored.");
+              else seenFields.add(field);
+            });
+          }
         }
       }
       if (raw.metadata.runningHeader !== undefined) {
         const runningHeader = raw.metadata.runningHeader;
         if (!runningHeader || typeof runningHeader !== "object" || Array.isArray(runningHeader)) warn("metadata.runningHeader", "Expected running-header settings; empty labels will be used.");
-        else ["left", "right"].forEach((key) => {
+        else {
+          Object.keys(runningHeader).forEach((key) => { if (!["left", "right"].includes(key)) warn("metadata.runningHeader." + key, "Unknown running-header field is omitted."); });
+          ["left", "right"].forEach((key) => {
           if (runningHeader[key] !== undefined && typeof runningHeader[key] !== "string") warn("metadata.runningHeader." + key, "Expected a string; it will be treated as empty text.");
-        });
+          if (typeof runningHeader[key] === "string" && runningHeader[key].length > LIMITS.maxStringLength) error("metadata.runningHeader." + key, "Text exceeds the maximum supported length.");
+          });
+        }
       }
       if (raw.metadata.headerSubtitle !== undefined) {
         const headerSubtitle = raw.metadata.headerSubtitle;
         if (!headerSubtitle || typeof headerSubtitle !== "object" || Array.isArray(headerSubtitle)) warn("metadata.headerSubtitle", "Expected header subtitle display settings; the subtitle will be shown.");
-        else if (headerSubtitle.visible !== undefined && typeof headerSubtitle.visible !== "boolean") warn("metadata.headerSubtitle.visible", "Expected a boolean; the subtitle will be shown.");
+        else {
+          Object.keys(headerSubtitle).forEach((key) => { if (key !== "visible") warn("metadata.headerSubtitle." + key, "Unknown subtitle display field is omitted."); });
+          if (headerSubtitle.visible !== undefined && typeof headerSubtitle.visible !== "boolean") warn("metadata.headerSubtitle.visible", "Expected a boolean; the subtitle will be shown.");
+        }
       }
     }
 
     // Keep this scan iterative: a deeply nested compatibility payload should
     // produce a useful import error rather than a recursive stack overflow in
     // the later unsafe-key stripping pass.
-    const pending = [{ value: raw, depth: 0 }];
+    const pending = [{ value: raw, depth: 0, path: "" }];
     const visited = new WeakSet();
     let nodes = 0;
+    let graphTextLength = 0;
     while (pending.length) {
       const item = pending.pop();
       const value = item.value;
+      if (typeof value === "string") {
+        graphTextLength += value.length;
+        const imageData = /(^|\.)src$/.test(item.path) && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(value);
+        const maximum = imageData ? LIMITS.maxImageDataUrlLength : LIMITS.maxStringLength;
+        if (value.length > maximum) error(item.path, imageData ? "Embedded image exceeds the maximum supported size." : "Text exceeds the maximum supported length.");
+        if (graphTextLength > 20 * 1024 * 1024 + LIMITS.maxImageDataUrlLength) error("", "Document text exceeds the maximum supported import size.");
+        continue;
+      }
       if (!value || typeof value !== "object") continue;
       if (visited.has(value)) continue;
       visited.add(value);
       nodes += 1;
       if (nodes > 25000) { error("", "Document is too complex to import safely."); break; }
-      if (item.depth > LIMITS.maxDepth) { error("", "Document nesting exceeds the supported limit."); break; }
-      const values = Array.isArray(value) ? value : Object.keys(value).map((key) => value[key]);
-      values.forEach((child) => { if (child && typeof child === "object") pending.push({ value: child, depth: item.depth + 1 }); });
+      // `stripUnsafe()` starts replacing nested objects at this same depth.
+      // Reject the boundary rather than accepting input that normalisation
+      // would immediately erase.
+      if (item.depth >= LIMITS.maxDepth) { error(item.path, "Document nesting exceeds the supported limit."); break; }
+      if (Array.isArray(value)) {
+        if (value.length > LIMITS.maxBlocks) {
+          error(item.path, "Array contains more items than Proofnote can import safely.");
+          continue;
+        }
+        for (let index = value.length - 1; index >= 0; index -= 1) pending.push({ value: value[index], depth: item.depth + 1, path: item.path + "[" + index + "]" });
+        continue;
+      }
+      const keys = Object.keys(value);
+      if (keys.length > LIMITS.maxObjectKeys) {
+        error(item.path, "Object contains too many fields to import safely.");
+        continue;
+      }
+      for (let index = keys.length - 1; index >= 0; index -= 1) {
+        const key = keys[index];
+        pending.push({ value: value[key], depth: item.depth + 1, path: item.path ? item.path + "." + key : key });
+      }
     }
 
     let textLength = 0;
@@ -335,40 +426,87 @@
       });
     };
 
+    const rawRenderUnits = (block) => {
+      if (!block || typeof block !== "object" || Array.isArray(block)) return 1;
+      if (block.type === "table") {
+        const columns = Array.isArray(block.columns) && block.columns.length ? block.columns.length : 2;
+        const rows = Array.isArray(block.rows) && block.rows.length ? block.rows.length : 1;
+        return Math.max(1, columns * rows);
+      }
+      if (["list", "key-value", "stats"].includes(block.type)) return Math.max(1, Array.isArray(block.items) ? block.items.length : 1);
+      return 1;
+    };
+
     if (!Array.isArray(raw.blocks)) error("blocks", "Expected a blocks array.");
     else {
       if (raw.blocks.length > LIMITS.maxBlocks) error("blocks", "Contains more blocks than Proofnote can import safely.");
       const ids = new Set();
+      let renderUnits = 0;
+      let renderBudgetExceeded = false;
       raw.blocks.slice(0, LIMITS.maxBlocks).forEach((block, index) => {
+      if (renderBudgetExceeded) return;
       const path = "blocks[" + index + "]";
+      renderUnits += rawRenderUnits(block);
+      if (renderUnits > LIMITS.maxRenderUnits) {
+        error("blocks", "Document exceeds the " + LIMITS.maxRenderUnits + " render-unit limit and cannot be displayed safely.");
+        renderBudgetExceeded = true;
+        return;
+      }
       if (!block || typeof block !== "object" || Array.isArray(block)) { warn(path, "Ignored a non-object block."); return; }
-      if (!BLOCK_TYPES.has(block.type)) warn(path + ".type", "Unknown block type is treated as a paragraph.");
+      Object.keys(block).forEach((key) => {
+        if (!BLOCK_FIELDS.has(key)) warn(path + "." + key, "Unknown block field is not part of Proofnote Document 1.0 and will be omitted. Use compatibility for extension data.");
+      });
       if (block.id !== undefined) {
         if (typeof block.id !== "string" || !block.id.trim()) warn(path + ".id", "A missing or invalid block ID will be regenerated.");
+        else if (block.id.length > MAX_ID_LENGTH) warn(path + ".id", "Block ID is too long and will be regenerated.");
+        else if (RESERVED_BLOCK_IDS.has(block.id)) warn(path + ".id", "Reserved block ID will be regenerated.");
         else if (ids.has(block.id)) warn(path + ".id", "Duplicate block ID will be regenerated.");
         else ids.add(block.id);
       }
-      if (!BLOCK_TYPES.has(block.type)) return;
+      if (!BLOCK_TYPES.has(block.type)) {
+        warn(path + ".type", "Unknown block type is treated as a paragraph.");
+        expectString(path + ".content", block.content);
+        return;
+      }
+      // Presets are derived compatibility data, never an author-controlled
+      // styling channel. Say so at the import boundary when a schema-valid
+      // looking value would be recomputed to a different portable value.
+      if (block.preset !== undefined) {
+        const expectedPreset = defaultPreset(block.type, block);
+        if (typeof block.preset !== "string") warn(path + ".preset", "Expected a derived preset string; Proofnote will recompute it.");
+        else if (block.preset !== expectedPreset) warn(path + ".preset", "Preset does not match this block's type, kind, or level; Proofnote will recompute it.");
+      }
       if (["title", "subtitle", "paragraph", "equation", "quote"].includes(block.type)) expectString(path + ".content", block.content);
+      if (block.type === "equation" && typeof block.content === "string" && block.content.length > LIMITS.maxEquationLength) {
+        error(path + ".content", "Equation source exceeds the safe math-rendering limit.");
+      }
       if (block.type === "heading" && ![1, 2, 3].includes(block.level)) warn(path + ".level", "Heading level is treated as Heading 1.");
       if (block.type === "heading") expectString(path + ".content", block.content);
       if (block.type === "code") { expectString(path + ".language", block.language); expectString(path + ".content", block.content); }
       if (block.type === "table") {
         if (block.header !== undefined && typeof block.header !== "boolean") warn(path + ".header", "Expected a boolean; table headers are shown by default.");
         if (block.columns !== undefined) expectStringArray(path + ".columns", block.columns, LIMITS.maxTableColumns);
+        if (Array.isArray(block.columns) && block.columns.length === 0) warn(path + ".columns", "An empty column list will be replaced with the default table columns.");
         if (block.rows !== undefined) {
           if (!Array.isArray(block.rows)) warn(path + ".rows", "Expected an array.");
           else {
+            if (block.rows.length === 0) warn(path + ".rows", "An empty row list will be replaced with one blank row.");
             if (block.rows.length > LIMITS.maxTableRows) error(path + ".rows", "Contains more rows than Proofnote can import safely.");
-            const columnCount = Array.isArray(block.columns) ? block.columns.length : null;
+            // Normalisation supplies the default two columns when the source
+            // omits them, so validate rows against that same effective shape
+            // before a normaliser could discard excess cells.
+            const columnCount = Array.isArray(block.columns) && block.columns.length ? block.columns.length : 2;
+            if (block.rows.length * columnCount > LIMITS.maxTableCells) {
+              error(path + ".rows", "Table contains more than " + LIMITS.maxTableCells + " cells and cannot be rendered safely.");
+            }
             block.rows.slice(0, LIMITS.maxTableRows).forEach((row, rowIndex) => {
               const rowPath = path + ".rows[" + rowIndex + "]";
               if (!Array.isArray(row)) { warn(rowPath, "Expected an array; it will be treated as an empty row."); return; }
               if (row.length > LIMITS.maxTableColumns) {
                 error(rowPath, "Contains more cells than Proofnote can import safely.");
-              } else if (columnCount !== null && row.length < columnCount) {
+              } else if (row.length < columnCount) {
                 warn(rowPath, "Expected " + columnCount + " cells, found " + row.length + "; missing cells will be filled with empty text.");
-              } else if (columnCount !== null && row.length > columnCount) {
+              } else if (row.length > columnCount) {
                 error(rowPath, "Expected " + columnCount + " cells, found " + row.length + "; importing would discard " + (row.length - columnCount) + " cell(s).");
               }
               row.slice(0, LIMITS.maxTableColumns).forEach((cell, cellIndex) => expectString(path + ".rows[" + rowIndex + "][" + cellIndex + "]", cell));
@@ -398,13 +536,37 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
         if (block.appearance !== undefined && !["editorial", "card"].includes(block.appearance)) warn(path + ".appearance", "Unknown appearance is ignored.");
         if (block.bodyVisible !== undefined && typeof block.bodyVisible !== "boolean") warn(path + ".bodyVisible", "Expected a boolean; the body is shown by default.");
       }
-      if (block.type === "list") { if (block.ordered !== undefined && typeof block.ordered !== "boolean") warn(path + ".ordered", "Expected a boolean; it will be treated as false."); if (block.items !== undefined) expectStringArray(path + ".items", block.items, LIMITS.maxListItems); }
-      if (block.type === "key-value") { if (block.items !== undefined) expectDataItems(path + ".items", block.items, ["label", "value"]); }
-      if (block.type === "stats") { if (block.items !== undefined) expectDataItems(path + ".items", block.items, ["kicker", "value", "body"]); }
+      if (block.type === "list") {
+        if (block.ordered !== undefined && typeof block.ordered !== "boolean") warn(path + ".ordered", "Expected a boolean; it will be treated as false.");
+        if (block.items !== undefined) expectStringArray(path + ".items", block.items, LIMITS.maxListItems);
+        if (Array.isArray(block.items) && block.items.length === 0) warn(path + ".items", "An empty list will be replaced with one blank item.");
+      }
+      if (block.type === "key-value") {
+        if (block.items !== undefined) expectDataItems(path + ".items", block.items, ["label", "value"]);
+        if (Array.isArray(block.items) && block.items.length === 0) warn(path + ".items", "An empty key-value list will be replaced with one blank item.");
+      }
+      if (block.type === "stats") {
+        if (block.items !== undefined) expectDataItems(path + ".items", block.items, ["kicker", "value", "body"]);
+        if (Array.isArray(block.items) && block.items.length === 0) warn(path + ".items", "An empty statistics list will be replaced with one blank item.");
+      }
       });
     }
     if (textLength > 20 * 1024 * 1024) error("", "Document text exceeds the maximum supported import size.");
-    return { errors, warnings };
+    // Embedded raster data is intentionally allowed to exceed normal prose
+    // length, up to its separate byte cap. Keep the standard string checker
+    // for every other field rather than making image data a store-side
+    // exception.
+    const acceptedLargeImagePaths = new Set();
+    if (Array.isArray(raw.blocks)) raw.blocks.forEach((block, index) => {
+      if (block && block.type === "image" && typeof block.src === "string"
+        && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(block.src)
+        && block.src.length > LIMITS.maxStringLength && block.src.length <= LIMITS.maxImageDataUrlLength) {
+        acceptedLargeImagePaths.add("blocks[" + index + "].src");
+      }
+    });
+    const filteredErrors = errors.filter((issue) => !(acceptedLargeImagePaths.has(issue.path) && issue.message === "Text exceeds the maximum supported length."));
+    if (suppressedIssues) warnings.push({ path: "", message: "Diagnostic output was limited after " + issueLimit + " issues; " + suppressedIssues + " additional issue(s) were omitted." });
+    return { errors: filteredErrors, warnings };
   }
 
   function validateTemplateRaw(raw) {
@@ -416,8 +578,11 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
     if (!raw.template || typeof raw.template !== "object" || Array.isArray(raw.template)) error("template", "Expected template metadata.");
     else {
       if (raw.template.id !== undefined && typeof raw.template.id !== "string") warnings.push({ path: "template.id", message: "Template ID will be regenerated." });
+      if (typeof raw.template.id === "string" && (!raw.template.id.trim() || raw.template.id.length > MAX_ID_LENGTH || RESERVED_TEMPLATE_IDS.has(raw.template.id))) warnings.push({ path: "template.id", message: "Template ID will be regenerated." });
       if (typeof raw.template.name !== "string") error("template.name", "Expected a template name string.");
       if (raw.template.description !== undefined && typeof raw.template.description !== "string") warnings.push({ path: "template.description", message: "Expected a string; it will be treated as empty text." });
+      if (typeof raw.template.name === "string" && raw.template.name.length > LIMITS.maxStringLength) error("template.name", "Text exceeds the maximum supported length.");
+      if (typeof raw.template.description === "string" && raw.template.description.length > LIMITS.maxStringLength) error("template.description", "Text exceeds the maximum supported length.");
     }
     const documentValidation = validateDocumentRaw(raw.document);
     const nestedDocumentIssue = (issue) => Object.assign({}, issue, {
@@ -450,7 +615,30 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
 
   function tableFromMarkdown(text) {
     const lines = string(text).split(/\r?\n/).filter((line) => line.trim());
-    const cells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+    // Solution Note 1.0 represents tables as Markdown-like text. Keep the
+    // simple format, but parse the escaping that `markdownTable()` emits so
+    // a literal pipe, newline, or backslash in a cell survives a legacy
+    // export → import round trip.
+    const cells = (line) => {
+      const source = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+      const output = [];
+      let cell = "";
+      let escaped = false;
+      for (let index = 0; index < source.length; index += 1) {
+        const character = source[index];
+        if (escaped) {
+          if (character === "n") cell += "\n";
+          else if (character === "|" || character === "\\") cell += character;
+          else cell += "\\" + character;
+          escaped = false;
+        } else if (character === "\\") escaped = true;
+        else if (character === "|") { output.push(cell.trim()); cell = ""; }
+        else cell += character;
+      }
+      if (escaped) cell += "\\";
+      output.push(cell.trim());
+      return output;
+    };
     const columns = lines[0] ? cells(lines[0]) : ["Column 1", "Column 2"];
     const start = lines[1] && /^[\s|:-]+$/.test(lines[1]) ? 2 : 1;
     return createBlock("table", { columns, rows: lines.slice(start).map(cells) });
@@ -464,10 +652,32 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
   ];
   const OPTIONAL_SECTION_BY_HEADING = new Map(OPTIONAL_SECTIONS.map(([key, title]) => [title.toLowerCase(), key]));
   const LEGACY_STATUS_OPTIONS = new Set(["Solved", "Partial", "Computational", "Conjecture", "Counterexample", "Improved Algorithm"]);
+  const LEGACY_RESULT_TYPES = new Set(["Theorem", "Main Result", "Construction", "Counterexample", "Computed Value", "Bound", "Formula", "Conjecture", "Algorithmic Result"]);
   const REPRODUCE_FIELD_BY_LABEL = new Map([
     ["source code", "sourceCode"], ["data", "data"], ["verification script", "verificationScript"],
     ["certificate", "certificate"], ["discussion", "discussion"]
   ]);
+
+  // Headings from older AI output often carry a rendered folio. The modern
+  // editor can display it decoratively, while the legacy adapter needs the
+  // same semantic heading without treating its number as document content.
+  function canonicalLegacySectionHeading(value) {
+    const source = string(value).trim();
+    const withoutFolio = source.replace(/^\s*(?:(?:\d{1,2}|[ivxlcdm]+)\s*(?:[.)：:]\s*|\s+))/i, "");
+    return withoutFolio.trim().toLowerCase();
+  }
+
+  function legacySourceUi(value) {
+    const source = value && value.ui && value.ui.sections && typeof value.ui.sections === "object"
+      ? value.ui.sections
+      : (value && value.sections && typeof value.sections === "object" ? value.sections : null);
+    if (!source || Array.isArray(source)) return {};
+    const sections = {};
+    Object.keys(source).slice(0, 64).forEach((key) => {
+      if (source[key] === null || typeof source[key] === "boolean") sections[key] = source[key];
+    });
+    return Object.keys(sections).length ? { sections } : {};
+  }
 
   function migrateSolutionNote(raw) {
     const note = safeClone(raw);
@@ -506,6 +716,9 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
     const document = blankDocument({
       name: string(meta.title) || "Imported Solution Note",
       templateName: "Proof Note",
+      // This is a known built-in migration source, so attach the durable
+      // renderer identity rather than relying on the editable display name.
+      templateId: "proof-note",
       documentType: "Solution Note",
       noteNumber: string(meta.noteNumber),
       author: string(meta.author),
@@ -524,7 +737,7 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
       // Section force-show/hide is old-editor display state rather than
       // document content. Retain it here so an explicit legacy export does
       // not silently discard it during a round trip.
-      sourceUi: safeClone(note.ui && typeof note.ui === "object" ? note.ui : (note.sections ? { sections: note.sections } : {}))
+      sourceUi: legacySourceUi(note)
     };
     return document;
   }
@@ -565,8 +778,9 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
     }
     let currentHeading = "";
     const appendOptional = (key, block) => {
-      if (key === "references" && block.type === "list") {
-        note.optional.references = (note.optional.references || []).concat(block.items.map(string).filter((item) => item.trim()));
+      if (key === "references") {
+        if (block.type === "list") note.optional.references = (note.optional.references || []).concat(block.items.map(string).filter((item) => item.trim()));
+        else if (!isEmpty(block)) warnOnce("References must be a list in Solution Note 1.0; unsupported reference content was omitted.");
         return;
       }
       const legacy = documentBlockToLegacy(block);
@@ -575,16 +789,26 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
       note.optional[key].push(legacy);
     };
     const isEmpty = (block) => {
-      if (["divider", "page-break"].includes(block.type)) return true;
+      // These are intentional document structure, not empty user content.
+      // Their legacy omission must therefore be reported to the author.
+      if (["divider", "page-break"].includes(block.type)) return false;
       if (block.type === "table") return !block.columns.some((value) => string(value).trim()) && !block.rows.some((row) => row.some((value) => string(value).trim()));
       if (["list", "key-value", "stats"].includes(block.type)) return !(block.items || []).some((item) => typeof item === "string" ? item.trim() : Object.values(item || {}).some((value) => string(value).trim()));
       return ![block.content, block.title, block.label, block.summary, block.src, block.caption, block.citation].some((value) => string(value).trim());
+    };
+    let exportedProblem = false;
+    let exportedResult = false;
+    const legacyResultType = (label) => {
+      const requested = string(label).trim();
+      if (!requested || LEGACY_RESULT_TYPES.has(requested)) return requested || "Theorem";
+      warnOnce('Result label "' + requested + '" was exported as "Theorem" for Solution Note 1.0 compatibility.');
+      return "Theorem";
     };
     doc.blocks.forEach((block) => {
       if (block.type === "title" && !note.meta.title) note.meta.title = block.content;
       else if (block.type === "subtitle" && !note.meta.summary) note.meta.summary = block.content;
       else if (block.type === "heading") {
-        const heading = block.content.trim().toLowerCase();
+        const heading = canonicalLegacySectionHeading(block.content);
         if (heading === "why it works") currentHeading = "why-it-works";
         else if (heading === "evidence") currentHeading = "evidence";
         else if (heading === "reproduce") currentHeading = "reproduce";
@@ -595,8 +819,17 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
         }
       }
       else if (block.type === "semantic") {
-        if (block.kind === "problem") note.core.problem = block.content;
-        else if (["result", "theorem"].includes(block.kind)) { note.core.result = { type: block.label || "Theorem", statement: block.content, explanation: block.summary }; }
+        if (block.kind === "problem") {
+          if (exportedProblem) { if (!isEmpty(block)) warnOnce("Only the first Problem is represented by Solution Note 1.0; later Problem blocks were omitted."); }
+          else { note.core.problem = block.content; exportedProblem = true; }
+        }
+        else if (["result", "theorem"].includes(block.kind)) {
+          if (exportedResult) { if (!isEmpty(block)) warnOnce("Only the first Result is represented by Solution Note 1.0; later Result blocks were omitted."); }
+          else {
+            note.core.result = { type: legacyResultType(block.label), statement: block.content, explanation: block.summary };
+            exportedResult = true;
+          }
+        }
         else if (block.kind === "proof" && currentHeading === "why-it-works") note.core.whyItWorks.push({ title: block.title, body: block.content });
         else if (currentHeading === "evidence") note.core.evidence.push({ type: "callout", kicker: block.title || block.label, text: block.content + (block.summary ? "\n\n" + block.summary : "") });
         else if (!isEmpty(block)) warnOnce("Some semantic blocks are not represented by Solution Note export in their current position.");
@@ -637,9 +870,10 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
   }
 
   function markdownTable(block) {
-    const header = "| " + block.columns.join(" | ") + " |";
+    const escapeCell = (value) => string(value).replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r\n?|\n/g, "\\n");
+    const header = "| " + block.columns.map(escapeCell).join(" | ") + " |";
     const divider = "| " + block.columns.map(() => "---").join(" | ") + " |";
-    const rows = block.rows.map((row) => "| " + block.columns.map((_, index) => string(row[index])).join(" | ") + " |");
+    const rows = block.rows.map((row) => "| " + block.columns.map((_, index) => escapeCell(row[index])).join(" | ") + " |");
     return [header, divider].concat(rows).join("\n");
   }
 
@@ -649,7 +883,7 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
     const make = (idValue, name, description, blocks, options) => ({
       format: TEMPLATE_FORMAT, version: VERSION,
       template: { id: idValue, name, description, builtIn: true },
-      document: blankDocument(Object.assign({ name: name, templateName: options && options.showHeader === false ? "" : name, blocks }, options && options.metadata ? options.metadata : {}))
+      document: blankDocument(Object.assign({ name: name, templateName: options && options.showHeader === false ? "" : name, templateId: idValue, blocks }, options && options.metadata ? options.metadata : {}))
     });
     return [
       make("blank-document", "Blank Document", "A calm starting point for any structured document.", [
@@ -688,11 +922,14 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
   function makeTemplate(rawDocument, template) {
     const info = template || {};
     const document = normalizeDocument(rawDocument);
+    const requestedId = string(info.id);
+    const templateId = (!requestedId.trim() || requestedId.length > MAX_ID_LENGTH || RESERVED_TEMPLATE_IDS.has(requestedId)) ? id("template") : requestedId;
     document.metadata.templateName = string(info.name) || document.metadata.templateName || "Custom template";
+    document.metadata.templateId = templateId;
     return {
       format: TEMPLATE_FORMAT,
       version: VERSION,
-      template: { id: string(info.id) || id("template"), name: string(info.name) || "Custom template", description: string(info.description), builtIn: false },
+      template: { id: templateId, name: string(info.name) || "Custom template", description: string(info.description), builtIn: false },
       document
     };
   }
@@ -708,6 +945,13 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
     normalizeDocument, validateDocumentRaw, validateTemplateRaw, migrateSolutionNote, documentToSolutionNote, builtInTemplates,
     makeTemplate, normalizeTemplate, markdownTable
   };
+  // Exposed only for regression coverage: hardening lives in this model
+  // module itself, never as a load-order-dependent Store monkey patch.
+  Object.defineProperty(api, "__boundaryHardened", { value: true, enumerable: false });
+  // `project-ai-instructions.js` retains a compatibility guard for very old
+  // browser sessions. The portable graph limits are now native to this model,
+  // so that guard must not monkey-patch validation based on script order.
+  Object.defineProperty(api, "__portableGraphHardened", { value: true, enumerable: false });
   root.ProofnoteDocument = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

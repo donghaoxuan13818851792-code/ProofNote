@@ -11,13 +11,14 @@ typography under Proofnote's control.
   "metadata": {
     "name": "A compact research note",
     "templateName": "Research Note",
+    "templateId": "research-note",
     "author": "Ada Lovelace",
     "date": "2026-09-14"
   },
   "blocks": [
-    { "id": "title_1", "type": "title", "preset": "document-title", "content": "A compact research note" },
-    { "id": "heading_1", "type": "heading", "preset": "heading-1", "level": 1, "content": "Main result" },
-    { "id": "result_1", "type": "semantic", "preset": "semantic-result", "kind": "result", "appearance": "editorial", "label": "Theorem", "title": "Result", "content": "…" }
+    { "id": "title_1", "type": "title", "content": "A compact research note" },
+    { "id": "heading_1", "type": "heading", "level": 1, "content": "Main result" },
+    { "id": "result_1", "type": "semantic", "kind": "result", "appearance": "editorial", "label": "Theorem", "title": "Result", "content": "…" }
   ]
 }
 ```
@@ -26,9 +27,9 @@ typography under Proofnote's control.
 
 - `type` describes structure: a heading, image, table, paragraph, code block,
   or another reusable content component.
-- `preset` is a Proofnote-owned typography or component preset. It is recorded
-  for portability, but users do not enter arbitrary fonts, colours, spacing,
-  or font sizes.
+- `preset` is a derived Proofnote-owned compatibility field. Proofnote computes
+  it from each block's type, kind, and level; authors should omit it rather
+  than treating it as a formatting control.
 - `kind` adds semantic meaning where needed. A single `semantic` block supports
   `section`, `introduction`, `problem`, `theorem`, `proof`, `result`, and `verification`; a single
   `callout` supports `note`, `tip`, `warning`, and `info`.

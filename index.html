@@ -12,7 +12,7 @@
 <script src="vendor/katex/fonts-embed.js"></script>
 <style>doc-page:not(:defined){visibility:hidden}#app{display:none}</style>
 <script src="./src/doc-page.js?v=workspace-20260914-10"></script>
-<link rel="stylesheet" href="./src/document-editor.css?v=workspace-20260916-52">
+<link rel="stylesheet" href="./src/document-editor.css?v=workspace-20260917-58">
 <style>
   html, body { height: 100%; }
   body { margin: 0; overflow: hidden; }
@@ -158,11 +158,6 @@
     #app.show-preview #editor { display: none; }
   }
 
-  @page { size: A4; }
-  /* Page numbers live in the bottom margin box (the standard, cross-browser
-     way to print "3 / 8"): counters in position:fixed footer elements render
-     as 0/0 in both Safari and Chrome, so the footer must not carry them. */
-  @page { @bottom-center { content: counter(page) " / " counter(pages); font-family: "Cormorant Garamond", serif; font-size: 8pt; letter-spacing: 0.1em; color: color-mix(in srgb, #201f1d 45%, transparent); } }
   @media print {
     body { overflow: visible; }
     #editor, .mobile-tabs { display: none !important; }
@@ -392,6 +387,11 @@
   }
 
   document.getElementById("btnLang").addEventListener("click", () => {
+    // The document workspace owns the durable save-before-reload path. This
+    // legacy toolbar control delegates to it whenever that workspace is
+    // mounted, rather than racing an IndexedDB autosave with location.reload.
+    const workspaceLanguage = document.getElementById("pnLang");
+    if (workspaceLanguage) { workspaceLanguage.click(); return; }
     const next = UI_LANG === "zh" ? "en" : "zh";
     try { localStorage.setItem("sn-lang", next); } catch (e) {}
     location.reload();
@@ -756,11 +756,20 @@
   function inlineMd(text) {
     if (!text) return "";
     const math = [];
+    const code = [];
     // Protect BOTH math forms before any Markdown runs, so `_`, `^` and `\sum`
     // inside TeX are never eaten by the lightweight sub/sup/emphasis rules.
     // Display math first (its body may contain \(...\)): rendered in display
     // mode even mid-paragraph, which is what a \[...\] block means.
+    // Inline code is literal: protect it before emphasis, links, legacy
+    // sub/sup, and math processing so a documentation example such as
+    // `**not bold**` remains exactly what the author typed.
     const tokenized = String(text)
+      .replace(/`([^`\n]+)`/g, (_, source) => {
+        const token = `\uE100${code.length}\uE101`;
+        code.push(`<code>${escapeHtml(source)}</code>`);
+        return token;
+      })
       .replace(/\\\[([\s\S]+?)\\\]/g, (_, tex) => {
         const token = `\uE000${math.length}\uE001`;
         math.push(renderMathTex(tex, true));
@@ -775,14 +784,14 @@
         return token;
       });
     let s = escapeHtml(tokenized);
-    s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
     s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
     s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => `<a href="${safeHref(url)}">${label}</a>`);
     // Legacy compatibility for pre-LaTeX notes. New content should use \(...\).
     s = s.replace(/_\{([^}]*)\}/g, "<sub>$1</sub>");
     s = s.replace(/\^\{([^}]*)\}/g, "<sup>$1</sup>");
-    return s.replace(/\uE000(\d+)\uE001/g, (_, index) => math[Number(index)] || "");
+    s = s.replace(/\uE000(\d+)\uE001/g, (_, index) => math[Number(index)] || "");
+    return s.replace(/\uE100(\d+)\uE101/g, (_, index) => code[Number(index)] || "");
   }
 
   function parseTableRow(line) {
@@ -2104,8 +2113,8 @@
       if (typeof obj === "string") {
         const lines = obj.split("\n");
         for (let i = 0; i < lines.length; i++) {
-          const t = lines[i].trim();
-          if (t.startsWith("[") && !t.startsWith("\\[")) {
+          const trimmedLine = lines[i].trim();
+          if (trimmedLine.startsWith("[") && !trimmedLine.startsWith("\\[")) {
             warnings.push({ path: path, message: t("疑似独立公式开始符缺少反斜杠(该字段第 " + (i + 1) + " 行):应写 \\\\[ 而不是 [。", "Display-math opener is missing its backslash (line " + (i + 1) + " of this field): write \\\\[ instead of [.") });
           }
         }
@@ -2730,7 +2739,6 @@ pre code{background:none;padding:0}
   .file-name{flex:1 1 100%}
   .copy-btn{align-self:flex-start}
 }
-@page{size:A4;margin:0}
 @media print{
   body{background:#fff}
   .note{max-width:none;padding:16mm 15mm}
@@ -2825,9 +2833,11 @@ ${restHtml}
 
 })();
 </script>
-<script src="./src/document-model.js?v=workspace-20260916-52"></script>
-<script src="./src/document-store.js?v=workspace-20260916-52"></script>
-<script src="./src/project-ai-instructions.js?v=workspace-20260916-52"></script>
+<script src="./src/document-model.js?v=workspace-20260917-58"></script>
+<script src="./src/document-store.js?v=workspace-20260917-58"></script>
+<script src="./src/project-ai-instructions.js?v=workspace-20260917-58"></script>
+<script src="./src/document-renderer.js?v=workspace-20260917-58"></script>
+<script src="./src/document-legacy-boundary.js?v=workspace-20260917-58"></script>
 <script>window.Prism = { manual: true };</script>
 <script src="./vendor/prism/prism.js?v=1.30.0"></script>
 <script src="./vendor/prism/prism-python.min.js?v=1.30.0"></script>
@@ -2839,6 +2849,6 @@ ${restHtml}
 <script src="./vendor/prism/prism-sql.min.js?v=1.30.0"></script>
 <script src="./vendor/prism/prism-json.min.js?v=1.30.0"></script>
 <script src="./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1"></script>
-<script src="./src/document-editor.js?v=workspace-20260916-52"></script>
+<script src="./src/document-editor.js?v=workspace-20260917-58"></script>
 </body>
 </html>

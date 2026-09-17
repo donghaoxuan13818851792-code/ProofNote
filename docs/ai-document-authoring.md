@@ -36,8 +36,9 @@ fonts, colours, margins, or coordinates; Proofnote owns those decisions.
 
 `semantic.kind` is one of `problem`, `theorem`, `proof`, `result`, or
 `verification`. `callout.kind` is one of `note`, `tip`, `warning`, or `info`.
-Proofnote assigns the matching `preset` when importing; including it is allowed
-but not required for AI-authored JSON.
+Proofnote assigns the matching `preset` when importing. Omit it from
+AI-authored JSON; it is a derived compatibility field, not an authoring
+control.
 
 For the Proof Note template only, an optional display setting can control its
 editorial metadata row without deleting document metadata values:

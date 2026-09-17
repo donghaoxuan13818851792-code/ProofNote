@@ -5,10 +5,12 @@
   "use strict";
   const Model = root.ProofnoteDocument;
   const Store = root.ProofnoteStore;
-  if (!Model || !Store) return;
+  const Renderer = root.ProofnoteRenderer;
+  const LegacyBoundary = root.ProofnoteLegacyBoundary;
+  if (!Model || !Store || !Renderer || !LegacyBoundary) return;
 
   // Increment this small, user-facing version for each released workspace update.
-  const APP_VERSION = "v1.23";
+  const APP_VERSION = "v1.29";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Standalone equation", "独立公式"], ["code", "Code", "代码"],
@@ -43,8 +45,8 @@
   const INSERTABLE_BLOCK_TYPES = [
     // "section" is a picker action, rather than a document-model block type:
     // it creates Proofnote's numbered editorial semantic section.
-    "section", "paragraph", "equation", "code", "table", "quote",
-    "divider", "page-break", "callout", "semantic", "list"
+    "section", "paragraph", "equation", "code", "table", "image", "quote",
+    "divider", "page-break", "callout", "semantic", "list", "key-value", "stats"
   ];
   const OUTLINE_SEMANTIC_LABEL = {
     section: { zh: "章节", en: "Section" },
@@ -70,7 +72,19 @@
   // in flight. Keep immutable snapshots in a serial queue so an older save
   // can never finish after, and overwrite, a newer edit.
   let saveQueue = Promise.resolve();
+  // Every successful write increments this local-library revision. Keeping it
+  // separate from portable document JSON lets the store reject a stale tab's
+  // write instead of silently applying last-write-wins.
+  const documentRevisions = new Map();
+  // User-initiated document transitions are serialized and only the most
+  // recent intent may select a new current document. This prevents rapid
+  // open/create/import actions from completing out of order.
+  let transitionQueue = Promise.resolve();
+  let transitionGeneration = 0;
   let editRevision = 0;
+  let editorialNumberRevision = -1;
+  let editorialNumberState = null;
+  let editorialSectionNumbers = new Map();
   let hasUnsavedChanges = false;
   let statusTimer = null;
   let selectedTemplateId = "";
@@ -91,35 +105,86 @@
   const SIDEBAR_MIN_WIDTH = 180;
   const SIDEBAR_MAX_WIDTH = 360;
   const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
+  // Prism grammars are intentionally optional publication polish. Do not let
+  // a schema-valid but very large code sample turn HTML export into a long
+  // synchronous regex task; the raw escaped source remains a faithful export.
+  const MAX_HIGHLIGHTED_CODE_LENGTH = 50000;
+  // Auto-growing every textarea is pleasant for normal prose, but measuring a
+  // 200k-character field on every keystroke forces a full layout. Long text
+  // remains editable; it simply switches to a bounded scrolling editor.
+  const MAX_AUTO_GROW_TEXT_LENGTH = 16000;
   const MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
+  const MAX_IMAGE_PIXELS = 24 * 1000 * 1000;
+  // Import diagnostics should help a person repair a document, not become an
+  // unbounded secondary parser for deliberately hostile JSON.
+  const MAX_IMPORT_DIAGNOSTIC_ISSUES = 32;
+  const MAX_IMPORT_DIAGNOSTIC_NODES = 50000;
   const OUTLINE_UNDO_WINDOW_MS = 8000;
   let sidebarWidth = SIDEBAR_DEFAULT_WIDTH;
+  let persistenceAvailable = true;
+  let importFileReadGeneration = 0;
+  let importMode = "document";
+  // Recoverable normalisation notices are content decisions. Keep the import
+  // sheet open and require a second, explicit action before committing them.
+  let importWarningConfirmation = null;
+  // Rendering the document library after an autosave must not replace text an
+  // author is actively typing into a rename field with the persisted name.
+  const renameDrafts = new Map();
+  // Exported publication furniture must follow the document language, not
+  // whichever language happens to be selected in the editing workspace.
+  let exportLanguageContext = "";
+  // FileReader callbacks may finish long after their originating image block
+  // has left the canvas. A document generation gives those callbacks a cheap,
+  // deterministic way to prove that they still belong to the active record.
+  let documentGeneration = 0;
   let els = {};
+
+  function isComposingInput(event) {
+    // Safari reports keyCode 229 during IME composition; Chromium also sets
+    // isComposing. Neither Enter used to confirm a Chinese/Japanese candidate
+    // is an authoring shortcut.
+    return Boolean(event && (event.isComposing || event.keyCode === 229));
+  }
 
   function english() { return document.documentElement.lang === "en"; }
   function tr(zh, en) { return english() ? en : zh; }
+  function exportTr(zh, en) { return /^zh(?:-|$)/i.test(exportLanguageContext) ? zh : en; }
+  function readerTr(zh, en) { return exportLanguageContext ? exportTr(zh, en) : tr(zh, en); }
   function escapeHtml(value) {
     return String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
   function inline(value) {
-    return root.__snTest && root.__snTest.inlineMd ? root.__snTest.inlineMd(String(value || "")) : escapeHtml(value);
+    return Renderer.inline(String(value || ""), {
+      missing: tr("KaTeX 未载入", "KaTeX not loaded"),
+      invalid: tr("LaTeX 语法错误", "LaTeX syntax error")
+    });
   }
   function math(value) {
-    return root.__snTest && root.__snTest.renderMathTex ? root.__snTest.renderMathTex(String(value || ""), true) : "<code>" + escapeHtml(value) + "</code>";
+    const source = String(value || "");
+    if (source.length > Model.LIMITS.maxEquationLength) {
+      return "<span class=\"pn-math-limit\">" + escapeHtml(tr("公式过长，未渲染预览。", "Equation is too long to preview.")) + "</span>";
+    }
+    return Renderer.math(source, true, {
+      missing: tr("KaTeX 未载入", "KaTeX not loaded"),
+      invalid: tr("LaTeX 语法错误", "LaTeX syntax error")
+    });
   }
   function localDate() { return new Date().toLocaleString(english() ? "en-AU" : "zh-CN", { dateStyle: "medium" }); }
-  function setStatus(message, kind) {
+  function setStatus(message, kind, options) {
+    const opts = options || {};
     clearTimeout(statusTimer);
     els.status.textContent = message || "";
     els.status.dataset.kind = kind || "";
-    // The full confirmation is useful immediately after an operation, but it
-    // should not occupy the toolbar once the moment has passed.
-    if (kind === "saved" && message !== tr("已保存", "Saved")) {
+    // Only a confirmed persistence operation may collapse into the durable
+    // "Saved" state. Copy/export/UI confirmations must never overwrite an
+    // earlier persistence failure with a misleading success message.
+    if (kind === "saved" && opts.persisted === true && persistenceAvailable && !hasUnsavedChanges && message !== tr("已保存", "Saved")) {
       statusTimer = setTimeout(() => {
-        if (els.status.dataset.kind === "saved") els.status.textContent = tr("已保存", "Saved");
+        if (els.status.dataset.kind === "saved" && !hasUnsavedChanges && persistenceAvailable) els.status.textContent = tr("已保存", "Saved");
       }, 1800);
     }
   }
+  function setPersistenceStatus(message) { setStatus(message, "saved", { persisted: true }); }
   function optionText(type) { const item = TYPE_LABEL[type] || TYPE_LABEL.paragraph; return english() ? item.en : item.zh; }
   function insertionOptionText(type) {
     return type === "section" ? tr("章节", "Section") : optionText(type);
@@ -169,16 +234,33 @@
     if (!opts.multiline) control.type = opts.type || "text";
     if (opts.rows) control.rows = String(opts.rows);
     if (opts.placeholder) control.placeholder = opts.placeholder;
+    // Keep every editable text surface within the portable document limit.
+    // Without this, the canvas could create content that a later Proofnote
+    // import rightly refuses, or that normalisation would have to truncate.
+    if (opts.maxLength !== false) control.maxLength = String(opts.maxLength || Model.LIMITS.maxStringLength);
     if (opts.ariaLabel) control.setAttribute("aria-label", opts.ariaLabel);
     control.value = value || "";
+    let resizeFrame = 0;
     const resize = () => {
+      resizeFrame = 0;
       if (!opts.autoGrow || !opts.multiline) return;
+      if (control.value.length > MAX_AUTO_GROW_TEXT_LENGTH) {
+        control.style.height = Math.max(opts.minHeight || 0, 320) + "px";
+        control.style.overflowY = "auto";
+        return;
+      }
       control.style.height = "auto";
       control.style.height = Math.max(control.scrollHeight, opts.minHeight || 0) + "px";
+      control.style.overflowY = "hidden";
     };
-    control.addEventListener("input", () => { resize(); onInput(control.value); });
+    const scheduleResize = () => {
+      if (!opts.autoGrow || !opts.multiline) return;
+      if (resizeFrame) root.cancelAnimationFrame(resizeFrame);
+      resizeFrame = root.requestAnimationFrame(resize);
+    };
+    control.addEventListener("input", () => { scheduleResize(); onInput(control.value); });
     field.appendChild(control);
-    if (opts.autoGrow && opts.multiline) root.requestAnimationFrame(resize);
+    if (opts.autoGrow && opts.multiline) scheduleResize();
     return field;
   }
   function selectField(labelText, value, values, onChange) {
@@ -217,6 +299,7 @@
   }
   function highlightedCodeHtml(content, language) {
     const source = String(content == null ? "" : content);
+    if (source.length > MAX_HIGHLIGHTED_CODE_LENGTH) return escapeHtml(source);
     const prism = root.Prism;
     const grammarName = codePrismLanguage(language);
     if (!grammarName || grammarName === "text" || !prism || !prism.languages || !prism.languages[grammarName]) return escapeHtml(source);
@@ -337,7 +420,7 @@
     els = {
       app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), exportMore: app.querySelector("#pnExportMore"), exportMoreMenu: app.querySelector("#pnExportMoreMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), templates: app.querySelector("#pnTemplates"), documents: app.querySelector("#pnDocuments"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
       outline: app.querySelector("#pnOutline"), canvasPane: app.querySelector(".pn-canvas-pane"), docPage: app.querySelector("#pnDocPage"), canvas: app.querySelector("#pnCanvas"), inspector: app.querySelector("#pnInspector"), inspectorTopLabel: app.querySelector("#pnInspectorTopLabel"), pageHeader: app.querySelector("#pnPageHeader"), footer: app.querySelector("#pnFooterName"), footerStatus: app.querySelector("#pnFooterStatus"), modal: app.querySelector("#pnImportModal"), confirmModal: app.querySelector("#pnConfirmModal"), confirmTitle: app.querySelector("#pnConfirmTitle"), confirmCopy: app.querySelector("#pnConfirmCopy"), confirmCancel: app.querySelector("#pnConfirmCancel"), confirmAccept: app.querySelector("#pnConfirmAccept"), newProjectModal: app.querySelector("#pnNewProjectModal"), newProjectName: app.querySelector("#pnNewProjectName"), newProjectCancel: app.querySelector("#pnNewProjectCancel"), newProjectCreate: app.querySelector("#pnCreateProject"),
-      importText: app.querySelector("#pnImportText"), importFile: app.querySelector("#pnImportFile"), importReport: app.querySelector("#pnImportReport"),
+      importText: app.querySelector("#pnImportText"), importFile: app.querySelector("#pnImportFile"), importConfirm: app.querySelector("#pnConfirmImport"), importReport: app.querySelector("#pnImportReport"),
       outlineMenu: app.querySelector("#pnOutlineMenu"), undoToast: app.querySelector("#pnUndoToast"), undoCopy: app.querySelector("#pnUndoCopy"), undoButton: app.querySelector("#pnUndoButton")
     };
     bindToolbar(app);
@@ -353,7 +436,7 @@
     els.footer.addEventListener("keydown", (event) => {
       // A running title is one line. Enter finishes the inline edit without
       // introducing an invisible line break into the persistent document name.
-      if (event.key !== "Enter") return;
+      if (event.key !== "Enter" || isComposingInput(event)) return;
       event.preventDefault();
       els.footer.blur();
     });
@@ -398,6 +481,11 @@
     // sidebar. Listen at document level as well, otherwise Escape stops
     // working whenever the active element is inside that floating menu.
     document.addEventListener("keydown", (event) => {
+      const activeModal = activeModalElement();
+      if (activeModal && event.key === "Tab") {
+        trapModalFocus(event, activeModal);
+        return;
+      }
       if (event.key !== "Escape") return;
       setActionMenuOpen(false);
       setTemplateMenuOpen(false);
@@ -410,8 +498,8 @@
     app.querySelector("#pnOutlineTab").addEventListener("click", () => setSidebarTab("outline"));
     app.querySelector("#pnNew").addEventListener("click", () => chooseNewDocument());
     app.querySelector("#pnSaveTemplate").addEventListener("click", () => { setTemplateMenuOpen(false); saveCurrentAsTemplate(); });
-    app.querySelector("#pnImport").addEventListener("click", openImport);
-    app.querySelector("#pnImportTemplate").addEventListener("click", openImport);
+    app.querySelector("#pnImport").addEventListener("click", () => openImport("document"));
+    app.querySelector("#pnImportTemplate").addEventListener("click", () => openImport("template"));
     app.querySelector("#pnCloseImport").addEventListener("click", closeImport);
     els.modal.addEventListener("click", (event) => { if (event.target === els.modal) closeImport(); });
     els.confirmCancel.addEventListener("click", closeConfirm);
@@ -426,18 +514,27 @@
     els.newProjectModal.addEventListener("click", (event) => { if (event.target === els.newProjectModal) closeNewProject(); });
     els.newProjectName.addEventListener("input", () => els.newProjectName.removeAttribute("aria-invalid"));
     els.newProjectName.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
+      if (event.key !== "Enter" || isComposingInput(event)) return;
       event.preventDefault();
       createNewProject();
     });
     els.undoButton.addEventListener("click", undoLastStructuralDelete);
-    app.querySelector("#pnConfirmImport").addEventListener("click", importFromDialog);
+    els.importConfirm.addEventListener("click", importFromDialog);
     els.importFile.addEventListener("change", readImportFile);
+    els.importText.addEventListener("input", () => {
+      resetImportWarningConfirmation();
+      if (!els.importText.readOnly) els.importConfirm.disabled = false;
+    });
     app.querySelector("#pnExport").addEventListener("click", () => { exportDocument(); setActionMenuOpen(false); });
     app.querySelector("#pnExportHtml").addEventListener("click", () => { exportHtml(); setActionMenuOpen(false); });
     app.querySelector("#pnCopyAi").addEventListener("click", () => { copyAiInstructions(); setActionMenuOpen(false); });
     app.querySelector("#pnExportTemplate").addEventListener("click", () => { exportTemplate(); setTemplateMenuOpen(false); });
-    app.querySelector("#pnLang").addEventListener("click", () => { try { root.localStorage.setItem("sn-lang", english() ? "zh" : "en"); } catch (_) {} root.location.reload(); });
+    app.querySelector("#pnLang").addEventListener("click", async () => {
+      const saved = await saveActiveDocumentNow();
+      if (!saveSucceeded(saved)) { reportSaveFailure(saved); return; }
+      try { root.localStorage.setItem("sn-lang", english() ? "zh" : "en"); } catch (_) {}
+      root.location.reload();
+    });
     // A debounce timer is convenient during editing, but a tab can be hidden
     // or closed before it fires. Queue the current immutable snapshot on both
     // lifecycle boundaries; the store queue preserves its order with saves
@@ -450,6 +547,16 @@
       if (document.visibilityState === "hidden") flushBeforeLeaving();
     });
     root.addEventListener("pagehide", flushBeforeLeaving);
+    // IndexedDB writes cannot be made synchronously during teardown. Warn
+    // instead of pretending that an asynchronous pagehide write is certain
+    // to finish: the browser gives the author a chance to stay and let the
+    // queued immutable snapshot persist.
+    root.addEventListener("beforeunload", (event) => {
+      if (!hasUnsavedChanges) return;
+      flushBeforeLeaving();
+      event.preventDefault();
+      event.returnValue = "";
+    });
     bindSidebarResize();
     bindOutlineViewportTracking();
   }
@@ -469,7 +576,7 @@
       return;
     }
     const stageX = Number.parseFloat(root.getComputedStyle(els.docPage).getPropertyValue("--pn-canvas-stage-x")) || 0;
-    const naturalSheetWidth = 8.5 * 96;
+    const naturalSheetWidth = 210 / 25.4 * 96;
     const availableWidth = Math.max(1, els.canvasPane.clientWidth - stageX * 2);
     const scale = Math.min(1, availableWidth / naturalSheetWidth);
     els.docPage.style.setProperty("--doc-page-screen-scale", scale.toFixed(4));
@@ -547,10 +654,23 @@
     els.templateMenu.hidden = !open;
     els.templateMenuToggle.setAttribute("aria-expanded", String(Boolean(open)));
   }
-  function openImport() {
+  function openImport(mode) {
     setActionMenuOpen(false);
     setTemplateMenuOpen(false);
+    importMode = mode === "template" ? "template" : "document";
+    resetImportWarningConfirmation();
     els.modal.hidden = false;
+    els.importText.readOnly = false;
+    els.importConfirm.disabled = false;
+    const templateImport = importMode === "template";
+    const heading = els.modal.querySelector(".pn-modal-heading h2");
+    const copy = els.modal.querySelector(".pn-modal-copy");
+    if (heading) heading.textContent = templateImport ? tr("导入模板", "Import template") : tr("导入 JSON", "Import JSON");
+    if (copy) copy.textContent = templateImport
+      ? tr("仅支持 Proofnote 模板文件。导入模板不会切换或覆盖当前文档。", "Only Proofnote template files are accepted. Importing a template never switches or replaces the current document.")
+      : tr("支持 Proofnote Document 和原有 Solution Note 1.0。Solution Note 会无损优先地迁移为可编辑 blocks。导入文档会新建一份文档，不会覆盖当前文档。", "Supports Proofnote Document and Solution Note 1.0. Solution Notes are migrated into editable blocks. Importing creates a new document and never replaces the current one.");
+    els.importConfirm.textContent = templateImport ? tr("导入模板", "Import template") : tr("导入为新文档", "Import as new document");
+    syncModalIsolation();
     els.importText.focus();
   }
   function setUtilityOpen(open) {
@@ -596,12 +716,79 @@
     els.importReport.replaceChildren();
     els.importReport.className = "pn-import-report";
   }
+  function importConfirmLabel() {
+    return importMode === "template" ? tr("导入模板", "Import template") : tr("导入为新文档", "Import as new document");
+  }
+  function resetImportWarningConfirmation() {
+    importWarningConfirmation = null;
+    if (els.importConfirm) els.importConfirm.textContent = importConfirmLabel();
+  }
+  function confirmImportWarnings(warnings, title) {
+    if (!warnings || !warnings.length) return true;
+    const source = String(els.importText && els.importText.value || "");
+    const key = importMode + "\u0000" + source;
+    if (importWarningConfirmation === key) return true;
+    importWarningConfirmation = key;
+    renderSchemaDiagnostics(title, [], warnings);
+    els.importConfirm.textContent = tr("仍要导入", "Import anyway");
+    return false;
+  }
+  function activeModalElement() {
+    // Confirmation/new-project sheets sit above the import sheet if a flow
+    // ever opens them consecutively, so trap focus in the visually topmost
+    // dialog rather than whichever backdrop appears first in the DOM.
+    return [els.newProjectModal, els.confirmModal, els.modal].find((modal) => modal && !modal.hidden) || null;
+  }
+  function modalFocusableElements(modal) {
+    if (!modal) return [];
+    return Array.from(modal.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+      .filter((node) => !node.hidden && node.getAttribute("aria-hidden") !== "true");
+  }
+  function trapModalFocus(event, modal) {
+    const focusable = modalFocusableElements(modal);
+    if (!focusable.length) { event.preventDefault(); return; }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const current = document.activeElement;
+    if (!modal.contains(current)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+      return;
+    }
+    if (event.shiftKey && current === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && current === last) { event.preventDefault(); first.focus(); }
+  }
+  function syncModalIsolation() {
+    const blocked = Boolean(activeModalElement());
+    [els.app && els.app.querySelector(".pn-workspace-toolbar"), els.app && els.app.querySelector(".pn-shell"), els.outlineMenu, els.undoToast].forEach((surface) => {
+      if (!surface) return;
+      // `inert` makes the visual backdrop a real interaction boundary. Keep
+      // aria-hidden in sync for assistive technology that does not yet honour
+      // inert independently.
+      surface.inert = blocked;
+      surface.setAttribute("aria-hidden", String(blocked));
+    });
+    if (blocked) {
+      closeOutlineMenu();
+      setActionMenuOpen(false);
+      setTemplateMenuOpen(false);
+    }
+  }
   function showImportMessage(message, kind) {
     if (!els.importReport) return;
     els.importReport.className = "pn-import-report" + (kind ? " is-" + kind : "");
     els.importReport.replaceChildren(element("p", { class: "pn-import-message" }, message));
   }
-  function closeImport() { els.modal.hidden = true; clearImportReport(); }
+  function closeImport() {
+    importFileReadGeneration += 1;
+    els.importText.readOnly = false;
+    els.importConfirm.disabled = false;
+    els.modal.hidden = true;
+    importMode = "document";
+    resetImportWarningConfirmation();
+    clearImportReport();
+    syncModalIsolation();
+  }
   function openConfirm(options) {
     const opts = options || {};
     confirmActionHandler = typeof opts.onConfirm === "function" ? opts.onConfirm : null;
@@ -609,11 +796,13 @@
     els.confirmCopy.textContent = opts.message || "";
     els.confirmAccept.textContent = opts.confirmLabel || tr("继续", "Continue");
     els.confirmModal.hidden = false;
+    syncModalIsolation();
     root.requestAnimationFrame(() => els.confirmCancel.focus());
   }
   function closeConfirm() {
     confirmActionHandler = null;
     els.confirmModal.hidden = true;
+    syncModalIsolation();
   }
   function scheduleSave() {
     clearTimeout(saveTimer);
@@ -622,23 +811,39 @@
       try {
         const result = await saveActiveDocument();
         if (result.backend === "unchanged" || !result.current) return;
-        if (result.backend === "failed") {
-          setStatus(tr("自动保存失败；请立即导出文档备份。", "Autosave failed — export a backup now."), "error");
+        if (!saveSucceeded(result.backend)) {
+          reportSaveFailure(result.backend);
           return;
         }
-        setStatus(result.backend === "indexeddb" ? tr("已自动保存到此设备", "Saved on this device") : tr("已自动保存（本地存储）", "Saved locally"), "saved");
+        persistenceAvailable = true;
+        setPersistenceStatus(result.backend === "indexeddb" ? tr("已自动保存到此设备", "Saved on this device") : tr("已自动保存（本地存储）", "Saved locally"));
       } catch (_) {
-        setStatus(tr("自动保存失败；请立即导出文档备份。", "Autosave failed — export a backup now."), "error");
+        reportSaveFailure("failed");
       }
     }, 350);
   }
 
   function saveSnapshot() {
     if (!state) return null;
-    // The model is portable JSON by design, which gives us a clean, immutable
-    // snapshot without retaining mutable block objects across an await.
-    const document = Model.normalizeDocument(JSON.parse(JSON.stringify(state)), { allowRemoteImages: true });
+    // normalizeDocument already makes a defensive, portable clone. Avoid an
+    // additional JSON stringify/parse pass for every autosave, particularly
+    // for documents containing embedded images.
+    const document = Model.normalizeDocument(state, { allowRemoteImages: true });
     return { documentId: currentDocumentId, revision: editRevision, document };
+  }
+
+  function saveSucceeded(backend) {
+    return backend === "indexeddb" || backend === "localStorage" || backend === "unchanged";
+  }
+  function reportSaveFailure(backend) {
+    // Do not let unrelated non-persistence actions, or the next keystroke,
+    // overwrite a truthful save failure with a generic green confirmation.
+    persistenceAvailable = false;
+    if (backend === "conflict") {
+      setStatus(tr("此文档已在另一标签页更新；为避免覆盖，请先导出当前版本备份。", "This document changed in another tab. Export this version before resolving the conflict."), "error");
+      return;
+    }
+    setStatus(tr("自动保存失败；请立即导出文档备份。", "Autosave failed — export a backup now."), "error");
   }
 
   function queueDocumentSave(snapshot) {
@@ -655,6 +860,7 @@
           if (!created || !created.record) return { backend: "failed", current: false };
           documentId = created.record.id;
           backend = created.backend;
+          documentRevisions.set(documentId, Number.isSafeInteger(created.record.revision) ? created.record.revision : 0);
           if (currentDocumentId === "") {
             currentDocumentId = documentId;
             documents = [created.record].concat(documents.filter((record) => record.id !== documentId));
@@ -663,12 +869,25 @@
         }
       }
       if (backend !== "failed" || documentId) {
-        if (backend === "failed") backend = await Store.saveDocument(documentId, snapshot.document);
-        if (backend === "failed") return { backend, current: false };
+        if (backend === "failed") {
+          const expectedRevision = documentRevisions.get(documentId);
+          backend = await Store.saveDocument(documentId, snapshot.document, expectedRevision);
+          if (backend === "indexeddb" || backend === "localStorage") documentRevisions.set(documentId, (expectedRevision || 0) + 1);
+        }
+        if (!saveSucceeded(backend)) return { backend, current: false };
+        persistenceAvailable = true;
       }
       const current = currentDocumentId === documentId && editRevision === snapshot.revision;
       if (current) hasUnsavedChanges = false;
-      await refreshDocuments();
+      // Autosave must not reread every full document (and every embedded
+      // image) merely to redraw the library. The library is refreshed on
+      // explicit navigation/creation/deletion; its active record summary is
+      // enough between those low-frequency operations.
+      const libraryRecord = documents.find((record) => record.id === documentId);
+      if (libraryRecord) {
+        libraryRecord.document = snapshot.document;
+        libraryRecord.updatedAt = snapshot.document.metadata.updatedAt;
+      }
       return { backend, current };
     };
     const job = saveQueue.then(task, task);
@@ -693,7 +912,7 @@
       // an older completion's backend label.
       while (state) {
         const result = await saveActiveDocument();
-        if (result.backend === "failed") return result;
+        if (!saveSucceeded(result.backend)) return result;
         if (!documentId && currentDocumentId) documentId = currentDocumentId;
         if (currentDocumentId !== documentId) return { backend: "failed", current: false };
         if (result.current && !hasUnsavedChanges) return result;
@@ -707,7 +926,28 @@
   async function refreshTemplates() {
     const custom = await Store.listTemplates();
     const preferredOrder = ["proof-note", "research-note", "blank-document", "lab-report", "essay-report"];
-    templates = Model.builtInTemplates().concat(custom.map(Model.normalizeTemplate)).sort((first, second) => {
+    const repairedCustom = [];
+    for (const rawTemplate of custom) {
+      const normalized = Model.normalizeTemplate(rawTemplate);
+      const hasStoredId = Boolean(rawTemplate && rawTemplate.template && Object.prototype.hasOwnProperty.call(rawTemplate.template, "id"));
+      const storedId = hasStoredId ? String(rawTemplate.template.id == null ? "" : rawTemplate.template.id) : "";
+      // Normalisation regenerates unsafe/missing IDs. Persist that migration
+      // immediately so subsequent refreshes refer to the same template.
+      if (hasStoredId && normalized.template.id !== storedId && typeof Store.repairTemplate === "function") {
+        try {
+          const repaired = await Store.repairTemplate(storedId, normalized);
+          if (!saveSucceeded(repaired)) {
+            setStatus(tr("一个旧模板的安全 ID 无法保存；它不会被用作当前模板。", "A legacy template's repaired ID could not be saved; it will not be used as the active template."), "warning");
+            continue;
+          }
+        } catch (_) {
+          setStatus(tr("一个旧模板无法安全修复。", "A legacy template could not be repaired safely."), "warning");
+          continue;
+        }
+      }
+      repairedCustom.push(normalized);
+    }
+    templates = Model.builtInTemplates().concat(repairedCustom).sort((first, second) => {
       const firstRank = preferredOrder.indexOf(first.template.id);
       const secondRank = preferredOrder.indexOf(second.template.id);
       if (firstRank !== secondRank) return (firstRank < 0 ? 99 : firstRank) - (secondRank < 0 ? 99 : secondRank);
@@ -717,14 +957,24 @@
     renderTemplateLibrary();
   }
   async function refreshDocuments() {
-    documents = await Store.listDocuments();
+    const library = typeof Store.listDocumentLibrary === "function"
+      ? await Store.listDocumentLibrary()
+      : { records: await Store.listDocuments(), backend: "unknown" };
+    documents = Array.isArray(library && library.records) ? library.records : [];
     renderDocumentLibrary();
+    return library && library.backend || "failed";
   }
   function currentTemplateId() {
     if (templateById(selectedTemplateId)) return selectedTemplateId;
-    const name = state && state.metadata ? String(state.metadata.templateName || "").trim() : "";
-    const matchingTemplate = name && templates.find((template) => template.template.name === name);
-    return matchingTemplate ? matchingTemplate.template.id : "";
+    const metadata = state && state.metadata ? state.metadata : {};
+    const durableId = String(metadata.templateId || "").trim();
+    if (templateById(durableId)) return durableId;
+    const name = String(metadata.templateName || "").trim();
+    const matches = name ? templates.filter((template) => template.template.name === name) : [];
+    // Old documents have only a display name. Use it only when it identifies
+    // one template unambiguously; never point a document at an arbitrary
+    // same-named custom template.
+    return matches.length === 1 ? matches[0].template.id : "";
   }
   function renderTemplateLibrary() {
     if (!els.templates) return;
@@ -743,20 +993,38 @@
       item.setAttribute("aria-current", String(template.template.id === activeId));
       item.appendChild(element("span", { class: "pn-template-item-name" }, template.template.name));
       if (template.template.description) item.appendChild(element("span", { class: "pn-template-item-description" }, template.template.description));
-      els.templates.appendChild(item);
+      if (template.template.builtIn) {
+        els.templates.appendChild(item);
+        return;
+      }
+      const row = element("div", { class: "pn-template-item-row", role: "listitem" });
+      item.removeAttribute("role");
+      row.append(item, button("×", "pn-template-delete", () => requestDeleteTemplate(template), tr("删除模板", "Delete template")));
+      els.templates.appendChild(row);
+    });
+  }
+  function requestDeleteTemplate(template) {
+    if (!template || !template.template || template.template.builtIn) return;
+    const name = template.template.name || tr("此模板", "this template");
+    openConfirm({
+      title: tr("删除模板？", "Delete template?"),
+      message: tr("将删除“" + name + "”。此操作不会影响已用它创建的文档。", "This deletes “" + name + "”. Documents already created from it are unaffected."),
+      confirmLabel: tr("删除模板", "Delete template"),
+      onConfirm: async () => {
+        const backend = await Store.deleteTemplate(template.template.id);
+        if (!saveSucceeded(backend)) { setStatus(tr("删除模板失败。", "Could not delete template."), "error"); return; }
+        if (selectedTemplateId === template.template.id) selectedTemplateId = "";
+        await refreshTemplates();
+        setStatus(tr("模板已删除", "Template deleted"), "saved");
+      }
     });
   }
   function documentName(record) {
     const metadata = record && record.document && record.document.metadata || {};
     const portableName = String(metadata.name || "").trim();
-    const templateName = String(metadata.templateName || "").trim();
     const title = record && record.document && Array.isArray(record.document.blocks)
       ? record.document.blocks.find((block) => block && block.type === "title") : null;
     const titleName = String(title && title.content || "").trim();
-    // Built-in templates historically used their template name as metadata.
-    // In a library that makes every new note look identical, so prefer the
-    // actual document title until the author explicitly renames the file.
-    if (titleName && (!portableName || portableName === templateName)) return titleName;
     return portableName || titleName || tr("未命名文档", "Untitled document");
   }
   function renderDocumentLibrary() {
@@ -769,13 +1037,14 @@
     documents.forEach((record) => {
       const row = element("div", { class: "pn-document-item" + (record.id === currentDocumentId ? " is-active" : ""), role: "listitem" });
       if (renamingDocumentId === record.id) {
-        const rename = element("input", { class: "pn-document-rename", type: "text", value: documentName(record), "aria-label": tr("重命名文档", "Rename document") });
+        const rename = element("input", { class: "pn-document-rename", type: "text", value: renameDrafts.has(record.id) ? renameDrafts.get(record.id) : documentName(record), "aria-label": tr("重命名文档", "Rename document") });
         const save = () => finishDocumentRename(record.id, rename.value);
+        rename.addEventListener("input", () => renameDrafts.set(record.id, rename.value));
         rename.addEventListener("keydown", (event) => {
-          if (event.key === "Enter") { event.preventDefault(); save(); }
-          if (event.key === "Escape") { event.preventDefault(); renamingDocumentId = ""; renderDocumentLibrary(); }
+          if (event.key === "Enter" && !isComposingInput(event)) { event.preventDefault(); save(); }
+          if (event.key === "Escape") { event.preventDefault(); renameDrafts.delete(record.id); renamingDocumentId = ""; renderDocumentLibrary(); }
         });
-        row.append(rename, button(tr("保存", "Save"), "pn-document-rename-save", save), button(tr("取消", "Cancel"), "pn-document-rename-cancel", () => { renamingDocumentId = ""; renderDocumentLibrary(); }));
+        row.append(rename, button(tr("保存", "Save"), "pn-document-rename-save", save), button(tr("取消", "Cancel"), "pn-document-rename-cancel", () => { renameDrafts.delete(record.id); renamingDocumentId = ""; renderDocumentLibrary(); }));
         els.documents.appendChild(row);
         root.requestAnimationFrame(() => rename.focus());
         return;
@@ -786,7 +1055,7 @@
       actions.appendChild(element("summary", { class: "pn-document-more-trigger", "aria-label": tr("文档操作", "Document actions") }, "•••"));
       const menu = element("div", { class: "pn-document-more-menu" });
       menu.append(
-        button(tr("重命名", "Rename"), "pn-document-more-item", () => { renamingDocumentId = record.id; renderDocumentLibrary(); }),
+        button(tr("重命名", "Rename"), "pn-document-more-item", () => { renameDrafts.set(record.id, documentName(record)); renamingDocumentId = record.id; renderDocumentLibrary(); }),
         button(tr("制作副本", "Duplicate"), "pn-document-more-item", () => duplicateLibraryDocument(record.id)),
         button(tr("删除文档", "Delete document"), "pn-document-more-item pn-document-danger", () => requestDeleteLibraryDocument(record.id))
       );
@@ -798,8 +1067,11 @@
   function templateById(templateId) { return templates.find((template) => template.template.id === templateId); }
   async function activateDocument(record, options) {
     if (!record || !record.document) return;
+    documentGeneration += 1;
     clearStructuralUndo();
     currentDocumentId = record.id;
+    documentRevisions.set(record.id, Number.isSafeInteger(record.revision) ? record.revision : 0);
+    restoreOutlineCollapseState(record.id, false);
     selectedTemplateId = "";
     state = Model.normalizeDocument(record.document, { allowRemoteImages: true });
     editRevision = 0;
@@ -808,6 +1080,22 @@
     await refreshDocuments();
     root.requestAnimationFrame(syncCanvasScale);
     if (!options || options.status !== false) setStatus(tr("已打开文档", "Document opened"), "saved");
+  }
+  function enqueueDocumentTransition(operation) {
+    const generation = ++transitionGeneration;
+    const task = () => operation(generation);
+    const job = transitionQueue.then(task, task);
+    transitionQueue = job.catch(() => undefined);
+    return job;
+  }
+  function transitionIsCurrent(generation) { return generation === transitionGeneration; }
+  async function selectAndActivateDocument(record, generation, options) {
+    if (!record || !transitionIsCurrent(generation)) return false;
+    const selected = await Store.setCurrentDocument(record.id);
+    if (!selected || !selected.record || selected.backend === "failed") return false;
+    if (!transitionIsCurrent(generation)) return false;
+    await activateDocument(selected.record, options);
+    return true;
   }
   function localToday() {
     const date = new Date();
@@ -818,16 +1106,18 @@
     els.newProjectName.value = "";
     els.newProjectName.removeAttribute("aria-invalid");
     els.newProjectModal.hidden = false;
+    syncModalIsolation();
     root.requestAnimationFrame(() => els.newProjectName.focus());
   }
   function closeNewProject() {
     els.newProjectModal.hidden = true;
     els.newProjectName.removeAttribute("aria-invalid");
+    syncModalIsolation();
   }
-  function uniqueLibraryDocumentName(requestedName) {
+  function uniqueLibraryDocumentName(requestedName, excludedId) {
     const name = String(requestedName || "").trim();
     const normalise = (value) => String(value || "").trim().toLocaleLowerCase();
-    const occupied = new Set(documents.map((record) => normalise(documentName(record))).filter(Boolean));
+    const occupied = new Set(documents.filter((record) => record && record.id !== excludedId).map((record) => normalise(documentName(record))).filter(Boolean));
     if (!occupied.has(normalise(name))) return name;
     let suffix = 1;
     let candidate = name + "(" + suffix + ")";
@@ -844,8 +1134,9 @@
       els.newProjectName.focus();
       return;
     }
+    return enqueueDocumentTransition(async (generation) => {
     const saved = await saveActiveDocumentNow();
-    if (saved === "failed") {
+    if (!saveSucceeded(saved)) {
       setStatus(tr("自动保存失败；请导出文档备份后再新建。", "Autosave failed — export a backup before creating a document."), "error");
       return;
     }
@@ -864,45 +1155,65 @@
         Model.createBlock("semantic", { kind: "introduction", appearance: "editorial", title: "Introduction", content: "" })
       ]
     });
-    const created = await Store.createDocument(project);
+    if (!transitionIsCurrent(generation)) return;
+    const created = await Store.createDocument(project, { makeCurrent: false });
     if (!created || !created.record || created.backend === "failed") {
       setStatus(tr("新建项目失败。", "Could not create project."), "error");
       return;
     }
     const finalSaved = await saveActiveDocumentNow();
-    if (finalSaved === "failed") { setStatus(tr("新建期间产生的编辑无法保存；新项目已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the project could not be saved; the project was created but not opened. Export the current document first."), "error"); return; }
+    if (!saveSucceeded(finalSaved)) { reportSaveFailure(finalSaved); return; }
+    if (!transitionIsCurrent(generation)) return;
     closeNewProject();
-    await activateDocument(created.record, { status: false });
+    if (!await selectAndActivateDocument(created.record, generation, { status: false })) return;
     setStatus(tr("已新建项目", "New project created"), "saved");
+    });
   }
   function chooseNewDocument() { openNewProject(); }
   async function useSelectedTemplate(templateId) {
     const template = templateById(templateId);
     if (!template) return;
+    return enqueueDocumentTransition(async (generation) => {
     const saved = await saveActiveDocumentNow();
-    if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再继续。", "Autosave failed — export a backup before continuing."), "error"); return; }
+    if (!saveSucceeded(saved)) { reportSaveFailure(saved); return; }
     const document = Model.normalizeDocument(template.document);
     const title = document.blocks.find((block) => block.type === "title");
     document.metadata.name = String(title && title.content || "").trim() || template.template.name;
-    const created = await Store.createDocument(document);
+    document.metadata.templateName = template.template.name;
+    document.metadata.templateId = template.template.id;
+    const now = new Date().toISOString();
+    document.metadata.createdAt = now;
+    document.metadata.updatedAt = now;
+    // Custom Project templates are portable content, so treat their
+    // instantiation exactly like a Project import: repair absent masthead
+    // chrome, create a title if space permits, and avoid library-name
+    // collisions before the document receives a local identity.
+    if (document.metadata.documentType === "Project") prepareImportedProjectDocument(document, null);
+    if (!transitionIsCurrent(generation)) return;
+    const created = await Store.createDocument(document, { makeCurrent: false });
     if (!created || !created.record || created.backend === "failed") { setStatus(tr("无法从模板创建文档。", "Could not create a document from this template."), "error"); return; }
     const finalSaved = await saveActiveDocumentNow();
-    if (finalSaved === "failed") { setStatus(tr("创建期间产生的编辑无法保存；新文档已创建但尚未打开，请先导出当前文档备份。", "Edits made while creating the document could not be saved; the new document was created but not opened. Export the current document first."), "error"); return; }
+    if (!saveSucceeded(finalSaved)) { reportSaveFailure(finalSaved); return; }
+    if (!transitionIsCurrent(generation)) return;
     selectedTemplateId = template.template.id;
-    await activateDocument(created.record, { status: false });
+    if (!await selectAndActivateDocument(created.record, generation, { status: false })) return;
     selectedTemplateId = template.template.id;
     renderTemplateLibrary();
     setStatus(tr("已从模板新建文档", "Document created from template"), "saved");
+    });
   }
   async function openLibraryDocument(id) {
     if (!id || id === currentDocumentId) return;
+    return enqueueDocumentTransition(async (generation) => {
     const saved = await saveActiveDocumentNow();
-    if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再切换。", "Autosave failed — export a backup before switching documents."), "error"); return; }
-    const opened = await Store.openDocument(id);
+    if (!saveSucceeded(saved)) { reportSaveFailure(saved); return; }
+    if (!transitionIsCurrent(generation)) return;
+    const opened = await Store.openDocument(id, { makeCurrent: false });
     if (!opened || !opened.record || opened.backend === "failed") { setStatus(tr("无法打开文档。", "Could not open document."), "error"); return; }
     const finalSaved = await saveActiveDocumentNow();
-    if (finalSaved === "failed") { setStatus(tr("切换期间产生的编辑无法保存；请导出当前文档备份后重试。", "Edits made during the switch could not be saved; export the current document and try again."), "error"); return; }
-    await activateDocument(opened.record);
+    if (!saveSucceeded(finalSaved)) { reportSaveFailure(finalSaved); return; }
+    if (!await selectAndActivateDocument(opened.record, generation)) return;
+    });
   }
   async function finishDocumentRename(id, name) {
     // Renaming a current document used to cancel the debounce timer and write
@@ -914,8 +1225,14 @@
         return;
       }
     }
-    const renamed = await Store.renameDocument(id, name);
-    if (!renamed || !renamed.record || renamed.backend === "failed") { setStatus(tr("重命名失败。", "Could not rename document."), "error"); return; }
+    const record = documents.find((item) => item && item.id === id);
+    const requestedName = record && record.document && record.document.metadata && record.document.metadata.documentType === "Project"
+      ? uniqueLibraryDocumentName(cleanProjectName(name, documentName(record)), id)
+      : name;
+    const renamed = await Store.renameDocument(id, requestedName, documentRevisions.get(id));
+    if (!renamed || !renamed.record || !saveSucceeded(renamed.backend)) { reportSaveFailure(renamed && renamed.backend); return; }
+    documentRevisions.set(id, Number.isSafeInteger(renamed.record.revision) ? renamed.record.revision : 0);
+    renameDrafts.delete(id);
     renamingDocumentId = "";
     if (id === currentDocumentId) {
       const persisted = Model.normalizeDocument(renamed.record.document, { allowRemoteImages: true });
@@ -930,8 +1247,8 @@
       }
       changed({ outline: isProjectDocument(), chrome: true });
       const reconciled = await saveActiveDocumentNow();
-      if (reconciled === "failed") {
-        setStatus(tr("重命名已写入，但并发编辑无法保存；请立即导出备份。", "Rename was written, but concurrent edits could not be saved; export a backup now."), "error");
+      if (!saveSucceeded(reconciled)) {
+        reportSaveFailure(reconciled);
         return;
       }
       renderAll();
@@ -945,16 +1262,19 @@
     // source row is not the currently open document. Flush the active
     // record first so its pending edits cannot be lost when the copy
     // replaces the in-memory editor state.
+    return enqueueDocumentTransition(async (generation) => {
     const saved = await saveActiveDocumentNow();
-    if (saved === "failed") { setStatus(tr("自动保存失败；请导出文档备份后再复制。", "Autosave failed — export a backup before duplicating."), "error"); return; }
+    if (!saveSucceeded(saved)) { reportSaveFailure(saved); return; }
     const source = documents.find((record) => record.id === id);
     const copiedName = uniqueLibraryDocumentName(documentName(source) + tr(" 副本", " copy"));
-    const duplicate = await Store.duplicateDocument(id, copiedName);
+    if (!transitionIsCurrent(generation)) return;
+    const duplicate = await Store.duplicateDocument(id, copiedName, { makeCurrent: false });
     if (!duplicate || !duplicate.record || duplicate.backend === "failed") { setStatus(tr("复制文档失败。", "Could not duplicate document."), "error"); return; }
     const finalSaved = await saveActiveDocumentNow();
-    if (finalSaved === "failed") { setStatus(tr("复制期间产生的编辑无法保存；副本已创建但尚未打开，请先导出当前文档备份。", "Edits made during duplication could not be saved; the copy was created but not opened. Export the current document first."), "error"); return; }
-    await activateDocument(duplicate.record, { status: false });
+    if (!saveSucceeded(finalSaved)) { reportSaveFailure(finalSaved); return; }
+    if (!await selectAndActivateDocument(duplicate.record, generation, { status: false })) return;
     setStatus(tr("已创建文档副本", "Document duplicated"), "saved");
+    });
   }
   async function openRemainingDocumentAfterDeletion() {
     // Deleting the active document must never leave its in-memory contents
@@ -962,17 +1282,37 @@
     // first autosave that deleted state as an unintended extra document.
     currentDocumentId = "";
     hasUnsavedChanges = false;
-    documents = await Store.listDocuments();
+    documentRevisions.clear();
+    // Immediately sever the deleted payload from the editor. If storage is
+    // unavailable while finding a successor, subsequent typing starts a
+    // genuinely blank new document rather than resurrecting deleted content.
+    state = Model.blankDocument();
+    selectedBlockId = "";
+    activeOutlineBlockId = "";
+    insertionIndex = null;
+    renderAll();
+    const library = typeof Store.listDocumentLibrary === "function"
+      ? await Store.listDocumentLibrary()
+      : { records: await Store.listDocuments(), backend: "unknown" };
+    if (!library || library.backend === "failed") {
+      documents = [];
+      renderDocumentLibrary();
+      return false;
+    }
+    documents = Array.isArray(library.records) ? library.records : [];
+    renderDocumentLibrary();
     const next = documents[0];
     if (next) {
-      const opened = await Store.openDocument(next.id);
+      const opened = await Store.openDocument(next.id, { makeCurrent: false });
       if (!opened || !opened.record || opened.backend === "failed") return false;
-      await activateDocument(opened.record, { status: false });
+      const selected = await Store.setCurrentDocument(opened.record.id);
+      if (!selected || !selected.record || selected.backend === "failed") return false;
+      await activateDocument(selected.record, { status: false });
       return true;
     }
 
     // A completely empty library still needs an editable starting document.
-    const created = await Store.createDocument(Model.blankDocument());
+    const created = await Store.createDocument(state);
     if (!created || !created.record || created.backend === "failed") return false;
     await activateDocument(created.record, { status: false });
     return true;
@@ -984,27 +1324,28 @@
       title: tr("删除此文档？", "Delete this document?"),
       message: tr("“" + documentName(record) + "”将从此设备移除。", "“" + documentName(record) + "” will be removed from this device."),
       confirmLabel: tr("删除文档", "Delete document"),
-      onConfirm: async () => {
-  const deletingCurrent = id === currentDocumentId;
-  if (deletingCurrent) {
-// Deletion intentionally discards edits that have not entered the save
-// queue yet. A save already in flight is different: it must finish
-// before deletion, otherwise it can complete afterwards and recreate
-// the record the author just removed.
-clearTimeout(saveTimer);
-try { await saveQueue; } catch (_) {}
-  }
-  const backend = await Store.deleteDocument(id);
-  if (backend === "failed") { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
-  if (deletingCurrent) {
-const opened = await openRemainingDocumentAfterDeletion();
-if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
-setStatus(tr("文档已删除", "Document deleted"), "saved");
-  } else {
-await refreshDocuments();
-setStatus(tr("文档已删除", "Document deleted"), "saved");
-  }
-}
+      onConfirm: () => enqueueDocumentTransition(async (generation) => {
+        const deletingCurrent = id === currentDocumentId;
+        if (deletingCurrent) {
+          // Deletion intentionally discards edits that have not entered the
+          // save queue yet. A write already in flight must complete before
+          // deletion so it cannot recreate the record afterwards.
+          clearTimeout(saveTimer);
+          try { await saveQueue; } catch (_) {}
+        }
+        if (!transitionIsCurrent(generation)) return;
+        const backend = await Store.deleteDocument(id);
+        if (!saveSucceeded(backend)) { setStatus(tr("删除文档失败。", "Could not delete document."), "error"); return; }
+        documentRevisions.delete(id);
+        try { root.localStorage.removeItem(outlineCollapseStorageKey(id)); } catch (_) {}
+        if (deletingCurrent) {
+          const opened = await openRemainingDocumentAfterDeletion();
+          if (!opened) { setStatus(tr("删除后无法打开其余文档。", "Could not open a remaining document after deletion."), "error"); return; }
+        } else {
+          await refreshDocuments();
+        }
+        setStatus(tr("文档已删除", "Document deleted"), "saved");
+      })
     });
   }
   async function saveCurrentAsTemplate() {
@@ -1072,13 +1413,23 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
         // A neutral Section semantic block is a real top-level chapter: it
         // shares the editorial appearance of Introduction without inheriting
         // that domain-specific meaning, and can still own subsections.
-        if (!title) { semanticLevel = 0; return; }
+        // An empty editorial section is still a real navigable chapter on the
+        // paper. Match its visible placeholder instead of making it vanish
+        // from Outline and leaving a section with no structural controls.
+        if (!title) title = tr("未命名章节", "Untitled section");
         level = 0;
         semanticLevel = 1;
       } else if (block.type === "semantic") {
         title = outlineTitle(block);
+        if (!title && isEditorialPrimary(block)) title = tr("未命名章节", "Untitled section");
         if (!title) return;
-        level = semanticLevel;
+        // Any semantic block that is rendered as an editorial primary on the
+        // paper must also become a first-level Outline node. Otherwise its
+        // folio number says "chapter" while navigation says "child item".
+        if (isEditorialPrimary(block)) {
+          level = 0;
+          semanticLevel = 1;
+        } else level = semanticLevel;
       } else {
         return;
       }
@@ -1146,6 +1497,27 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     delete values.id;
     return Model.createBlock(block.type, values);
   }
+  function hasBlockCapacity(additional) {
+    const requested = Math.max(0, Number(additional) || 0);
+    if (!state || state.blocks.length + requested <= Model.LIMITS.maxBlocks) return hasRenderCapacity(requested);
+    setStatus(tr("文档最多包含 " + Model.LIMITS.maxBlocks + " 个内容块。", "A document can contain at most " + Model.LIMITS.maxBlocks + " blocks."), "warning");
+    return false;
+  }
+  function blockRenderUnits(block) {
+    if (!block || typeof block !== "object") return 1;
+    if (block.type === "table") return Math.max(1, tableColumnCount(block) * Math.max(1, Array.isArray(block.rows) ? block.rows.length : 1));
+    if (["list", "key-value", "stats"].includes(block.type)) return Math.max(1, Array.isArray(block.items) ? block.items.length : 1);
+    return 1;
+  }
+  function documentRenderUnits(blocks) {
+    return (Array.isArray(blocks) ? blocks : []).reduce((total, block) => total + blockRenderUnits(block), 0);
+  }
+  function hasRenderCapacity(additional) {
+    const requested = Math.max(0, Number(additional) || 0);
+    if (!state || documentRenderUnits(state.blocks) + requested <= Model.LIMITS.maxRenderUnits) return true;
+    setStatus(tr("文档内容过多，无法安全地在当前页面中渲染。", "This document has reached the safe rendering limit."), "warning");
+    return false;
+  }
   function finishStructuralChange(selectedId, focusTitle) {
     selectedBlockId = selectedId || "";
     activeOutlineBlockId = "";
@@ -1158,7 +1530,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     }
   }
   function insertStructuralBlock(index, block, focusTitle) {
-    if (index < 0) return;
+    if (index < 0 || !hasBlockCapacity(1)) return;
     clearStructuralUndo();
     state.blocks.splice(index, 0, block);
     finishStructuralChange(block.id, Boolean(focusTitle));
@@ -1186,7 +1558,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     const range = getSectionRange(blockId);
     if (!range) return;
     const copies = range.blocks.map(uniqueBlockCopy);
-    if (!copies.length) return;
+    if (!copies.length || !hasBlockCapacity(copies.length) || !hasRenderCapacity(documentRenderUnits(copies))) return;
     clearStructuralUndo();
     state.blocks.splice(range.end, 0, ...copies);
     finishStructuralChange(copies[0].id, false);
@@ -1360,7 +1732,28 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     });
   }
   function persistOutlineCollapseState() {
-    try { root.localStorage.setItem(OUTLINE_COLLAPSE_KEY, JSON.stringify(Array.from(collapsedOutlineIds))); } catch (_) {}
+    if (!currentDocumentId) return;
+    const knownIds = new Set(buildOutlineTree().entries.map((entry) => entry.id));
+    collapsedOutlineIds = new Set(Array.from(collapsedOutlineIds).filter((id) => knownIds.has(id)));
+    try { root.localStorage.setItem(outlineCollapseStorageKey(currentDocumentId), JSON.stringify(Array.from(collapsedOutlineIds))); } catch (_) {}
+  }
+  function outlineCollapseStorageKey(documentId) {
+    return OUTLINE_COLLAPSE_KEY + ":" + encodeURIComponent(String(documentId || ""));
+  }
+  function restoreOutlineCollapseState(documentId, migrateLegacy) {
+    if (!documentId) { collapsedOutlineIds = new Set(); return; }
+    try {
+      const key = outlineCollapseStorageKey(documentId);
+      let stored = root.localStorage.getItem(key);
+      // One-time migration from the formerly global key. New documents never
+      // read it, so matching imported block IDs cannot leak state across files.
+      if (stored === null && migrateLegacy) {
+        stored = root.localStorage.getItem(OUTLINE_COLLAPSE_KEY);
+        if (stored !== null) root.localStorage.removeItem(OUTLINE_COLLAPSE_KEY);
+      }
+      const parsed = JSON.parse(stored || "[]");
+      collapsedOutlineIds = new Set(Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string") : []);
+    } catch (_) { collapsedOutlineIds = new Set(); }
   }
   function setOutlineCollapsed(blockId, collapsed) {
     if (collapsed) collapsedOutlineIds.add(blockId);
@@ -1547,6 +1940,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     state.metadata.updatedAt = new Date().toISOString();
     editRevision += 1;
     hasUnsavedChanges = true;
+    if (persistenceAvailable) setStatus(tr("正在保存…", "Saving…"), "saving");
     if (changes.structure) renderCanvas();
     if (changes.outline) renderOutline();
     if (changes.inspector) renderInspector();
@@ -1554,10 +1948,17 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     scheduleSave();
   }
   function update(block, key, value, options) {
-    block[key] = value;
+    block[key] = typeof value === "string" && value.length > Model.LIMITS.maxStringLength
+      ? value.slice(0, Model.LIMITS.maxStringLength) : value;
     // Changing a remote URL is a new network request, so a previous explicit
     // approval can never accidentally carry over to it.
     if (block.type === "image" && key === "src") delete block.remoteApproved;
+    // Remember that an author touched alt text. Replacement images may update
+    // an automatically generated filename label, never a deliberate one.
+    if (block.type === "image" && key === "alt") {
+      delete block.__pnAutoAlt;
+      block.__pnAltTouched = true;
+    }
     if (isProjectDocument() && block.type === "title" && key === "content") {
       setProjectDocumentName(value, null);
     }
@@ -1626,7 +2027,12 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     return paragraphs(text);
   }
   function isProofNoteDocument() {
-    return Boolean(state && state.metadata && String(state.metadata.templateName || "").trim() === "Proof Note");
+    // Names are author-editable presentation text. Only a stable built-in
+    // template identity may select the Proof Note renderer; otherwise a
+    // custom template named “Proof Note” could override a Project's chrome.
+    return Boolean(state && state.metadata
+      && String(state.metadata.templateId || "").trim() === "proof-note"
+      && state.metadata.documentType !== "Project");
   }
   function isProjectDocument() {
     return Boolean(state && state.metadata && state.metadata.documentType === "Project");
@@ -1640,7 +2046,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       // An explicitly blank runningHeader.left intentionally hides a running
       // title in older/imported Projects. Any subsequent title edit writes the
       // canonical metadata name to both surfaces.
-      left: has("left") ? String(header.left || "") : String(metadata.name || tr("未命名文档", "Untitled document")),
+      left: has("left") ? String(header.left || "") : String(metadata.name || readerTr("未命名文档", "Untitled document")),
       right: has("right") ? String(header.right || "") : "Project"
     };
   }
@@ -1675,7 +2081,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     // page footer, and paper title. AI JSON supplies content; importing it
     // into a Blank Project must not leave any of those chrome surfaces empty.
     const title = Array.isArray(document.blocks) ? document.blocks.find((block) => block && block.type === "title") : null;
-    const requestedName = String(title && title.content || document.metadata.name || "").trim() || tr("未命名文档", "Untitled document");
+    const requestedName = cleanProjectName(title && title.content || document.metadata.name, tr("未命名文档", "Untitled document"));
     const name = uniqueLibraryDocumentName(requestedName);
     document.metadata.name = name;
     document.metadata.documentType = "Project";
@@ -1684,7 +2090,11 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     const inheritedRight = context && context.runningHeader ? context.runningHeader.right : "";
     document.metadata.runningHeader = {
       left: name,
-      right: String(importedHeader.right || inheritedRight || "").trim() || "Project"
+      // A missing right label may inherit a Blank Project's display preset;
+      // an explicit empty right label is author intent and must remain empty.
+      right: Object.prototype.hasOwnProperty.call(importedHeader, "right")
+        ? String(importedHeader.right || "")
+        : String(inheritedRight || "").trim() || "Project"
     };
     // Visible fields and subtitle treatment are display preferences. Author,
     // date, status and source belong to this imported document and must never
@@ -1694,7 +2104,10 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       document.metadata.headerSubtitle = { visible: context.headerSubtitle.visible !== false };
     }
     if (title) title.content = name;
-    else document.blocks.unshift(Model.createBlock("title", { content: name }));
+    // Imports are validated before this point, but a valid 2,000-block file
+    // can still omit a title. Keep it valid rather than adding block 2,001
+    // and relying on later normalisation to drop the tail.
+    else if (document.blocks.length < Model.LIMITS.maxBlocks) document.blocks.unshift(Model.createBlock("title", { content: name }));
     return document;
   }
   function syncProjectDocumentNameControls(value, source) {
@@ -1710,9 +2123,13 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       else if (control.value !== name) control.value = name;
     });
   }
+  function cleanProjectName(value, fallback) {
+    const name = String(value || "").replace(/\s+/g, " ").trim();
+    return name || String(fallback || tr("未命名文档", "Untitled document")).replace(/\s+/g, " ").trim() || tr("未命名文档", "Untitled document");
+  }
   function setProjectDocumentName(value, source) {
     if (!state || !isProjectDocument()) return;
-    const name = String(value || "");
+    const name = cleanProjectName(value, state.metadata.name);
     const current = projectRunningHeader();
     state.metadata.name = name;
     state.metadata.runningHeader = { left: name, right: current.right };
@@ -1747,7 +2164,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     if (!block) return;
     if (value === "auto") delete block.appearance;
     else block.appearance = value;
-    changed({ structure: true, inspector: true });
+    changed({ structure: true, outline: true, inspector: true });
   }
   function isEditorialPrimary(block) {
     // Level-one headings are a compatibility path for older/generated JSON
@@ -1760,15 +2177,16 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
   function editorialDisplayTitle(block, key) {
     const title = String(block && block[key] || "");
     if (!block || block.type !== "heading" || block.level !== 1) return title;
-    // Older AI prompts frequently generated "1. Title" or "01 Title".
+    // Older AI prompts frequently generated "1. Title" or "01. Title".
     // The renderer already supplies that number as a separate visual element,
-    // so omit only a leading one- or two-digit/roman-numeral marker on paper.
-    return title.replace(/^\s*(?:(?:\d{1,2}|[ivxlcdm]+)\s*(?:[.)]|[：:])\s*|(?:\d{1,2}|[ivxlcdm]+)\s+)(?=\S)/i, "");
+    // so omit a clearly punctuated legacy marker only. Bare phrases such as
+    // “20 Questions” and “IV Therapy” are legitimate titles, not numbers.
+    return title.replace(/^\s*(?:(?:\d{1,2}|i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii|xiii|xiv|xv|xvi|xvii|xviii|xix|xx)\s*(?:[.)]|[：:])\s*)/i, "");
   }
-  function editorialBodyVisible(block) {
+  function semanticBodyVisible(block) {
     return !block || block.bodyVisible !== false;
   }
-  function setEditorialBodyVisible(block, visible) {
+  function setSemanticBodyVisible(block, visible) {
     if (!block || block.type !== "semantic") return;
     if (visible) delete block.bodyVisible;
     else block.bodyVisible = false;
@@ -1786,6 +2204,22 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     focusCanvasControl(block.id, ".pn-canvas-component-summary-input");
   }
   function editorialSectionNumber(index) {
+    if (editorialNumberRevision !== editRevision || editorialNumberState !== state) {
+      editorialSectionNumbers = new Map();
+      let sequence = 0;
+      (state && state.blocks || []).forEach((candidate) => {
+        if (!isEditorialPrimary(candidate)) return;
+        sequence += 1;
+        editorialSectionNumbers.set(candidate.id, String(sequence).padStart(2, "0"));
+      });
+      editorialNumberRevision = editRevision;
+      editorialNumberState = state;
+    }
+    const block = state && state.blocks && state.blocks[index];
+    const cached = block && editorialSectionNumbers.get(block.id);
+    if (cached) return cached;
+    // A defensive fallback only for callers passing an index outside the
+    // current state; normal render paths always use the precomputed map.
     let number = 0;
     state.blocks.slice(0, index + 1).forEach((block) => { if (isEditorialPrimary(block)) number += 1; });
     return String(number).padStart(2, "0");
@@ -1829,8 +2263,10 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
   function headerSubtitleIndex() {
     const titleIndex = headerTitleIndex();
     if (titleIndex < 0 || !state) return -1;
-    const subtitleIndex = state.blocks.findIndex((block) => block.type === "subtitle");
-    return subtitleIndex === titleIndex + 1 ? subtitleIndex : -1;
+    // Existing imported documents may place their subtitle away from the
+    // masthead. It is still the document's subtitle; never manufacture a
+    // second one merely because the original is non-adjacent.
+    return state.blocks.findIndex((block) => block.type === "subtitle");
   }
   function headerSubtitleVisible() {
     const display = state && state.metadata && state.metadata.headerSubtitle;
@@ -1840,7 +2276,10 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     if (!state || !hasDocumentMetadataHeader()) return;
     const titleIndex = headerTitleIndex();
     if (visible && titleIndex >= 0 && headerSubtitleIndex() < 0) {
-      state.blocks.splice(titleIndex + 1, 0, Model.createBlock("subtitle", { content: "A concise statement of the result." }));
+      if (!hasBlockCapacity(1)) return;
+      // A display toggle must never invent prose (and certainly not an
+      // English sentence in a document written in another language).
+      state.blocks.splice(titleIndex + 1, 0, Model.createBlock("subtitle", { content: "" }));
     }
     state.metadata.headerSubtitle = { visible: Boolean(visible) };
     changed({ structure: true, inspector: true, chrome: true });
@@ -1851,7 +2290,8 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     const fields = proofMetadataFields().map((key) => [key, {
       author: tr("作者", "Author"), date: tr("日期", "Date"), status: tr("状态", "Status")
     }[key]]);
-    if (!fields.length) return null;
+    const showSource = Boolean(values.source.trim());
+    if (!fields.length && !showSource) return null;
     // Proof Note deliberately retains its traditional empty metadata row;
     // Projects do not. The latter can be revealed through the masthead's
     // contextual controls when an author actually wants to fill it in.
@@ -1876,7 +2316,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       }));
       item.appendChild(value); grid.appendChild(item);
     });
-    metadata.appendChild(grid);
+    if (fields.length) metadata.appendChild(grid);
     if (!opts.embedded) {
       metadata.addEventListener("pointerdown", (event) => {
         selectProofMetadata({ openInspector: !event.target.closest("input, textarea, select") });
@@ -1886,7 +2326,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       });
       metadata.addEventListener("focusin", () => selectProofMetadata({ openInspector: false }));
     }
-    if (values.source.trim()) {
+    if (showSource) {
       const source = element("dl", { class: "pn-proof-source" });
       source.appendChild(element("dt", {}, tr("来源", "Source")));
       const sourceValue = element("dd");
@@ -1943,6 +2383,13 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     els.canvas.classList.toggle("pn-proofnote-document", isProofNoteDocument());
     els.canvas.classList.toggle("pn-project-document", isProjectDocument());
     const headerRange = proofHeaderRange();
+    // A legal Project/Proof Note may deliberately omit a title block. It
+    // still owns document metadata, which must remain visible and selectable
+    // instead of disappearing because there is no masthead anchor.
+    if (!headerRange && hasDocumentMetadataHeader() && headerTitleIndex() < 0) {
+      const metadata = renderProofMetadata();
+      if (metadata) els.canvas.appendChild(metadata);
+    }
     // Older imported Proof Note documents can place title and subtitle apart.
     // Preserve the metadata in that unusual ordering instead of dropping it
     // simply because those blocks cannot safely form one visual header.
@@ -2030,14 +2477,20 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     }
     if (block.type === "equation") {
       body.className = "pn-equation pn-canvas-equation";
-      const field = canvasField(block, "content", { fieldClass: "pn-canvas-equation-field", controlClass: "pn-canvas-equation-input", placeholder: "\\\\[ … \\]" });
+      const field = canvasField(block, "content", { fieldClass: "pn-canvas-equation-field", controlClass: "pn-canvas-equation-input", placeholder: "\\\\[ … \\]", maxLength: Model.LIMITS.maxEquationLength });
       const preview = element("div", { class: "pn-equation-preview", "aria-live": "polite" });
       const refreshPreview = () => {
         const value = String(block.content || "").trim();
         preview.hidden = !value;
         preview.innerHTML = value ? math(value) : "";
       };
-      field.querySelector("textarea, input").addEventListener("input", refreshPreview);
+      let previewTimer = 0;
+      const control = field.querySelector("textarea, input");
+      control.addEventListener("input", () => {
+        root.clearTimeout(previewTimer);
+        previewTimer = root.setTimeout(refreshPreview, 180);
+      });
+      control.addEventListener("blur", () => { root.clearTimeout(previewTimer); refreshPreview(); });
       refreshPreview();
       body.append(field, preview);
       return;
@@ -2053,14 +2506,14 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       const defaultLabel = isSemantic && OUTLINE_SEMANTIC_LABEL[block.kind] ? (english() ? OUTLINE_SEMANTIC_LABEL[block.kind].en : OUTLINE_SEMANTIC_LABEL[block.kind].zh) : optionText(block.type);
       body.appendChild(element("div", { class: "pn-component-label" }, block.label || defaultLabel));
       body.appendChild(canvasField(block, "title", { multiline: false, fieldClass: "pn-canvas-component-title", controlClass: "pn-canvas-component-title-input", placeholder: label("标题", "Title"), change: { outline: isSemantic } }));
-      body.appendChild(canvasRichTextField(block, "content", {
+      if (!isSemantic || semanticBodyVisible(block)) body.appendChild(canvasRichTextField(block, "content", {
         fieldClass: "pn-canvas-component-body",
         controlClass: "pn-canvas-component-body-input",
         previewClass: "pn-canvas-component-body-preview",
         placeholder: label("开始输入…", "Start writing…"),
         editLabel: label("编辑正文", "Edit content")
       }));
-      if (isSemantic && ["result", "verification"].includes(block.kind)) {
+      if (isSemantic && (["result", "verification"].includes(block.kind) || semanticSummaryVisible(block))) {
         if (semanticSummaryVisible(block)) {
           body.appendChild(canvasRichTextField(block, "summary", {
             fieldClass: "pn-canvas-component-summary",
@@ -2078,7 +2531,13 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     if (block.type === "code") {
       body.className = "pn-code pn-canvas-code";
       body.appendChild(element("span", { class: "pn-code-language" }, codeLanguageDisplay(block.language)));
-      body.appendChild(canvasField(block, "content", { fieldClass: "pn-canvas-code-field", controlClass: "pn-canvas-code-input", rows: 6, placeholder: label("粘贴或输入代码", "Paste or write code") }));
+      const codeField = canvasField(block, "content", { fieldClass: "pn-canvas-code-field", controlClass: "pn-canvas-code-input", rows: 6, placeholder: label("粘贴或输入代码", "Paste or write code") });
+      body.appendChild(codeField);
+      // The textarea remains the sole editor source, while this print-only
+      // reader copy ensures Cmd+P never emits a focused form control.
+      const printCode = element("pre", { class: "pn-canvas-code-print" }, block.content);
+      codeField.querySelector("textarea, input").addEventListener("input", () => { printCode.textContent = block.content; });
+      body.appendChild(printCode);
       const codeCopy = button("", "pn-code-copy", async () => {
         const copied = await copyBlockText(block.content);
         if (!copied) return;
@@ -2126,7 +2585,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       change: { outline: true }
     }));
     body.appendChild(head);
-    if (block.type === "semantic" && editorialBodyVisible(block)) {
+    if (block.type === "semantic" && semanticBodyVisible(block)) {
       body.appendChild(canvasRichTextField(block, "content", {
         fieldClass: "pn-editorial-section-body",
         controlClass: "pn-editorial-section-body-input",
@@ -2149,7 +2608,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     body.className = "pn-editorial-detail pn-editorial-" + block.kind;
     body.appendChild(element("div", { class: "pn-component-label" }, semanticLabel));
     body.appendChild(canvasField(block, "title", { multiline: false, fieldClass: "pn-editorial-detail-title", controlClass: "pn-editorial-detail-title-input", placeholder: label("标题", "Title"), change: { outline: true } }));
-    body.appendChild(canvasRichTextField(block, "content", {
+    if (semanticBodyVisible(block)) body.appendChild(canvasRichTextField(block, "content", {
       fieldClass: "pn-editorial-detail-body",
       controlClass: "pn-editorial-detail-body-input",
       previewClass: "pn-editorial-detail-body-preview",
@@ -2185,11 +2644,13 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     return tools;
   }
   function addListItem(block, index, initialValue) {
-    if (reachedCollectionLimit(Model.LIMITS.maxListItems - block.items.length, tr("列表最多可包含 1000 项。", "A list can contain at most 1,000 items."))) return;
+    if (reachedCollectionLimit(Model.LIMITS.maxListItems - block.items.length, tr("列表最多可包含 1000 项。", "A list can contain at most 1,000 items."))) return false;
+    if (!hasRenderCapacity(1)) return false;
     const nextIndex = Math.max(0, Math.min(block.items.length, index));
     block.items.splice(nextIndex, 0, initialValue || "");
     changed({ structure: true, inspector: true });
     focusCanvasControl(block.id, '.pn-canvas-list-input[data-item-index="' + nextIndex + '"]');
+    return true;
   }
   function removeListItem(block, index) {
     if (block.items.length <= 1) {
@@ -2211,12 +2672,18 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       const control = field.querySelector("textarea, input");
       control.dataset.itemIndex = String(itemIndex);
       control.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && !event.shiftKey) {
+        if (event.key === "Enter" && !event.shiftKey && !isComposingInput(event)) {
           event.preventDefault();
+          // Do not split first and ask for capacity later: at the item limit
+          // that sequence discarded everything right of the caret.
+          if (block.items.length >= Model.LIMITS.maxListItems) {
+            setStatus(tr("列表最多可包含 1000 项。", "A list can contain at most 1,000 items."), "warning");
+            return;
+          }
           const start = Number.isFinite(control.selectionStart) ? control.selectionStart : String(block.items[itemIndex] || "").length;
           const value = String(block.items[itemIndex] || "");
           block.items[itemIndex] = value.slice(0, start);
-          addListItem(block, itemIndex + 1, value.slice(start));
+          if (!addListItem(block, itemIndex + 1, value.slice(start))) block.items[itemIndex] = value;
         } else if (event.key === "Backspace" && !control.value && control.selectionStart === 0) {
           event.preventDefault();
           removeListItem(block, itemIndex);
@@ -2239,6 +2706,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
   }
   function addDataItem(block) {
     if (reachedCollectionLimit(Model.LIMITS.maxDataItems - block.items.length, tr("此内容块最多可包含 1000 项。", "This block can contain at most 1,000 items."))) return;
+    if (!hasRenderCapacity(1)) return;
     block.items.push(dataItemDefault(block.type));
     changed({ structure: true, inspector: true });
   }
@@ -2276,8 +2744,16 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
   }
   function tableHasHeader(block) { return block.header !== false; }
   function tableColumnCount(block) { return Array.isArray(block.columns) && block.columns.length ? block.columns.length : 1; }
+  function tableWouldExceedCellLimit(columns, rows) {
+    return columns * rows > Model.LIMITS.maxTableCells;
+  }
   function addTableRow(block) {
     if (reachedCollectionLimit(Model.LIMITS.maxTableRows - block.rows.length, tr("表格最多可包含 500 行。", "A table can contain at most 500 rows."))) return;
+    if (tableWouldExceedCellLimit(tableColumnCount(block), block.rows.length + 1)) {
+      setStatus(tr("表格最多可包含 " + Model.LIMITS.maxTableCells + " 个单元格。", "A table can contain at most " + Model.LIMITS.maxTableCells + " cells."), "warning");
+      return;
+    }
+    if (!hasRenderCapacity(tableColumnCount(block))) return;
     block.rows.push(Array.from({ length: tableColumnCount(block) }, () => ""));
     changed({ structure: true, inspector: true });
     focusCanvasControl(block.id, '.pn-canvas-table-input[data-row-index="' + (block.rows.length - 1) + '"][data-column-index="0"]');
@@ -2290,6 +2766,11 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
   }
   function addTableColumn(block) {
     if (reachedCollectionLimit(Model.LIMITS.maxTableColumns - tableColumnCount(block), tr("表格最多可包含 50 列。", "A table can contain at most 50 columns."))) return;
+    if (tableWouldExceedCellLimit(tableColumnCount(block) + 1, block.rows.length)) {
+      setStatus(tr("表格最多可包含 " + Model.LIMITS.maxTableCells + " 个单元格。", "A table can contain at most " + Model.LIMITS.maxTableCells + " cells."), "warning");
+      return;
+    }
+    if (!hasRenderCapacity(Math.max(1, block.rows.length))) return;
     const columnIndex = tableColumnCount(block);
     block.columns.push(tableHasHeader(block) ? tr("列 " + (columnIndex + 1), "Column " + (columnIndex + 1)) : "");
     block.rows.forEach((row) => row.push(""));
@@ -2307,15 +2788,10 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
   function setTableHeader(block, visible) {
     const isVisible = tableHasHeader(block);
     if (visible === isVisible) return;
-    if (visible) {
-      const firstRow = block.rows.shift() || Array.from({ length: tableColumnCount(block) }, () => "");
-      block.columns = Array.from({ length: tableColumnCount(block) }, (_, index) => String(firstRow[index] || ""));
-      block.header = true;
-    } else {
-      block.rows.unshift(block.columns.slice());
-      block.columns = block.columns.map(() => "");
-      block.header = false;
-    }
+    // Header is presentation only. Moving columns into rows changes content
+    // and can push a valid table over its row limit, causing later normalise
+    // paths to trim real cells. Keep the table shape completely untouched.
+    block.header = Boolean(visible);
     changed({ structure: true, inspector: true });
   }
   function imageFilePicker(block, labelText) {
@@ -2329,18 +2805,86 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
         file.value = "";
         return;
       }
+      const sourceDocumentId = currentDocumentId;
+      const sourceGeneration = documentGeneration;
       const reader = new FileReader();
-      reader.onload = () => {
-        block.src = String(reader.result || "");
+      reader.onload = async () => {
+        const source = String(reader.result || "");
+        // accept is a picker hint, not validation. Validate the actual data
+        // URL before changing the block so Replace image can never destroy a
+        // working image with an unsupported file.
+        if (!/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(source)) {
+          setStatus(tr("仅支持 PNG、JPEG、GIF 或 WebP 图片。", "Only PNG, JPEG, GIF, and WebP images are supported."), "error");
+          return;
+        }
+        const dimensions = await imageDimensionsWithinLimit(source);
+        // A document switch while FileReader/Image decode was in flight must
+        // not mutate a detached block or mark the newly active document dirty.
+        if (sourceGeneration !== documentGeneration || sourceDocumentId !== currentDocumentId || !state || !state.blocks.includes(block)) return;
+        if (!dimensions.valid) {
+          setStatus(tr("图片像素尺寸过大或无法安全解码。", "Image dimensions are too large or could not be decoded safely."), "error");
+          return;
+        }
+        const candidate = Model.normalizeDocument(state, { allowRemoteImages: true });
+        const candidateBlock = candidate.blocks.find((item) => item.id === block.id);
+        if (candidateBlock) candidateBlock.src = source;
+        if (!portableDocumentWithinLimit(candidate)) {
+          setStatus(tr("加入这张图片会使备份超过 25MB，无法保证重新导入。", "Adding this image would make the backup exceed 25 MB and unable to re-import."), "error");
+          return;
+        }
+        block.src = source;
         delete block.remoteApproved;
-        if (!block.alt) block.alt = image.name.replace(/\.[^.]+$/, "");
+        if (block.__pnAutoAlt === true || (!block.alt && block.__pnAltTouched !== true)) {
+          block.alt = image.name.replace(/\.[^.]+$/, "");
+          block.__pnAutoAlt = true;
+        }
         changed({ structure: true, inspector: true });
       };
+      reader.onerror = () => setStatus(tr("无法读取该图片；原图片未更改。", "Could not read that image; the existing image was not changed."), "error");
+      reader.onabort = () => setStatus(tr("图片读取已取消；原图片未更改。", "Image reading was cancelled; the existing image was not changed."), "warning");
       reader.readAsDataURL(image);
     });
     const picker = element("div", { class: "pn-image-picker" });
     picker.append(choose, file);
     return picker;
+  }
+  function imageDimensionsWithinLimit(source) {
+    return new Promise((resolve) => {
+      const image = new root.Image();
+      let settled = false;
+      const finish = (valid) => {
+        if (settled) return;
+        settled = true;
+        image.onload = null;
+        image.onerror = null;
+        resolve({ valid });
+      };
+      const timeout = root.setTimeout(() => finish(false), 5000);
+      image.onload = () => {
+        root.clearTimeout(timeout);
+        const width = Number(image.naturalWidth || image.width || 0);
+        const height = Number(image.naturalHeight || image.height || 0);
+        finish(width > 0 && height > 0 && width * height <= MAX_IMAGE_PIXELS);
+      };
+      image.onerror = () => { root.clearTimeout(timeout); finish(false); };
+      image.src = source;
+    });
+  }
+  async function importedImagesWithinLimit(document) {
+    const blocks = document && Array.isArray(document.blocks) ? document.blocks : [];
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index];
+      if (!block || block.type !== "image" || !/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(String(block.src || ""))) continue;
+      const result = await imageDimensionsWithinLimit(block.src);
+      if (!result.valid) return { valid: false, index };
+    }
+    return { valid: true };
+  }
+  function portableDocumentJson(document) {
+    return JSON.stringify(Model.normalizeDocument(document, { allowRemoteImages: true }), null, 2);
+  }
+  function portableDocumentWithinLimit(document) {
+    try { return utf8ByteLength(portableDocumentJson(document)) <= MAX_IMPORT_BYTES; } catch (_) { return false; }
   }
   function buildCanvasImage(body, block) {
     const source = safeImageSource(block);
@@ -2411,6 +2955,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     return point;
   }
   function insertBlock(type, index) {
+    if (!hasBlockCapacity(1)) return;
     clearStructuralUndo();
     // Adding a chapter from the document picker should produce the same
     // numbered, ruled editorial section used by a new project's Introduction,
@@ -2443,6 +2988,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
   function duplicateBlock(index) {
     clearStructuralUndo();
     const copy = Model.normalizeBlock(Object.assign({}, state.blocks[index], { id: "" }));
+    if (!hasBlockCapacity(1) || !hasRenderCapacity(blockRenderUnits(copy))) return;
     state.blocks.splice(index + 1, 0, copy);
     selectedBlockId = copy.id;
     changed({ structure: true, outline: true, inspector: true });
@@ -2579,6 +3125,20 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       if (structuralNode) moveStructuralNode(block.id, 1);
       else moveBlock(index, 1);
     }));
+    // Structural chapters already expose their subtree operations in the
+    // Outline menu. Ordinary blocks need an equally real escape hatch: they
+    // must never become permanent just because they do not appear in Outline.
+    if (!structuralNode) {
+      overflowMenu.appendChild(button(tr("复制内容块", "Duplicate block"), "pn-inspector-overflow-item", () => duplicateBlock(index)));
+      overflowMenu.appendChild(button(tr("删除内容块…", "Delete block…"), "pn-inspector-overflow-item pn-inspector-overflow-danger", () => {
+        openConfirm({
+          title: tr("删除此内容块？", "Delete this block?"),
+          message: tr("这项内容将从文档中移除。", "This content will be removed from the document."),
+          confirmLabel: tr("删除内容块", "Delete block"),
+          onConfirm: () => removeBlock(index)
+        });
+      }));
+    }
     overflow.append(overflowSummary, overflowMenu);
     context.appendChild(overflow);
     els.inspector.appendChild(context);
@@ -2612,7 +3172,7 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       advanced.open = false;
       advanced.appendChild(element("summary", {}, label("高级选项", "Advanced")));
       advanced.appendChild(selectField(label("呈现方式", "Presentation"), semanticPresentationValue(block), [["auto", label("自动", "Auto")], ["editorial", label("出版式", "Editorial")], ["card", label("卡片", "Card")]], (value) => setSemanticPresentation(block, value)));
-      if (isEditorialPrimary(block)) advanced.appendChild(inspectorToggle(label("显示正文", "Show body"), editorialBodyVisible(block), (visible) => setEditorialBodyVisible(block, visible)));
+      advanced.appendChild(inspectorToggle(label("显示正文", "Show body"), semanticBodyVisible(block), (visible) => setSemanticBodyVisible(block, visible)));
       advanced.appendChild(inputField(label("标签", "Label"), block.label, (value) => update(block, "label", value, { structure: true, outline: true }), { placeholder: label("可选标签", "Optional label") }));
       // Keep low-frequency controls visually subordinate to Structure rather
       // than letting them read as peer fields within the same section.
@@ -2648,11 +3208,20 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       ["status", tr("状态", "Status")]
     ].forEach(([field, label]) => display.appendChild(inspectorToggle(label, active.has(field), (visible) => setProofMetadataFieldVisible(field, visible))));
     els.inspector.appendChild(display);
-    if (!active.size) els.inspector.appendChild(element("p", { class: "pn-inspector-note" }, tr("这组元数据已从纸面隐藏；勾选任意字段即可重新显示。", "This metadata group is hidden from the page. Select any field to restore it.")));
+    const values = proofMetadataValues();
+    if (isProofNoteDocument()) display.appendChild(inputField(tr("笔记编号", "Note number"), values.noteNumber, (value) => {
+      state.metadata.noteNumber = value;
+      changed({ chrome: true });
+    }, { multiline: false, placeholder: tr("例如 057", "For example 057") }));
+    display.appendChild(inputField(tr("来源", "Source"), values.source, (value) => {
+      state.metadata.source = value;
+      changed({ chrome: true });
+    }, { multiline: true, rows: 1, autoGrow: true, placeholder: tr("可选来源", "Optional source") }));
+    if (!active.size) els.inspector.appendChild(element("p", { class: "pn-inspector-note" }, tr("这组元数据已从纸面隐藏；勾选任意字段即可重新显示。来源仍可单独显示。", "This metadata group is hidden from the page. Select any field to restore it; Source can still appear on its own.")));
   }
   function buildImageInspector(panel, block) {
     const label = (zh, en) => tr(zh, en);
-    panel.appendChild(inputField(label("图片 URL 或 data URL", "Image URL or data URL"), block.src, (value) => update(block, "src", value, { structure: true }), { placeholder: "https://…" }));
+    panel.appendChild(inputField(label("图片 URL 或 data URL", "Image URL or data URL"), block.src, (value) => update(block, "src", value, { structure: true, inspector: true }), { placeholder: "https://…" }));
     panel.appendChild(inputField(label("替代文字", "Alt text"), block.alt, (value) => update(block, "alt", value, { structure: true })));
     panel.appendChild(inputField(label("图片说明", "Caption"), block.caption, (value) => update(block, "caption", value, { structure: true })));
     if (/^https:\/\//i.test(String(block.src || "").trim()) && block.remoteApproved !== true) {
@@ -2683,9 +3252,9 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
   }
   function renderBlock(block, index) {
     switch (block.type) {
-      case "title": return "<header class=\"pn-document-title\"><h1>" + (inline(block.content) || tr("未命名文档", "Untitled document")) + "</h1></header>";
+      case "title": return "<header class=\"pn-document-title\"><h1>" + (inline(block.content) || readerTr("未命名文档", "Untitled document")) + "</h1></header>";
       case "subtitle": return block.content.trim() ? "<p class=\"pn-document-subtitle\">" + inline(block.content) + "</p>" : "";
-      case "heading": return isEditorialPrimary(block) ? renderEditorialPrimary(block, index, "content") : "<section class=\"pn-heading pn-heading-" + block.level + "\"><h" + (block.level + 1) + ">" + inline(block.content || tr("未命名章节", "Untitled heading")) + "</h" + (block.level + 1) + "></section>";
+      case "heading": return isEditorialPrimary(block) ? renderEditorialPrimary(block, index, "content") : "<section class=\"pn-heading pn-heading-" + block.level + "\"><h" + (block.level + 1) + ">" + inline(block.content || readerTr("未命名章节", "Untitled heading")) + "</h" + (block.level + 1) + "></section>";
       case "paragraph": return paragraphs(block.content);
       case "equation": return block.content.trim() ? "<div class=\"pn-equation\">" + math(block.content) + "</div>" : "";
       case "code": return renderCode(block);
@@ -2694,7 +3263,10 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
       case "quote": return block.content.trim() ? "<figure class=\"pn-quote\"><blockquote>“" + inline(block.content) + "”</blockquote>" + (block.citation.trim() ? "<figcaption>— " + inline(block.citation) + "</figcaption>" : "") + "</figure>" : "";
       case "divider": return "<hr class=\"pn-divider\">";
       case "page-break": return "<div class=\"pn-page-break\" aria-label=\"Page break\"></div>";
-      case "callout": return "<aside class=\"pn-callout pn-callout-" + escapeHtml(block.kind) + "\">" + (block.title.trim() ? "<div class=\"pn-component-label\">" + inline(block.title) + "</div>" : "") + paragraphs(block.content) + "</aside>";
+      case "callout": {
+        const label = exportTr({ note: "说明", tip: "提示", warning: "注意", info: "信息" }[block.kind] || "说明", { note: "Note", tip: "Tip", warning: "Warning", info: "Info" }[block.kind] || "Note");
+        return "<aside class=\"pn-callout pn-callout-" + escapeHtml(block.kind) + "\"><div class=\"pn-component-label\">" + escapeHtml(label) + "</div>" + (block.title.trim() ? "<h3>" + inline(block.title) + "</h3>" : "") + paragraphs(block.content) + "</aside>";
+      }
       case "semantic": return renderSemantic(block, index);
       case "list": return renderList(block);
       case "key-value": return renderKeyValue(block);
@@ -2719,12 +3291,16 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     return "<div class=\"pn-table-wrap\"><table class=\"pn-table\">" + header + "<tbody>" + rows.map((row) => "<tr>" + columns.map((_, index) => "<td>" + inline(row[index] || "") + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>";
   }
   function renderImage(block) {
-    const source = safeImageSource(block);
+    const rawSource = String(block && block.src || "").trim();
+    // Editor approval is scoped to the author’s current session. A standalone
+    // export must stay self-contained and cannot silently make every reader
+    // contact a remote host just because the author once previewed an image.
+    const source = /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(rawSource) ? rawSource : "";
     if (!source) {
-      const remote = /^https:\/\//i.test(String(block.src || "").trim());
+      const remote = /^https:\/\//i.test(rawSource);
       const message = remote
-        ? tr("远程图片等待确认加载。", "Remote image awaits approval to load.")
-        : tr("添加安全的 https 图片 URL，或选择本地图片。", "Add a safe https image URL or choose a local image.");
+        ? exportTr("远程图片未嵌入导出文件。", "Remote image was not embedded in this export.")
+        : exportTr("添加安全的 https 图片 URL，或选择本地图片。", "Add a safe https image URL or choose a local image.");
       return "<div class=\"pn-image-empty\">" + escapeHtml(message) + "</div>";
     }
     return "<figure class=\"pn-image\"><img referrerpolicy=\"no-referrer\" src=\"" + escapeHtml(source) + "\" alt=\"" + escapeHtml(block.alt) + "\">" + (block.caption.trim() ? "<figcaption>" + inline(block.caption) + "</figcaption>" : "") + "</figure>";
@@ -2732,11 +3308,11 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
   function semanticExportLabel(block) {
     if (String(block.label || "").trim()) return block.label;
     const semantic = OUTLINE_SEMANTIC_LABEL[block.kind];
-    return semantic ? semantic.en : (block.kind || "Block");
+    return semantic ? exportTr(semantic.zh, semantic.en) : (block.kind || "Block");
   }
   function renderEditorialPrimary(block, index, titleKey) {
-    const title = editorialDisplayTitle(block, titleKey) || tr("未命名章节", "Untitled section");
-    const body = block.type === "semantic" && editorialBodyVisible(block)
+    const title = editorialDisplayTitle(block, titleKey) || exportTr("未命名章节", "Untitled section");
+    const body = block.type === "semantic" && semanticBodyVisible(block)
       ? paragraphs(block.content) + (String(block.summary || "").trim() ? "<p class=\"pn-editorial-section-summary\">" + inline(block.summary) + "</p>" : "")
       : "";
     return "<section class=\"pn-editorial-section pn-editorial-section-" + escapeHtml(block.kind || "heading") + "\"><div class=\"pn-editorial-section-head\"><span class=\"pn-editorial-section-number\">" + editorialSectionNumber(index) + "</span><h2>" + inline(title) + "</h2></div>" + body + "</section>";
@@ -2745,10 +3321,10 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     if (semanticAppearance(block) === "editorial") {
       if (isEditorialPrimary(block)) return renderEditorialPrimary(block, index, "title");
       const label = semanticExportLabel(block);
-      return "<section class=\"pn-editorial-detail pn-editorial-" + escapeHtml(block.kind) + "\"><div class=\"pn-component-label\">" + escapeHtml(label) + "</div>" + (block.title.trim() ? "<h3>" + inline(block.title) + "</h3>" : "") + paragraphs(block.content) + (block.summary.trim() ? "<p class=\"pn-editorial-detail-summary\">" + inline(block.summary) + "</p>" : "") + "</section>";
+      return "<section class=\"pn-editorial-detail pn-editorial-" + escapeHtml(block.kind) + "\"><div class=\"pn-component-label\">" + escapeHtml(label) + "</div>" + (block.title.trim() ? "<h3>" + inline(block.title) + "</h3>" : "") + (semanticBodyVisible(block) ? paragraphs(block.content) : "") + (block.summary.trim() ? "<p class=\"pn-editorial-detail-summary\">" + inline(block.summary) + "</p>" : "") + "</section>";
     }
     const label = semanticExportLabel(block);
-    return "<section class=\"pn-semantic pn-semantic-" + escapeHtml(block.kind) + "\"><div class=\"pn-component-label\">" + escapeHtml(label) + "</div>" + (block.title.trim() ? "<h3>" + inline(block.title) + "</h3>" : "") + paragraphs(block.content) + (block.summary.trim() ? "<p class=\"pn-semantic-summary\">" + inline(block.summary) + "</p>" : "") + "</section>";
+    return "<section class=\"pn-semantic pn-semantic-" + escapeHtml(block.kind) + "\"><div class=\"pn-component-label\">" + escapeHtml(label) + "</div>" + (block.title.trim() ? "<h3>" + inline(block.title) + "</h3>" : "") + (semanticBodyVisible(block) ? paragraphs(block.content) : "") + (block.summary.trim() ? "<p class=\"pn-semantic-summary\">" + inline(block.summary) + "</p>" : "") + "</section>";
   }
   function renderList(block) {
     const tag = block.ordered ? "ol" : "ul";
@@ -2766,10 +3342,9 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
   function proofMetadataHtml() {
     const values = proofMetadataValues();
     const fields = proofMetadataFields();
-    if (!fields.length) return "";
     const item = (title, value, extraClass) => "<div class=\"pn-proof-metadata-item " + (extraClass || "") + "\"><dt>" + escapeHtml(title) + "</dt><dd>" + (String(value || "").trim() ? inline(value) : "&mdash;") + "</dd></div>";
-    const source = values.source.trim() ? "<dl class=\"pn-proof-source\"><dt>" + escapeHtml(tr("来源", "Source")) + "</dt><dd>" + inline(values.source) + "</dd></dl>" : "";
-    const labels = { author: tr("作者", "Author"), date: tr("日期", "Date"), status: tr("状态", "Status") };
+    const source = values.source.trim() ? "<dl class=\"pn-proof-source\"><dt>" + escapeHtml(exportTr("来源", "Source")) + "</dt><dd>" + inline(values.source) + "</dd></dl>" : "";
+    const labels = { author: exportTr("作者", "Author"), date: exportTr("日期", "Date"), status: exportTr("状态", "Status") };
     // Project metadata is optional publication furniture, not an unfinished
     // template. Export only populated Project fields and omit the whole
     // section when neither a field nor a source has a value. Proof Note keeps
@@ -2855,12 +3430,31 @@ setStatus(tr("文档已删除", "Document deleted"), "saved");
     const link = element("a", { href: url, download: filename });
     document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
   }
-  function slug() { return (state.metadata.name || "proofnote-document").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "proofnote-document"; }
-  function exportDocument() { download(slug() + ".proofnote.json", JSON.stringify(Model.normalizeDocument(state), null, 2)); setStatus(tr("已导出 Document JSON", "Document JSON exported"), "saved"); }
+  function slug(value) {
+    const raw = String(value === undefined ? state && state.metadata && state.metadata.name : value || "").normalize("NFKC").trim();
+    // Downloads support Unicode filenames. Remove only characters forbidden
+    // by common filesystems so Chinese and other non-Latin document names do
+    // not all collapse into the same generic export filename.
+    return raw.replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/(^-|-$)/g, "").slice(0, 120) || "proofnote-document";
+  }
+  function exportDocument() {
+    const portable = portableDocumentJson(state);
+    if (utf8ByteLength(portable) > MAX_IMPORT_BYTES) {
+      setStatus(tr("此备份超过 25MB，无法保证重新导入；请移除部分嵌入图片后重试。", "This backup exceeds 25 MB and could not be re-imported; remove embedded images and try again."), "error");
+      return;
+    }
+    download(slug() + ".proofnote.json", portable);
+    setStatus(tr("已导出 Document JSON", "Document JSON exported"), "saved");
+  }
   function exportTemplate() {
     const selected = templateById(currentTemplateId());
     const template = selected || Model.makeTemplate(state, { name: state.metadata.name || tr("我的模板", "My template") });
-    download((template.template.name || "proofnote-template").toLowerCase().replace(/[^a-z0-9]+/g, "-") + ".template.json", JSON.stringify(template, null, 2));
+    const portable = JSON.stringify(template, null, 2);
+    if (utf8ByteLength(portable) > MAX_IMPORT_BYTES) {
+      setStatus(tr("此模板超过 25MB，无法保证重新导入。", "This template exceeds 25 MB and could not be re-imported."), "error");
+      return;
+    }
+    download(slug(template.template.name || "proofnote-template") + ".template.json", portable);
   }
   const AI_DOCUMENT_INSTRUCTIONS = `Return one valid JSON object in Proofnote Document Format 1.0. Do not return Markdown fences or commentary.
 
@@ -2900,7 +3494,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
   function decodeBase64(value) {
     const binary = root.atob(value); const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0)); return new TextDecoder("utf-8").decode(bytes);
   }
-  const EXPORT_CSS = `:root{--ink:#201f1d;--accent:#b68235;--paper:#fff;--soft:#fff3e4;--line:rgba(32,31,29,.17);--heading:"Cormorant Garamond",Georgia,serif;--body:"Lora",Georgia,serif}*{box-sizing:border-box}body{margin:0;background:#f3f2f2;color:var(--ink);font:17px/1.68 var(--body)}.pn-document{max-width:760px;margin:0 auto;padding:62px 30px 96px}.pn-document-title{margin:0 0 12px;padding-bottom:16px;border-bottom:1px solid var(--line)}.pn-document-title h1{margin:0;font:400 44px/1.1 var(--heading);letter-spacing:-.025em}.pn-document-subtitle{margin:0 0 28px;font:italic 21px/1.42 var(--heading);color:rgba(32,31,29,.7)}.pn-heading{margin:42px 0 16px;border-bottom:1px solid var(--line);padding-bottom:8px}.pn-heading h2,.pn-heading h3,.pn-heading h4{margin:0;font-family:var(--heading);font-weight:400}.pn-heading h2{font-size:30px}.pn-heading h3{font-size:24px}.pn-heading h4{font-size:20px}.pn-document p{margin:0 0 15px}.pn-equation{overflow-x:auto;margin:18px 0}.pn-code{position:relative;margin:18px 0;padding:27px 16px 16px;border:1px solid var(--line);background:#f7f6f4;overflow:auto;white-space:pre-wrap;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace}.pn-code-language{position:absolute;top:7px;left:14px;font:600 10px var(--heading);letter-spacing:.14em;color:rgba(32,31,29,.55)}.pn-table-wrap{overflow:auto;margin:18px 0}.pn-table{border-collapse:collapse;width:100%;font-size:14px}.pn-table th,.pn-table td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}.pn-table th{background:#f3f2f2;font-family:var(--heading);font-weight:600}.pn-image{margin:22px 0}.pn-image img{display:block;max-width:100%;height:auto}.pn-image figcaption,.pn-quote figcaption{margin-top:7px;font-size:13px;color:rgba(32,31,29,.62)}.pn-image-empty{margin:18px 0;padding:14px;border:1px dashed var(--line);font-size:13px;color:rgba(32,31,29,.6)}.pn-quote{margin:22px 0;padding:2px 0 2px 22px;border-left:3px solid var(--accent)}.pn-quote blockquote{margin:0;font:italic 22px/1.42 var(--heading)}.pn-divider{border:0;border-top:1px solid var(--line);margin:34px 0}.pn-page-break{break-before:page;page-break-before:always;height:0}.pn-callout,.pn-semantic{margin:20px 0;padding:18px 20px;border:1px solid #facb8d;background:var(--soft);break-inside:avoid}.pn-callout-warning{background:#fff7e8;border-color:#edc778}.pn-callout-info{background:#f5f7fb;border-color:#b7c6e3}.pn-component-label{margin-bottom:6px;font:600 10px var(--heading);letter-spacing:.15em;text-transform:uppercase;color:#5a3b0a}.pn-semantic h3{margin:0 0 8px;font:600 22px/1.15 var(--heading)}.pn-semantic-summary{margin-bottom:0!important;font-style:italic;color:rgba(32,31,29,.72)}.pn-list{margin:16px 0;padding-left:24px}.pn-list li{margin-bottom:5px}.pn-key-value{margin:18px 0}.pn-key-value>div{display:grid;grid-template-columns:150px 1fr;gap:12px;margin-bottom:7px}.pn-key-value dt{font:600 10px var(--heading);letter-spacing:.12em;text-transform:uppercase;color:rgba(32,31,29,.55)}.pn-key-value dd{margin:0}.pn-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:18px 0}.pn-stat{padding:13px;border:1px solid var(--line);background:#f7f6f4}.pn-stat span{display:block;font:600 10px var(--heading);letter-spacing:.12em;text-transform:uppercase;color:rgba(32,31,29,.55)}.pn-stat strong{display:block;margin:5px 0;font:400 28px var(--heading)}.pn-stat p{margin:0!important;font-size:13px}@media print{body{background:#fff}.pn-document{max-width:none;padding:16mm 15mm}.pn-heading,.pn-semantic,.pn-callout,.pn-code,.pn-image,.pn-table-wrap{break-inside:avoid;page-break-inside:avoid}.pn-page-break{display:block}}`;
+  const EXPORT_CSS = `:root{--ink:#201f1d;--accent:#b68235;--paper:#fff;--soft:#fff3e4;--line:rgba(32,31,29,.17);--heading:"Cormorant Garamond",Georgia,serif;--body:"Lora",Georgia,serif}*{box-sizing:border-box}body{margin:0;background:#f3f2f2;color:var(--ink);font:17px/1.68 var(--body)}.pn-document{max-width:760px;margin:0 auto;padding:62px 30px 96px}.pn-document-title{margin:0 0 12px;padding-bottom:16px;border-bottom:1px solid var(--line)}.pn-document-title h1{margin:0;font:400 44px/1.1 var(--heading);letter-spacing:-.025em}.pn-document-subtitle{margin:0 0 28px;font:italic 21px/1.42 var(--heading);color:rgba(32,31,29,.7)}.pn-heading{margin:42px 0 16px;border-bottom:1px solid var(--line);padding-bottom:8px}.pn-heading h2,.pn-heading h3,.pn-heading h4{margin:0;font-family:var(--heading);font-weight:400}.pn-heading h2{font-size:30px}.pn-heading h3{font-size:24px}.pn-heading h4{font-size:20px}.pn-document p{margin:0 0 15px}.pn-equation{overflow-x:auto;margin:18px 0}.pn-code{position:relative;margin:18px 0;padding:27px 16px 16px;border:1px solid var(--line);background:#f7f6f4;overflow:auto;white-space:pre-wrap;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace}.pn-code-language{position:absolute;top:7px;left:14px;font:600 10px var(--heading);letter-spacing:.14em;color:rgba(32,31,29,.55)}.pn-table-wrap{overflow:auto;margin:18px 0}.pn-table{border-collapse:collapse;width:100%;font-size:14px}.pn-table th,.pn-table td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}.pn-table th{background:#f3f2f2;font-family:var(--heading);font-weight:600}.pn-image{margin:22px 0}.pn-image img{display:block;max-width:100%;height:auto}.pn-image figcaption,.pn-quote figcaption{margin-top:7px;font-size:13px;color:rgba(32,31,29,.62)}.pn-image-empty{margin:18px 0;padding:14px;border:1px dashed var(--line);font-size:13px;color:rgba(32,31,29,.6)}.pn-quote{margin:22px 0;padding:2px 0 2px 22px;border-left:3px solid var(--accent)}.pn-quote blockquote{margin:0;font:italic 22px/1.42 var(--heading)}.pn-divider{border:0;border-top:1px solid var(--line);margin:34px 0}.pn-page-break{break-before:page;page-break-before:always;height:0}.pn-callout,.pn-semantic{margin:20px 0;padding:18px 20px;border:1px solid #facb8d;background:var(--soft);break-inside:avoid}.pn-callout-warning{background:#fff7e8;border-color:#edc778}.pn-callout-info{background:#f5f7fb;border-color:#b7c6e3}.pn-component-label{margin-bottom:6px;font:600 10px var(--heading);letter-spacing:.15em;text-transform:uppercase;color:#5a3b0a}.pn-callout h3,.pn-semantic h3{margin:0 0 8px;font:600 22px/1.15 var(--heading)}.pn-semantic-summary{margin-bottom:0!important;font-style:italic;color:rgba(32,31,29,.72)}.pn-list{margin:16px 0;padding-left:24px}.pn-list li{margin-bottom:5px}.pn-key-value{margin:18px 0}.pn-key-value>div{display:grid;grid-template-columns:150px 1fr;gap:12px;margin-bottom:7px}.pn-key-value dt{font:600 10px var(--heading);letter-spacing:.12em;text-transform:uppercase;color:rgba(32,31,29,.55)}.pn-key-value dd{margin:0}.pn-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:18px 0}.pn-stat{padding:13px;border:1px solid var(--line);background:#f7f6f4}.pn-stat span{display:block;font:600 10px var(--heading);letter-spacing:.12em;text-transform:uppercase;color:rgba(32,31,29,.55)}.pn-stat strong{display:block;margin:5px 0;font:400 28px var(--heading)}.pn-stat p{margin:0!important;font-size:13px}@media print{body{background:#fff}.pn-document{max-width:none;padding:16mm 15mm}.pn-heading,.pn-semantic,.pn-callout,.pn-image{break-inside:avoid;page-break-inside:avoid}.pn-table-wrap,.pn-code{overflow:visible;break-inside:auto;page-break-inside:auto}.pn-table{break-inside:auto;page-break-inside:auto}.pn-table thead{display:table-header-group}.pn-table tr{break-inside:avoid;page-break-inside:avoid}.pn-page-break{display:block}}`;
   // Keep this in deliberate lockstep with the document tokens in
   // document-editor.css. UI chrome is intentionally absent here: exported
   // documents use the original Proofnote editorial scale, not an app scale.
@@ -2926,9 +3520,10 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     .pn-proofnote-document .pn-running-brand,.pn-project-running .pn-running-brand{color:var(--accent)}
     .pn-proofnote-document .pn-document-title,.pn-project-document .pn-document-title{margin:29.333px 0 13.333px;padding-bottom:0;border-bottom:0}.pn-proofnote-document .pn-document-subtitle,.pn-project-document .pn-document-subtitle{margin:0;padding-bottom:24px;border-bottom:1px solid var(--line)}
     .pn-proof-metadata{margin:13.333px 0 26.667px}.pn-proof-metadata-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13.333px 21.333px;margin:0}.pn-proof-metadata-item dt,.pn-proof-source dt{margin:0 0 2.667px;font:600 var(--pn-doc-label-size)/1.2 var(--heading);letter-spacing:.12em;text-transform:uppercase;color:rgba(32,31,29,.54)}.pn-proof-metadata-item dd,.pn-proof-source dd{margin:0;font:var(--pn-doc-meta-size)/1.45 var(--body)}.pn-proof-metadata-status dd{font-family:var(--heading);font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#8c6228}.pn-proof-source{margin:12px 0 0}
-    .pn-editorial-section{margin:0 0 28px;break-inside:avoid;page-break-inside:avoid}.pn-editorial-section-head{display:flex;align-items:baseline;gap:13.333px;margin-bottom:13.333px;padding-bottom:8px;border-bottom:1px solid var(--line)}.pn-editorial-section-number{flex:none;font:600 12px/1 var(--heading);letter-spacing:.12em;font-feature-settings:'tnum';color:var(--accent)}.pn-editorial-section-head h2{margin:0;font:400 var(--pn-doc-section-1-size)/1.15 var(--heading);letter-spacing:-.015em}.pn-editorial-section p{margin:0 0 13.333px}.pn-editorial-section-summary,.pn-editorial-detail-summary{margin-top:5.333px!important;font-style:italic;color:rgba(32,31,29,.72)}
-    .pn-editorial-detail{margin:0 0 16px;break-inside:avoid;page-break-inside:avoid}.pn-editorial-detail .pn-component-label{margin-bottom:4px;color:rgba(32,31,29,.55)}.pn-editorial-detail h3{margin:0 0 4px;font:400 18.667px/1.2 var(--heading)}.pn-editorial-detail p{margin:0 0 13.333px}
+    .pn-editorial-section{margin:0 0 28px}.pn-editorial-section-head{display:flex;align-items:baseline;gap:13.333px;margin-bottom:13.333px;padding-bottom:8px;border-bottom:1px solid var(--line);break-after:avoid-page;page-break-after:avoid}.pn-editorial-section-number{flex:none;font:600 12px/1 var(--heading);letter-spacing:.12em;font-feature-settings:'tnum';color:var(--accent)}.pn-editorial-section-head h2{margin:0;font:400 var(--pn-doc-section-1-size)/1.15 var(--heading);letter-spacing:-.015em}.pn-editorial-section p{margin:0 0 13.333px}.pn-editorial-section-head+p{break-before:avoid-page;page-break-before:avoid}.pn-editorial-section-summary,.pn-editorial-detail-summary{margin-top:5.333px!important;font-style:italic;color:rgba(32,31,29,.72)}
+    .pn-editorial-detail{margin:0 0 16px}.pn-editorial-detail .pn-component-label{margin-bottom:4px;color:rgba(32,31,29,.55);break-after:avoid-page;page-break-after:avoid}.pn-editorial-detail h3{margin:0 0 4px;font:400 18.667px/1.2 var(--heading);break-after:avoid-page;page-break-after:avoid}.pn-editorial-detail h3+p{break-before:avoid-page;page-break-before:avoid}.pn-editorial-detail p{margin:0 0 13.333px}
     .pn-export-footer{display:flex;justify-content:space-between;margin-top:34.667px;padding-top:8px;border-top:1px solid var(--line);font:10px/1 var(--heading);letter-spacing:.1em;text-transform:uppercase;color:rgba(32,31,29,.45)}.pn-export-footer span:last-child{color:#8c6228}
+    @media print{.pn-proofnote-document,.pn-project-document{padding-top:25mm;padding-bottom:23mm}.pn-proofnote-document .pn-export-running,.pn-project-document .pn-export-running{position:fixed;top:8mm;left:15mm;right:15mm}.pn-proofnote-document .pn-export-footer,.pn-project-document .pn-export-footer{position:fixed;bottom:8mm;left:15mm;right:15mm;margin:0;background:#fff}}
   `;
   // Blank Projects use the same composed editorial rhythm as a Proof Note,
   // without forcing their content into a proof-specific structure. Keep this
@@ -2968,29 +3563,43 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     const documentMetadata = hasDocumentMetadataHeader();
     const subtitleVisible = headerSubtitleVisible();
     const hiddenSubtitleIndex = documentMetadata && !subtitleVisible ? headerSubtitleIndex() : -1;
-    const metadataAfter = documentMetadata && subtitleVisible ? "subtitle" : "title";
+    // Metadata is a single masthead element. Anchor it to the concrete title
+    // or subtitle block selected by the header logic, never to every block of
+    // the same type in an imported document.
+    const metadataIndex = documentMetadata
+      ? (subtitleVisible ? headerSubtitleIndex() : headerTitleIndex())
+      : -1;
+    const metadataWithoutTitle = documentMetadata && headerTitleIndex() < 0 ? proofMetadataHtml() : "";
     const blocks = state.blocks.map((block, index) => {
       const rendered = index === hiddenSubtitleIndex ? "" : renderBlock(block, index);
-      return rendered + (documentMetadata && block.type === metadataAfter ? proofMetadataHtml() : "");
+      return rendered + (index === metadataIndex ? proofMetadataHtml() : "");
     }).join("\n");
     if (!proofNote) {
       const header = project ? projectRunningHeader() : null;
       const hasRunningContent = header && [header.left, header.right].some((value) => String(value || "").trim());
       const running = hasRunningContent ? "<div class=\"pn-export-running pn-project-running\"><span class=\"pn-running-brand\">" + escapeHtml(header.left) + "</span><span class=\"pn-running-type\">" + escapeHtml(header.right) + "</span></div>" : "";
-      return "<article class=\"pn-document" + (project ? " pn-project-document" : "") + "\">" + running + blocks + "</article>";
+      const footer = project
+        ? "<footer class=\"pn-export-footer pn-project-export-footer\"><span>" + escapeHtml(state.metadata.name || exportTr("未命名文档", "Untitled document")) + "</span><span>" + escapeHtml(header && header.right || "") + "</span></footer>"
+        : "";
+      return "<article class=\"pn-document" + (project ? " pn-project-document" : "") + "\">" + running + metadataWithoutTitle + blocks + footer + "</article>";
     }
     const type = escapeHtml(state.metadata.documentType || "Solution Note");
     const note = escapeHtml(state.metadata.noteNumber || "—");
     const status = escapeHtml(state.metadata.status || "");
-    return "<article class=\"pn-document pn-proofnote-document\"><div class=\"pn-export-running pn-proofnote-running\"><span class=\"pn-running-brand\">Proofnote</span><span class=\"pn-running-type\">" + type + "</span></div>" + blocks + "<footer class=\"pn-export-footer\"><span>" + escapeHtml(tr("笔记 ", "Note ")) + note + "</span><span>" + status + "</span></footer></article>";
+    return "<article class=\"pn-document pn-proofnote-document\"><div class=\"pn-export-running pn-proofnote-running\"><span class=\"pn-running-brand\">Proofnote</span><span class=\"pn-running-type\">" + type + "</span></div>" + metadataWithoutTitle + blocks + "<footer class=\"pn-export-footer\"><span>" + escapeHtml(exportTr("笔记 ", "Note ")) + note + "</span><span>" + status + "</span></footer></article>";
   }
   function exportHtml() {
     let katexCss = "", fontsCss = "";
     try { katexCss = root.SOLUTION_NOTE_KATEX_EMBED ? decodeBase64(root.SOLUTION_NOTE_KATEX_EMBED.css) : ""; } catch (_) {}
     try { fontsCss = root.SOLUTION_NOTE_FONTS_EMBED ? decodeBase64(root.SOLUTION_NOTE_FONTS_EMBED.css) : ""; } catch (_) {}
     const title = escapeHtml(exportDocumentTitle());
-    const language = escapeHtml(exportDocumentLanguage());
-    const html = "<!doctype html><html lang=\"" + language + "\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + title + "</title><style>" + katexCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + fontsCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS + EXPORT_CODE_SYNTAX_CSS + "</style></head><body>" + renderStandaloneDocument() + "</body></html>";
+    const language = exportDocumentLanguage();
+    const languageAttribute = language ? " lang=\"" + escapeHtml(language) + "\"" : "";
+    exportLanguageContext = language;
+    let rendered = "";
+    try { rendered = renderStandaloneDocument(); }
+    finally { exportLanguageContext = ""; }
+    const html = "<!doctype html><html" + languageAttribute + "><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + title + "</title><style>" + katexCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + fontsCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS + EXPORT_CODE_SYNTAX_CSS + "</style></head><body>" + rendered + "</body></html>";
     download(slug() + ".html", html, "text/html");
   }
   function exportDocumentTitle() {
@@ -3009,8 +3618,10 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
         .join(" ");
     }).join(" ");
     if (/[\u3400-\u9fff]/.test(text)) return "zh-CN";
-    if (/[A-Za-z]/.test(text)) return "en";
-    return english() ? "en" : "zh-CN";
+    // Do not label French, Spanish, German, or any other Latin-script
+    // document as English merely because it contains ASCII letters. Authors
+    // can supply `metadata.language` when a non-CJK BCP-47 tag matters.
+    return "";
   }
 
   function readImportFile() {
@@ -3021,9 +3632,38 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       els.importFile.value = "";
       return;
     }
+    const generation = ++importFileReadGeneration;
+    // A selected file replaces the pending source immediately. Do not allow
+    // an earlier textarea value to be imported while FileReader is still
+    // asynchronous, and do not leave that old value behind after failure.
+    els.importText.value = "";
+    resetImportWarningConfirmation();
+    els.importText.readOnly = true;
+    els.importConfirm.disabled = true;
+    clearImportReport();
     const reader = new FileReader();
-    reader.onload = () => { els.importText.value = String(reader.result || ""); clearImportReport(); };
+    const finish = () => {
+      if (generation !== importFileReadGeneration) return false;
+      els.importText.readOnly = false;
+      els.importConfirm.disabled = false;
+      return true;
+    };
+    reader.onload = () => {
+      if (!finish()) return;
+      els.importText.value = String(reader.result || "");
+      clearImportReport();
+    };
+    reader.onerror = () => {
+      if (!finish()) return;
+      showImportMessage(tr("无法读取该文件；没有导入任何内容。", "Could not read that file; no content was imported."), "error");
+    };
+    reader.onabort = () => {
+      if (!finish()) return;
+      showImportMessage(tr("文件读取已取消；没有导入任何内容。", "File reading was cancelled; no content was imported."), "warning");
+    };
     reader.readAsText(file);
+    // Permit selecting the same pathname again after an external edit.
+    els.importFile.value = "";
   }
   function utf8ByteLength(value) {
     const text = String(value || "");
@@ -3037,11 +3677,11 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
   // the extra diagnostic to commands that are actually LaTeX, rather than
   // treating ordinary JSON text such as "First line\\nSecond line" as math.
   const SILENT_JSON_LATEX_COMMANDS = new Set([
-    "begin", "beta", "big", "bigg", "binom", "boldsymbol", "boxed",
-    "fbox", "forall", "frac",
+    "bar", "begin", "beta", "big", "bigg", "binom", "boldsymbol", "boxed", "breve",
+    "fbox", "forall", "frac", "floor",
     "nabla", "ne", "neq", "newline", "not", "notin",
-    "right", "rightarrow",
-    "tan", "text", "textbf", "textcolor", "textit", "tfrac", "therefore", "theta", "times", "tiny", "to", "top", "triangle"
+    "rangle", "rceil", "rfloor", "right", "rightarrow",
+    "tan", "tau", "text", "textbf", "textcolor", "textit", "tfrac", "therefore", "theta", "tilde", "times", "tiny", "to", "top", "triangle"
   ]);
   function diagnosticPath(path) {
     if (!Array.isArray(path) || !path.length) return tr("文档根节点", "Document root");
@@ -3153,27 +3793,73 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       const offset = match.index;
       if (escapedBackslashAt(source, offset)) continue;
       const command = source.slice(offset + 1).match(/^[A-Za-z]+/)?.[0] || match[1];
-      if (!SILENT_JSON_LATEX_COMMANDS.has(command.toLowerCase())) continue;
       const location = parser.getLocation(source, offset);
       const path = diagnosticPath(location && location.path);
-      const blockIndex = location && Array.isArray(location.path) && location.path[0] === "blocks" ? location.path[1] : -1;
-      const block = rawDocument && Array.isArray(rawDocument.blocks) && Number.isInteger(blockIndex) ? rawDocument.blocks[blockIndex] : null;
+      const block = diagnosticOwningBlock(rawDocument, location && location.path);
+      const legacyContent = isSolutionNoteLatexContent(rawDocument, location && location.path);
       // This diagnostic deliberately guards document prose and mathematics,
-      // not arbitrary metadata or source-code paths (where an escaped tab or
-      // regex token can be intentional rather than damaged LaTeX).
-      if (!block || block.type === "code") continue;
+      // plus known Solution Note content fields. It never scans metadata or
+      // legacy code snippets, where an escaped tab or regex token may be
+      // intentional rather than damaged LaTeX.
+      if ((!block && !legacyContent) || block && block.type === "code") continue;
+      // Equation fields are explicitly mathematical, so every command-shaped
+      // control escape is unsafe there. Prose remains conservative to avoid
+      // misclassifying valid JSON such as a normal `\\nSecond line`.
+      if (!(SILENT_JSON_LATEX_COMMANDS.has(command.toLowerCase()) || (block.type === "equation" && command.length > 1))) continue;
       issues.push({
         path, offset, length: command.length + 1,
         message: tr("\"\\" + command + "\" 看起来像 LaTeX 命令，但 JSON 已把 \\" + match[1] + " 解释为控制字符。请改用 \"\\u005c" + command + "\"。", "\"\\" + command + "\" looks like a LaTeX command, but JSON interpreted \\" + match[1] + " as a control escape. Use \"\\u005c" + command + "\" instead.")
       });
+      if (issues.length >= MAX_IMPORT_DIAGNOSTIC_ISSUES) break;
     }
     return issues;
+  }
+  function diagnosticOwningBlock(rawDocument, path) {
+    if (!rawDocument || !Array.isArray(path)) return null;
+    const blocksAt = path.lastIndexOf("blocks");
+    const index = blocksAt >= 0 ? path[blocksAt + 1] : -1;
+    if (!Number.isInteger(index)) return null;
+    let container = rawDocument;
+    for (let cursor = 0; cursor < blocksAt; cursor += 1) {
+      if (container == null) return null;
+      container = container[path[cursor]];
+    }
+    return container && Array.isArray(container.blocks) ? container.blocks[index] || null : null;
+  }
+  function isSolutionNoteLatexContent(rawDocument, path) {
+    if (!rawDocument || rawDocument.format !== "solution-note" || !Array.isArray(path) || !path.length) return false;
+    if (path[0] === "optional") {
+      const index = typeof path[2] === "number" ? path[2] : -1;
+      const collection = rawDocument.optional && rawDocument.optional[path[1]];
+      const entry = Array.isArray(collection) && index >= 0 ? collection[index] : null;
+      return !(entry && entry.type === "code");
+    }
+    if (path[0] !== "core") return false;
+    const section = path[1];
+    if (["problem", "result", "whyItWorks"].includes(section)) return true;
+    if (section !== "evidence") return false;
+    // Evidence may hold legacy code blocks. Find the owning evidence entry
+    // from the diagnostic path and leave its source untouched.
+    const index = typeof path[2] === "number" ? path[2] : -1;
+    const entry = rawDocument.core && Array.isArray(rawDocument.core.evidence) && index >= 0 ? rawDocument.core.evidence[index] : null;
+    return !(entry && entry.type === "code");
   }
   function duplicateJsonKeyWarnings(parser, source) {
     const warnings = [];
     const tree = parser.parseTree(source, [], STRICT_JSON_PARSE_OPTIONS);
-    const walk = (node) => {
-      if (!node) return;
+    // parseTree can represent arbitrary nested JSON. Walk it iteratively so a
+    // hostile-but-syntactically-valid payload cannot exhaust the JavaScript
+    // call stack before Proofnote can report its depth diagnostic.
+    const pending = tree ? [tree] : [];
+    let visited = 0;
+    while (pending.length) {
+      const node = pending.pop();
+      if (!node) continue;
+      visited += 1;
+      if (visited > MAX_IMPORT_DIAGNOSTIC_NODES) {
+        warnings.push({ path: "", message: tr("重复键检查在安全工作量上限处停止；请先缩小导入文件后再检查其余内容。", "Duplicate-key checking stopped at its safe work limit; reduce the import before checking the remaining content.") });
+        break;
+      }
       if (node.type === "object") {
         const seen = new Set();
         (node.children || []).forEach((property) => {
@@ -3183,27 +3869,63 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
           if (keyNode && seen.has(key)) {
             const location = parser.getLocation(source, keyNode.offset);
             warnings.push({ path: diagnosticPath(location && location.path), offset: keyNode.offset, length: keyNode.length, message: tr("重复的 JSON 键；后一个值已被采用。", "Duplicate JSON key; the later value was used.") });
+            if (warnings.length >= MAX_IMPORT_DIAGNOSTIC_ISSUES) return;
           }
           seen.add(key);
-          walk(valueNode);
+          if (valueNode) pending.push(valueNode);
         });
-        return;
+        continue;
       }
-      (node.children || []).forEach(walk);
-    };
-    walk(tree);
+      (node.children || []).forEach((child) => { if (child) pending.push(child); });
+    }
     return warnings;
+  }
+  function excessiveJsonNestingDiagnostic(source) {
+    const parserSafeDepth = Math.max(256, Model.LIMITS.maxDepth * 4);
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let offset = 0; offset < source.length; offset += 1) {
+      const character = source[offset];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') { inString = true; continue; }
+      if (character === "{" || character === "[") {
+        depth += 1;
+        if (depth <= parserSafeDepth) continue;
+        const excerpt = importSourceExcerpt(source, offset);
+        return {
+          title: tr("无法导入文档", "Could not import document"),
+          heading: tr("JSON 嵌套过深", "JSON is nested too deeply"),
+          position: tr("第 " + excerpt.line + " 行，第 " + excerpt.column + " 列", "Line " + excerpt.line + " · Column " + excerpt.column),
+          message: tr("该 JSON 超过了安全诊断深度，未继续解析以避免浏览器卡死。", "This JSON exceeds the safe diagnostic depth, so Proofnote stopped before it could exhaust the browser stack."),
+          source, offset: excerpt.offset, length: 1, snippet: excerpt.text,
+          help: tr("请将嵌套对象或数组拆分为更浅的结构。", "Split nested objects or arrays into a shallower structure."),
+          text: tr("JSON 嵌套过深", "JSON is nested too deeply")
+        };
+      }
+      if (character === "}" || character === "]") depth = Math.max(0, depth - 1);
+    }
+    return null;
   }
   function inspectImportJson(source) {
     const parser = root.ProofnoteJsoncParser;
     if (!parser || typeof parser.parse !== "function") {
       return { diagnostic: { title: tr("无法导入文档", "Could not import document"), heading: tr("导入诊断未就绪", "Import diagnostics are unavailable"), message: tr("JSON 诊断组件未加载；请重新打开 Proofnote 后重试。", "The JSON diagnostics component did not load. Reopen Proofnote and try again."), text: tr("导入诊断未就绪", "Import diagnostics are unavailable") } };
     }
+    const nestingDiagnostic = excessiveJsonNestingDiagnostic(source);
+    if (nestingDiagnostic) return { diagnostic: nestingDiagnostic };
     const parseErrors = [];
-    parser.parse(source, parseErrors, STRICT_JSON_PARSE_OPTIONS);
+    // jsonc-parser already produces the parsed value under our strict JSON
+    // options. Retain it instead of asking the browser JSON parser to build a
+    // second full object graph for the same import payload.
+    const raw = parser.parse(source, parseErrors, STRICT_JSON_PARSE_OPTIONS);
     if (parseErrors.length) return { diagnostic: jsonSyntaxDetails(parser, source, parseErrors[0]) };
-    let raw;
-    try { raw = JSON.parse(source); } catch (_) {
+    if (raw === undefined) {
       return { diagnostic: { title: tr("无法导入文档", "Could not import document"), heading: tr("JSON 语法错误", "JSON syntax error"), message: tr("JSON 解析器发现了无法安全恢复的问题。", "The JSON parser found an error it could not recover safely."), text: tr("JSON 语法错误", "JSON syntax error") } };
     }
     const latexIssues = potentialLatexCorruptions(parser, source, raw);
@@ -3299,6 +4021,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       showImportMessage(tr("JSON 文本超过 25MB 导入上限。", "JSON text exceeds the 25 MB import limit."), "error");
       return;
     }
+    return enqueueDocumentTransition(async (generation) => {
     // An import never replaces the active library record. Only a freshly
     // created Blank Project contributes its display preset to the new record;
     // importing from an established Project must not silently inherit document
@@ -3308,34 +4031,51 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     if (inspected.diagnostic) { renderImportDiagnostics(inspected.diagnostic); return; }
     const raw = inspected.raw;
     let next, warnings = inspected.warnings || [];
+    if (importMode === "template" && (!raw || raw.format !== Model.TEMPLATE_FORMAT)) {
+      renderSchemaDiagnostics(tr("无法导入模板", "Could not import template"), [{
+        path: "format",
+        message: tr("这里仅接受 Proofnote 模板文件（proofnote-template）。当前文档没有被修改。", "This action accepts only a Proofnote template (proofnote-template). The current document was not changed.")
+      }], warnings);
+      return;
+    }
     if (raw && raw.format === "solution-note") {
-      const legacyValidation = root.__snTest && root.__snTest.validateRaw ? root.__snTest.validateRaw(raw) : { errors: [], warnings: [] };
+      const legacyValidation = LegacyBoundary.validateSolutionNote(raw);
       if (legacyValidation.errors.length) { renderSchemaDiagnostics(tr("无法导入 Solution Note", "Could not import Solution Note"), legacyValidation.errors, warnings.concat(legacyValidation.warnings || [])); return; }
       warnings = warnings.concat(legacyValidation.warnings || []);
       next = Model.migrateSolutionNote(raw);
+      // Legacy validation establishes the old format's shape. The migrated
+      // object still has to satisfy every current document resource/render
+      // budget before it can reach the editor; otherwise Solution Note would
+      // remain a bypass around the modern import boundary.
+      const migratedValidation = Model.validateDocumentRaw(next);
+      if (migratedValidation.errors.length) {
+        renderSchemaDiagnostics(tr("无法导入 Solution Note", "Could not import Solution Note"), migratedValidation.errors, warnings.concat(migratedValidation.warnings || []));
+        return;
+      }
+      warnings = warnings.concat(migratedValidation.warnings || []);
+      next = Model.normalizeDocument(next);
     } else if (raw && raw.format === Model.TEMPLATE_FORMAT) {
       const validation = Model.validateTemplateRaw(raw);
       if (validation.errors.length) { renderSchemaDiagnostics(tr("无法导入模板", "Could not import template"), validation.errors, warnings.concat(validation.warnings || [])); return; }
       warnings = warnings.concat(validation.warnings || []);
+      if (!confirmImportWarnings(warnings, tr("导入模板需要确认", "Template import needs confirmation"))) return;
       let template = Model.normalizeTemplate(raw);
-      // Import is additive. `saveTemplate` is intentionally an upsert for
-      // explicit template edits, but an imported portable file must never
-      // overwrite an existing local template merely because both carry the
-      // same portable id.
-      const storedTemplateIds = new Set((await Store.listTemplates())
-        .map((item) => item && item.template && item.template.id)
-        .filter((id) => typeof id === "string" && id));
-      if (storedTemplateIds.has(template.template.id)) {
+      // Import is additive. The store uses IndexedDB `add()` rather than a
+      // preflight list+put, so another tab cannot slip an overwrite between
+      // our duplicate check and the eventual write.
+      let imported = await Store.importTemplateIfAbsent(template);
+      if (imported === "exists") {
         const importedInfo = { name: template.template.name, description: template.template.description };
-        do { template = Model.makeTemplate(template.document, importedInfo); }
-        while (storedTemplateIds.has(template.template.id));
+        do {
+          template = Model.makeTemplate(template.document, importedInfo);
+          imported = await Store.importTemplateIfAbsent(template);
+        } while (imported === "exists");
         warnings.push({
           path: "template.id",
           message: tr("模板 ID 已存在；已作为新模板导入。", "Template ID already exists; imported as a new template.")
         });
       }
-      const backend = await Store.saveTemplate(template);
-      if (backend === "failed") { showImportMessage(tr("模板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."), "error"); return; }
+      if (imported !== "added") { showImportMessage(tr("模板无法保存到此设备；请释放存储空间后重试。", "Template could not be saved on this device; free storage and try again."), "error"); return; }
       await refreshTemplates();
       closeImport();
       setStatus(warnings.length ? tr("模板已保存；有 " + warnings.length + " 条可恢复提示。", "Template saved with " + warnings.length + " recoverable notice(s).") : tr("模板已保存到此设备。", "Template saved on this device."), warnings.length ? "warning" : "saved");
@@ -3347,45 +4087,96 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       next = Model.normalizeDocument(raw);
     }
     const saved = await saveActiveDocumentNow();
-    if (saved === "failed") { showImportMessage(tr("当前文档无法保存；请先导出备份。", "The current document could not be saved; export a backup first."), "error"); return; }
+    if (!saveSucceeded(saved)) { showImportMessage(tr("当前文档无法保存；请先导出备份。", "The current document could not be saved; export a backup first."), "error"); return; }
     if (importProjectContext) {
       next.metadata.documentType = "Project";
       prepareImportedProjectDocument(next, importProjectContext);
     } else if (next.metadata.documentType === "Project") {
       prepareImportedProjectDocument(next, null);
     }
-    const created = await Store.createDocument(next);
+    // Project chrome may add a missing title. Revalidate its final shape
+    // before normalisation/storage, otherwise a valid 2,000-block source can
+    // become 2,001 blocks and lose its tail in a later safe clone.
+    const preparedValidation = Model.validateDocumentRaw(next);
+    if (preparedValidation.errors.length) {
+      renderSchemaDiagnostics(tr("无法导入文档", "Could not import document"), preparedValidation.errors, warnings.concat(preparedValidation.warnings || []));
+      return;
+    }
+    warnings = warnings.concat(preparedValidation.warnings || []);
+    if (!portableDocumentWithinLimit(next)) {
+      renderSchemaDiagnostics(tr("无法导入文档", "Could not import document"), [{
+        path: "",
+        message: tr("该文档格式化为可移植 Proofnote 备份后会超过 25MB，无法保证以后重新导入。", "This document would exceed 25 MB after portable Proofnote serialization and could not be safely re-imported later.")
+      }], warnings);
+      return;
+    }
+    const imageSafety = await importedImagesWithinLimit(next);
+    if (!imageSafety.valid) {
+      renderSchemaDiagnostics(tr("无法导入文档", "Could not import document"), [{
+        path: "blocks[" + imageSafety.index + "].src",
+        message: tr("嵌入图片的解码尺寸超过安全上限，或浏览器无法安全读取它。", "The embedded image exceeds the safe decoded-pixel limit or could not be decoded safely.")
+      }], warnings);
+      return;
+    }
+    if (!confirmImportWarnings(warnings, tr("导入文档需要确认", "Document import needs confirmation"))) return;
+    if (!transitionIsCurrent(generation)) return;
+    const created = await Store.createDocument(next, { makeCurrent: false });
     if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
     const finalSaved = await saveActiveDocumentNow();
-    if (finalSaved === "failed") { showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error"); return; }
+    if (!saveSucceeded(finalSaved)) { showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error"); return; }
+    if (!transitionIsCurrent(generation)) return;
     closeImport();
-    await activateDocument(created.record, { status: false });
+    if (!await selectAndActivateDocument(created.record, generation, { status: false })) return;
     setStatus(warnings.length ? tr("已导入为新文档；有 " + warnings.length + " 条可恢复提示。", "Imported as a new document with " + warnings.length + " recoverable notice(s).") : tr("已导入为新文档", "Imported as a new document"), warnings.length ? "warning" : "saved");
+    });
   }
   async function initialise() {
     mount();
     applySidebarWidth(SIDEBAR_DEFAULT_WIDTH);
-    try {
-      const savedCollapsed = JSON.parse(root.localStorage.getItem(OUTLINE_COLLAPSE_KEY) || "[]");
-      collapsedOutlineIds = new Set(Array.isArray(savedCollapsed) ? savedCollapsed.filter((id) => typeof id === "string") : []);
-    } catch (_) { collapsedOutlineIds = new Set(); }
+    collapsedOutlineIds = new Set();
     try { setUtilityOpen(root.localStorage.getItem("proofnote-document:utility-open") === "1"); } catch (_) { setUtilityOpen(false); }
     setDetailOpen(false);
     try { setSidebarTab(root.localStorage.getItem("proofnote-document:sidebar-tab") || "outline"); } catch (_) { setSidebarTab("outline"); }
-    await refreshTemplates();
-    let legacy = null;
-    try { legacy = JSON.parse(root.localStorage.getItem("solution-note-generator:v1") || "null"); } catch (_) {}
-    const proofTemplate = templateById("proof-note");
-    const seed = legacy ? Model.migrateSolutionNote(legacy) : Model.normalizeDocument(proofTemplate.document);
+    const proofTemplate = Model.builtInTemplates().find((template) => template.template.id === "proof-note");
+    const defaultSeed = () => Model.normalizeDocument(proofTemplate.document);
+    let startupLegacyWarning = "";
+    // Do not parse or migrate the retired one-document store until the modern
+    // library has proved it needs a seed. Existing libraries must never pay
+    // for, or be influenced by, optional legacy state.
+    const seed = () => {
+      let legacy = null;
+      try { legacy = JSON.parse(root.localStorage.getItem("solution-note-generator:v1") || "null"); }
+      catch (_) { startupLegacyWarning = tr("旧版 Solution Note 无法读取；已创建新的 Proofnote 文档。", "The legacy Solution Note could not be read; a new Proofnote document was created."); return defaultSeed(); }
+      if (!legacy) return defaultSeed();
+      const validation = LegacyBoundary.validateSolutionNote(legacy);
+      if (validation.errors.length) {
+        startupLegacyWarning = tr("旧版 Solution Note 未通过安全检查；已创建新的 Proofnote 文档。", "The legacy Solution Note did not pass the safety check; a new Proofnote document was created.");
+        return defaultSeed();
+      }
+      return Model.normalizeDocument(Model.migrateSolutionNote(legacy));
+    };
     const library = await Store.initialiseDocumentLibrary(seed);
+    persistenceAvailable = Boolean(library && library.record && library.backend !== "failed");
     currentDocumentId = library && library.record ? library.record.id : "";
+    if (library && library.record) documentRevisions.set(library.record.id, Number.isSafeInteger(library.record.revision) ? library.record.revision : 0);
+    restoreOutlineCollapseState(currentDocumentId, true);
     state = library && library.record && library.record.document
       ? Model.normalizeDocument(library.record.document, { allowRemoteImages: true })
-      : seed;
+      : seed();
     hasUnsavedChanges = false;
-    await refreshDocuments();
+    const libraryBackend = await refreshDocuments();
+    // Templates are secondary to the document library. Initialise the library
+    // first so a transient template read can never determine a fresh session's
+    // storage backend or hide the author's document records.
+    await refreshTemplates();
     renderAll();
-    setStatus(tr("已保存到此设备", "Saved on this device"), "saved");
+    if (!persistenceAvailable || libraryBackend === "failed") {
+      persistenceAvailable = false;
+      setStatus(tr("本地存储不可用；当前内容尚未保存。请先导出备份。", "Local storage is unavailable; this document is not saved. Export a backup first."), "error");
+      return;
+    }
+    if (startupLegacyWarning) setStatus(startupLegacyWarning, "warning");
+    else setPersistenceStatus(library.backend === "localStorage" ? tr("已保存（本地存储）", "Saved locally") : tr("已保存到此设备", "Saved on this device"));
   }
   initialise().catch((error) => { console.error("Proofnote Document editor could not start", error); });
 })(window, document);

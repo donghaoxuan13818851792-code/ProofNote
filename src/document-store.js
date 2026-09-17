@@ -16,6 +16,10 @@
   const FALLBACK_TEMPLATES = "proofnote-document:templates:v1";
   const FALLBACK_DOCUMENTS = "proofnote-document:documents:v1";
   const FALLBACK_CURRENT_DOCUMENT_ID = "proofnote-document:current-id:v1";
+  // A single envelope makes the localStorage fallback's library mutation
+  // atomic at the key level. The two v1 keys remain read-only migration
+  // sources; never update them independently after this point.
+  const FALLBACK_LIBRARY = "proofnote-document:library:v2";
   // Pick one durable backend for the lifetime of this page. Falling back from
   // a healthy IndexedDB session for one failed write creates two divergent
   // histories, and a later reload would silently prefer the older IndexedDB
@@ -25,7 +29,16 @@
 
   function clone(value) { return JSON.parse(JSON.stringify(value)); }
   function timestamp() { return new Date().toISOString(); }
+  function resolveSeed(seedSource) {
+    return typeof seedSource === "function" ? seedSource() : seedSource;
+  }
   function newDocumentId() { return "doc_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 9); }
+  // `revision` is local-library metadata, never part of portable document
+  // JSON. It lets a tab prove that it is saving the same record it opened,
+  // rather than silently replacing a newer write from another tab.
+  function revisionOf(record) {
+    return Number.isSafeInteger(record && record.revision) && record.revision >= 0 ? record.revision : 0;
+  }
   function recordFor(document, existing) {
     const now = timestamp();
     return {
@@ -33,7 +46,8 @@
       document: clone(document),
       createdAt: existing && existing.createdAt || now,
       updatedAt: now,
-      lastOpenedAt: existing && existing.lastOpenedAt || now
+      lastOpenedAt: existing && existing.lastOpenedAt || now,
+      revision: existing ? revisionOf(existing) + 1 : 1
     };
   }
   // Project documents expose one reader-facing name in the library, title,
@@ -57,11 +71,41 @@
     }
     return next;
   }
+  function storedDocumentIsSafe(document) {
+    if (!document || typeof document !== "object" || Array.isArray(document)) return false;
+    // A stored document is still untrusted input: browser crashes, old
+    // versions and interrupted writes can leave malformed values in either
+    // backend. Check depth and traversal cost before clone()/normalisation
+    // could recurse through it.
+    const pending = [{ value: document, depth: 0 }];
+    const visited = new WeakSet();
+    let nodes = 0;
+    while (pending.length) {
+      const item = pending.pop();
+      const value = item.value;
+      if (!value || typeof value !== "object") continue;
+      if (visited.has(value)) continue;
+      visited.add(value);
+      nodes += 1;
+      if (nodes > 25000 || item.depth > 32) return false;
+      const values = Array.isArray(value) ? value : Object.keys(value).map((key) => value[key]);
+      for (const child of values) if (child && typeof child === "object") pending.push({ value: child, depth: item.depth + 1 });
+    }
+    if (!document.metadata || typeof document.metadata !== "object" || Array.isArray(document.metadata) || !Array.isArray(document.blocks)) return false;
+    // Modern Proofnote records must pass the same boundary validation as an
+    // import. Keep accepting pre-format library records so a real v1 library
+    // can still migrate forward instead of being discarded on startup.
+    const model = root.ProofnoteDocument;
+    if ((document.format !== undefined || document.version !== undefined) && model && typeof model.validateDocumentRaw === "function") {
+      try { return model.validateDocumentRaw(document).errors.length === 0; } catch (_) { return false; }
+    }
+    return true;
+  }
   function validRecord(value) {
     return Boolean(
       value && typeof value === "object"
       && typeof value.id === "string" && value.id.trim()
-      && value.document && typeof value.document === "object" && !Array.isArray(value.document)
+      && storedDocumentIsSafe(value.document)
     );
   }
   function ordered(records) {
@@ -78,6 +122,11 @@
         if (!db.objectStoreNames.contains("settings")) db.createObjectStore("settings", { keyPath: "key" });
       };
       request.onsuccess = () => resolve(request.result);
+      // A version upgrade held behind another tab otherwise leaves the
+      // promise pending with no user-visible failure path. Rejecting keeps
+      // the editor honest about persistence and allows a later retry once
+      // that tab is closed.
+      request.onblocked = () => reject(new Error("IndexedDB upgrade is blocked by another open tab"));
       request.onerror = () => reject(request.error || new Error("Could not open IndexedDB"));
     });
   }
@@ -108,6 +157,13 @@
   function fallbackRead(key, empty) {
     try { return JSON.parse(root.localStorage.getItem(key) || JSON.stringify(empty)); } catch (_) { return empty; }
   }
+  function fallbackReadChecked(key, empty) {
+    try {
+      const raw = root.localStorage.getItem(key);
+      if (!raw) return { value: empty, valid: true };
+      return { value: JSON.parse(raw), valid: true };
+    } catch (_) { return { value: empty, valid: false }; }
+  }
   function fallbackReadString(key) {
     try { return String(root.localStorage.getItem(key) || ""); } catch (_) { return ""; }
   }
@@ -127,34 +183,61 @@
     } catch (_) { return false; }
   }
   function fallbackLibrary(seedDocument) {
-    const raw = fallbackRead(FALLBACK_DOCUMENTS, []);
-    const records = Array.isArray(raw) ? raw.filter(validRecord) : [];
-    const legacy = fallbackRead(FALLBACK_CURRENT, null);
+    const envelope = fallbackReadChecked(FALLBACK_LIBRARY, null);
+    if (!envelope.valid) {
+      // Never reinterpret damaged library JSON as an empty library and write
+      // a seed document over it. Keep the original value untouched so it can
+      // be recovered manually or by a future repair flow.
+      return { records: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+    }
+    const usingEnvelope = envelope.value !== null;
+    const stored = usingEnvelope ? envelope : fallbackReadChecked(FALLBACK_DOCUMENTS, []);
+    if (!stored.valid || (usingEnvelope && (!stored.value || typeof stored.value !== "object" || Array.isArray(stored.value) || !Array.isArray(stored.value.records))) || (!usingEnvelope && !Array.isArray(stored.value))) {
+      return { records: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+    }
+    const raw = usingEnvelope ? stored.value.records : stored.value;
+    // A malformed row is evidence of corruption, not permission to silently
+    // drop that document during a later write.
+    if (raw.some((record) => !validRecord(record))) {
+      return { records: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+    }
+    const records = raw.slice();
+    const legacyStored = usingEnvelope ? { value: null, valid: true } : fallbackReadChecked(FALLBACK_CURRENT, null);
+    // The legacy v1 slot can be the only remaining copy of a document. Treat
+    // malformed JSON there just like damaged library JSON: do not call the
+    // state "empty" and then erase the bytes during a migration write.
+    if (!legacyStored.valid) {
+      return { records, current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+    }
+    const legacy = legacyStored.value;
     const hasLegacy = Boolean(legacy && typeof legacy === "object");
-    let currentId = fallbackReadString(FALLBACK_CURRENT_DOCUMENT_ID);
+    let currentId = usingEnvelope ? String(stored.value.currentId || "") : fallbackReadString(FALLBACK_CURRENT_DOCUMENT_ID);
     let current = records.find((record) => record.id === currentId) || null;
     if (!current) {
       const remembered = ordered(records)[0] || null;
-      if (remembered) return { records, current: remembered, currentId: remembered.id, migrated: true, hasLegacy };
-      const document = legacy && typeof legacy === "object" ? legacy : seedDocument;
-      if (!document || typeof document !== "object") return { records, current: null, currentId, migrated: false, hasLegacy };
+      if (remembered) return { records, current: remembered, currentId: remembered.id, migrated: true, hasLegacy, corrupt: false };
+      const document = legacy && typeof legacy === "object" ? legacy : resolveSeed(seedDocument);
+      if (!document || typeof document !== "object") return { records, current: null, currentId, migrated: false, hasLegacy, corrupt: false };
       current = recordFor(document);
       records.push(current);
       currentId = current.id;
-      return { records, current, currentId, migrated: true, hasLegacy };
+      return { records, current, currentId, migrated: true, hasLegacy, corrupt: false };
     }
-    return { records, current, currentId, migrated: false, hasLegacy };
+    return { records, current, currentId, migrated: false, hasLegacy, corrupt: false };
   }
   function persistFallbackLibrary(library, includeLegacy) {
-    const documentsSaved = fallbackWrite(FALLBACK_DOCUMENTS, library.records);
-    const currentSaved = fallbackWriteString(FALLBACK_CURRENT_DOCUMENT_ID, library.currentId);
-    // `current` was the v1 single-document cache. Once the document library
-    // exists, retaining it creates a second migration source that can revive
-    // deleted documents or duplicate the active one after a fallback.
-    const legacySaved = includeLegacy === true && library.current
-      ? fallbackWrite(FALLBACK_CURRENT, library.current.document)
-      : fallbackRemove(FALLBACK_CURRENT);
-    return documentsSaved && currentSaved && legacySaved;
+    const saved = fallbackWrite(FALLBACK_LIBRARY, {
+      version: 2,
+      records: library.records,
+      currentId: library.currentId
+    });
+    if (!saved) return false;
+    // The envelope is now the one source of truth. Cleanup is best effort so
+    // a failure to remove an obsolete migration key cannot turn a completed
+    // atomic library write into a false failure state.
+    if (includeLegacy === true && library.current) fallbackWrite(FALLBACK_CURRENT, library.current.document);
+    else fallbackRemove(FALLBACK_CURRENT);
+    return true;
   }
   async function readIndexedLibrary() {
     const db = await openDatabase();
@@ -192,16 +275,169 @@
       await transactionDone(tx);
     } finally { db.close(); }
   }
+  // Keep the read, decision, and write for one record in the same IndexedDB
+  // transaction. A read in one transaction followed by a later write permits
+  // a second tab to delete or update the record in between, which can revive
+  // deleted content or overwrite a newer document snapshot.
+  async function mutateIndexedRecord(id, options, apply) {
+    const opts = options || {};
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction(["documents", "settings"], "readwrite");
+      const documents = tx.objectStore("documents");
+      const settings = tx.objectStore("settings");
+      const existing = await requestValue(documents.get(id));
+      if (!validRecord(existing)) {
+        await transactionDone(tx);
+        return { status: "missing", record: null };
+      }
+      if (opts.expectedRevision !== undefined && revisionOf(existing) !== opts.expectedRevision) {
+        await transactionDone(tx);
+        return { status: "conflict", record: clone(existing) };
+      }
+      const record = apply(clone(existing));
+      if (!validRecord(record)) throw new Error("Invalid document record mutation");
+      documents.put(clone(record), record.id);
+      if (opts.currentId !== undefined) settings.put({ key: CURRENT_DOCUMENT_ID_KEY, value: opts.currentId });
+      await transactionDone(tx);
+      return { status: "ok", record: clone(record) };
+    } finally { db.close(); }
+  }
+  async function createIndexedRecord(record, options) {
+    const opts = options || {};
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction(["documents", "settings"], "readwrite");
+      tx.objectStore("documents").put(clone(record), record.id);
+      if (opts.currentId !== undefined) tx.objectStore("settings").put({ key: CURRENT_DOCUMENT_ID_KEY, value: opts.currentId });
+      await transactionDone(tx);
+    } finally { db.close(); }
+  }
+  async function selectIndexedDocument(id) {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction(["documents", "settings"], "readwrite");
+      const existing = await requestValue(tx.objectStore("documents").get(id));
+      if (!validRecord(existing)) {
+        await transactionDone(tx);
+        return null;
+      }
+      tx.objectStore("settings").put({ key: CURRENT_DOCUMENT_ID_KEY, value: id });
+      await transactionDone(tx);
+      return clone(existing);
+    } finally { db.close(); }
+  }
+  async function duplicateIndexedRecord(id, name, options) {
+    const opts = options || {};
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction(["documents", "settings"], "readwrite");
+      const documents = tx.objectStore("documents");
+      const source = await requestValue(documents.get(id));
+      if (!validRecord(source)) {
+        await transactionDone(tx);
+        return null;
+      }
+      const nextName = String(name || source.document.metadata && source.document.metadata.name || "Untitled document");
+      const document = documentWithName(source.document, nextName);
+      const now = timestamp();
+      document.metadata = Object.assign({}, document.metadata, { createdAt: now, updatedAt: now });
+      const record = recordFor(document);
+      documents.put(clone(record), record.id);
+      if (opts.makeCurrent === true) tx.objectStore("settings").put({ key: CURRENT_DOCUMENT_ID_KEY, value: record.id });
+      await transactionDone(tx);
+      return clone(record);
+    } finally { db.close(); }
+  }
+  async function deleteIndexedRecord(id) {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction(["documents", "settings"], "readwrite");
+      const documents = tx.objectStore("documents");
+      const settings = tx.objectStore("settings");
+      const values = await Promise.all([
+        requestValue(documents.get(id)),
+        requestValue(settings.get(CURRENT_DOCUMENT_ID_KEY))
+      ]);
+      if (!validRecord(values[0])) {
+        await transactionDone(tx);
+        return "missing";
+      }
+      const wasCurrent = values[1] && values[1].value === id;
+      documents.delete(id);
+      if (wasCurrent) {
+        documents.delete(CURRENT_KEY);
+        settings.put({ key: CURRENT_DOCUMENT_ID_KEY, value: "" });
+      }
+      await transactionDone(tx);
+      return "ok";
+    } finally { db.close(); }
+  }
+  // Imported templates must never overwrite an existing local template. This
+  // is deliberately an `add`, not a read-then-put sequence, so IndexedDB
+  // enforces the identity boundary even when two tabs import concurrently.
+  async function addIndexedTemplateIfAbsent(template) {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction("templates", "readwrite");
+      let duplicate = false;
+      const request = tx.objectStore("templates").add(clone(template));
+      request.onerror = () => { duplicate = Boolean(request.error && request.error.name === "ConstraintError"); };
+      try {
+        await transactionDone(tx);
+        return "added";
+      } catch (error) {
+        // Some engines surface a duplicate-key abort as AbortError on the
+        // transaction even though the request itself correctly reports the
+        // ConstraintError. Keep the request-level fact through completion.
+        if (duplicate || (error && error.name === "ConstraintError")) return "exists";
+        throw error;
+      }
+    } finally { db.close(); }
+  }
+  // A malformed historic template can receive a generated safe ID during
+  // normalisation. Persist that repair once, atomically replacing the old
+  // primary key, so selection and future delete/edit actions do not acquire a
+  // fresh identity on every reload.
+  async function repairIndexedTemplate(originalId, template) {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction("templates", "readwrite");
+      const store = tx.objectStore("templates");
+      const payload = clone(template);
+      const nextId = payload && payload.template && String(payload.template.id || "");
+      if (!nextId) { tx.abort(); return "failed"; }
+      const existing = await requestValue(store.get(originalId));
+      if (!existing) { await transactionDone(tx); return "missing"; }
+      if (nextId === originalId) store.put(payload);
+      else {
+        store.add(payload);
+        store.delete(originalId);
+      }
+      await transactionDone(tx);
+      return "indexeddb";
+    } finally { db.close(); }
+  }
   async function initialiseIndexedLibrary(seedDocument) {
     const library = await readIndexedLibrary();
     let current = library.records.find((record) => record.id === library.currentId) || ordered(library.records)[0] || null;
     if (current) {
-      current = Object.assign({}, current, { lastOpenedAt: timestamp() });
-      await writeIndexedLibrary({ put: [current], remove: library.legacy ? [CURRENT_KEY] : [], currentId: current.id });
-      return current;
+      // Do not write the snapshot from readIndexedLibrary back wholesale:
+      // another tab may have saved newer content while startup was deciding
+      // which document to open. Mutate only lastOpenedAt against the record
+      // that exists at commit time.
+      const opened = await mutateIndexedRecord(current.id, { currentId: current.id }, (record) => Object.assign({}, record, { lastOpenedAt: timestamp() }));
+      if (opened.status === "ok") {
+        if (library.legacy) await writeIndexedLibrary({ remove: [CURRENT_KEY] });
+        return opened.record;
+      }
+      // A concurrent deletion is not a migration source. Let the caller make
+      // a fresh selection on the next normal library operation instead of
+      // reviving the record that disappeared during startup.
+      return null;
     }
     const legacyDocument = library.legacy && library.legacy.document;
-    const document = legacyDocument && typeof legacyDocument === "object" ? legacyDocument : seedDocument;
+    const document = legacyDocument && typeof legacyDocument === "object" ? legacyDocument : resolveSeed(seedDocument);
     if (!document || typeof document !== "object") return null;
     current = recordFor(document);
     await writeIndexedLibrary({ put: [current], remove: library.legacy ? [CURRENT_KEY] : [], currentId: current.id });
@@ -210,16 +446,22 @@
 
   async function useStorageSession(indexedOperation, fallbackOperation, failedValue) {
     if (sessionBackend === "localStorage") return fallbackOperation();
+    // Do not create a second history because one IndexedDB request happened
+    // to fail. Fallback storage is only safe when IndexedDB is absent before
+    // this session begins; otherwise a later recovery would reveal a stale
+    // IndexedDB library and split the user's documents across backends.
+    if (!root.indexedDB) {
+      sessionBackend = "localStorage";
+      return fallbackOperation();
+    }
     try {
       const result = await indexedOperation();
       sessionBackend = "indexeddb";
       return result;
     } catch (_) {
-      // Once IndexedDB has successfully served this session, never write a
-      // one-off fallback copy. That would be a false successful save.
-      if (sessionBackend === "indexeddb") return typeof failedValue === "function" ? failedValue() : failedValue;
-      sessionBackend = "localStorage";
-      return fallbackOperation();
+      // Leave the session retryable: a transient open/transaction failure
+      // must neither become a permanent fallback nor a false success.
+      return typeof failedValue === "function" ? failedValue() : failedValue;
     }
   }
 
@@ -233,66 +475,80 @@
         return { record: record && clone(record), backend: "indexeddb" };
       }, () => {
         const library = fallbackLibrary(seedDocument);
+        if (library.corrupt) return { record: null, backend: "failed" };
         const saved = library.migrated || library.hasLegacy ? persistFallbackLibrary(library, false) : true;
         return { record: library.current && clone(library.current), backend: saved ? "localStorage" : "failed" };
       }, () => ({ record: null, backend: "failed" }));
     },
-    async listDocuments() {
+    async listDocumentLibrary() {
       return useStorageSession(
-        async () => ordered((await readIndexedLibrary()).records).map(clone),
-        () => ordered(fallbackLibrary(null).records).map(clone),
-        () => []
+        async () => ({ records: ordered((await readIndexedLibrary()).records).map(clone), backend: "indexeddb" }),
+        () => {
+          const library = fallbackLibrary(null);
+          return library.corrupt
+            ? { records: [], backend: "failed" }
+            : { records: ordered(library.records).map(clone), backend: "localStorage" };
+        },
+        () => ({ records: [], backend: "failed" })
       );
     },
-    async createDocument(document) {
+    async listDocuments() {
+      return (await this.listDocumentLibrary()).records;
+    },
+    async createDocument(document, options) {
+      const opts = options || {};
+      const makeCurrent = opts.makeCurrent !== false;
       const record = recordFor(document);
       return useStorageSession(async () => {
-        await writeIndexedLibrary({ put: [record], currentId: record.id });
+        await createIndexedRecord(record, makeCurrent ? { currentId: record.id } : {});
         return { record: clone(record), backend: "indexeddb" };
       }, () => {
         const library = fallbackLibrary(null);
-        library.records.push(record); library.current = record; library.currentId = record.id;
+        if (library.corrupt) return { record: null, backend: "failed" };
+        library.records.push(record);
+        if (makeCurrent) { library.current = record; library.currentId = record.id; }
         return { record: clone(record), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
       }, () => ({ record: null, backend: "failed" }));
     },
-    async openDocument(id) {
+    async openDocument(id, options) {
+      const opts = options || {};
+      const makeCurrent = opts.makeCurrent !== false;
       return useStorageSession(async () => {
-        const library = await readIndexedLibrary();
-        const found = library.records.find((record) => record.id === id);
-        if (!found) return null;
-        const record = Object.assign({}, found, { lastOpenedAt: timestamp() });
-        await writeIndexedLibrary({ put: [record], currentId: record.id });
-        return { record: clone(record), backend: "indexeddb" };
+        const result = await mutateIndexedRecord(id, makeCurrent ? { currentId: id } : {}, (record) => Object.assign({}, record, { lastOpenedAt: timestamp() }));
+        return result.status === "ok" ? { record: clone(result.record), backend: "indexeddb" } : null;
       }, () => {
         const library = fallbackLibrary(null);
+        if (library.corrupt) return null;
         const index = library.records.findIndex((record) => record.id === id);
         if (index < 0) return null;
         const record = Object.assign({}, library.records[index], { lastOpenedAt: timestamp() });
-        library.records[index] = record; library.current = record; library.currentId = record.id;
+        library.records[index] = record;
+        if (makeCurrent) { library.current = record; library.currentId = record.id; }
         return { record: clone(record), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
       }, () => null);
     },
-    async saveDocument(id, document) {
+    async saveDocument(id, document, expectedRevision) {
       return useStorageSession(async () => {
         if (!id) return "failed";
-        const library = await readIndexedLibrary();
-        const existing = library.records.find((record) => record.id === id);
+        const options = expectedRevision === undefined ? {} : { expectedRevision };
+        const result = await mutateIndexedRecord(id, options, (existing) => {
+          const record = recordFor(document, existing);
+          record.id = id;
+          record.lastOpenedAt = existing.lastOpenedAt || record.lastOpenedAt;
+          return record;
+        });
         // saveDocument updates an established local identity. Creation belongs
         // exclusively to createDocument; otherwise a stale tab can recreate a
-        // record that was intentionally deleted elsewhere.
-        if (!existing) return "failed";
-        const record = recordFor(document, existing);
-        record.id = id;
-        record.lastOpenedAt = existing.lastOpenedAt || record.lastOpenedAt;
-        // Saving a background record must not silently switch the current
-        // document. The open/create operations own current-document changes.
-        await writeIndexedLibrary({ put: [record], currentId: library.currentId || record.id });
-        return "indexeddb";
+        // record that was intentionally deleted elsewhere. It also never
+        // changes currentId: opening/selecting owns that pointer.
+        return result.status === "ok" ? "indexeddb" : result.status === "conflict" ? "conflict" : "failed";
       }, () => {
         if (!id) return "failed";
         const library = fallbackLibrary(null);
+        if (library.corrupt) return "failed";
         const index = library.records.findIndex((record) => record.id === id);
         if (index < 0) return "failed";
+        if (expectedRevision !== undefined && revisionOf(library.records[index]) !== expectedRevision) return "conflict";
         const record = recordFor(document, library.records[index]);
         record.id = id;
         library.records[index] = record;
@@ -301,67 +557,77 @@
       }, "failed");
     },
 
-    async renameDocument(id, name) {
+    async renameDocument(id, name, expectedRevision) {
       const nextName = String(name || "").trim();
       if (!nextName) return null;
       const apply = (record) => {
         const updatedAt = timestamp();
         const document = documentWithName(record.document, nextName);
         document.metadata = Object.assign({}, document.metadata, { updatedAt });
-        return Object.assign({}, record, { document, updatedAt });
+        return Object.assign({}, record, { document, updatedAt, revision: revisionOf(record) + 1 });
       };
       return useStorageSession(async () => {
-        const library = await readIndexedLibrary();
-        const found = library.records.find((record) => record.id === id);
-        if (!found) return null;
-        const record = apply(found);
-        await writeIndexedLibrary({ put: [record] });
-        return { record: clone(record), backend: "indexeddb" };
+        const result = await mutateIndexedRecord(id, expectedRevision === undefined ? {} : { expectedRevision }, apply);
+        if (result.status === "missing") return null;
+        return { record: clone(result.record), backend: result.status === "conflict" ? "conflict" : "indexeddb" };
       }, () => {
         const library = fallbackLibrary(null);
+        if (library.corrupt) return null;
         const index = library.records.findIndex((record) => record.id === id);
         if (index < 0) return null;
+        if (expectedRevision !== undefined && revisionOf(library.records[index]) !== expectedRevision) return { record: clone(library.records[index]), backend: "conflict" };
         const record = apply(library.records[index]);
         library.records[index] = record;
         if (library.currentId === record.id) library.current = record;
         return { record: clone(record), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
       }, () => null);
     },
-    async duplicateDocument(id, name) {
+    async duplicateDocument(id, name, options) {
+      const opts = options || {};
+      const makeCurrent = opts.makeCurrent !== false;
       return useStorageSession(async () => {
-        const library = await readIndexedLibrary();
-        const source = library.records.find((record) => record.id === id);
-        if (!source) return null;
-        const nextName = String(name || source.document.metadata && source.document.metadata.name || "Untitled document");
-        const document = documentWithName(source.document, nextName);
-        document.metadata = Object.assign({}, document.metadata, { updatedAt: timestamp() });
-        const record = recordFor(document);
-        await writeIndexedLibrary({ put: [record], currentId: record.id });
+        const record = await duplicateIndexedRecord(id, name, { makeCurrent });
+        if (!record) return null;
         return { record: clone(record), backend: "indexeddb" };
       }, () => {
         const library = fallbackLibrary(null);
+        if (library.corrupt) return null;
         const source = library.records.find((record) => record.id === id);
         if (!source) return null;
         const nextName = String(name || source.document.metadata && source.document.metadata.name || "Untitled document");
         const document = documentWithName(source.document, nextName);
-        document.metadata = Object.assign({}, document.metadata, { updatedAt: timestamp() });
+        const now = timestamp();
+        document.metadata = Object.assign({}, document.metadata, { createdAt: now, updatedAt: now });
         const record = recordFor(document);
-        library.records.push(record); library.current = record; library.currentId = record.id;
+        library.records.push(record);
+        if (makeCurrent) { library.current = record; library.currentId = record.id; }
         return { record: clone(record), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
       }, () => null);
     },
     async deleteDocument(id) {
       return useStorageSession(async () => {
-        const library = await readIndexedLibrary();
-        const wasCurrent = library.currentId === id;
-        await writeIndexedLibrary({ remove: wasCurrent ? [id, CURRENT_KEY] : [id], currentId: wasCurrent ? "" : library.currentId });
-        return "indexeddb";
+        return (await deleteIndexedRecord(id)) === "ok" ? "indexeddb" : "failed";
       }, () => {
         const library = fallbackLibrary(null);
+        if (library.corrupt) return "failed";
         library.records = library.records.filter((record) => record.id !== id);
         if (library.currentId === id) { library.currentId = ""; library.current = null; }
         return persistFallbackLibrary(library) ? "localStorage" : "failed";
       }, "failed");
+    },
+    async setCurrentDocument(id) {
+      return useStorageSession(async () => {
+        const record = await selectIndexedDocument(id);
+        return record ? { record, backend: "indexeddb" } : null;
+      }, () => {
+        const library = fallbackLibrary(null);
+        if (library.corrupt) return null;
+        const record = library.records.find((item) => item.id === id);
+        if (!record) return null;
+        library.current = record;
+        library.currentId = record.id;
+        return { record: clone(record), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
+      }, () => null);
     },
 
     // Compatibility aliases used by older callers. New editor code always
@@ -395,6 +661,38 @@
         return fallbackWrite(FALLBACK_TEMPLATES, templates) ? "localStorage" : "failed";
       }, "failed");
     },
+    async importTemplateIfAbsent(template) {
+      const payload = clone(template);
+      const id = payload && payload.template && String(payload.template.id || "");
+      if (!id) return "failed";
+      return useStorageSession(async () => {
+        return await addIndexedTemplateIfAbsent(payload);
+      }, () => {
+        // localStorage has no compare-and-set primitive. It remains a
+        // single-device fallback, while the primary IndexedDB backend gets a
+        // genuine add-if-absent transaction above.
+        const templates = fallbackRead(FALLBACK_TEMPLATES, []);
+        if (templates.some((item) => item && item.template && item.template.id === id)) return "exists";
+        templates.push(payload);
+        return fallbackWrite(FALLBACK_TEMPLATES, templates) ? "added" : "failed";
+      }, "failed");
+    },
+    async repairTemplate(originalId, template) {
+      const hasPreviousId = originalId !== undefined && originalId !== null;
+      const previousId = hasPreviousId ? String(originalId) : "";
+      const payload = clone(template);
+      const nextId = payload && payload.template && String(payload.template.id || "");
+      if (!hasPreviousId || !nextId) return "failed";
+      return useStorageSession(async () => repairIndexedTemplate(previousId, payload), () => {
+        const templates = fallbackReadChecked(FALLBACK_TEMPLATES, []);
+        if (!templates.valid || !Array.isArray(templates.value)) return "failed";
+        const index = templates.value.findIndex((item) => item && item.template && item.template.id === previousId);
+        if (index < 0) return "missing";
+        if (previousId !== nextId && templates.value.some((item, itemIndex) => itemIndex !== index && item && item.template && item.template.id === nextId)) return "exists";
+        templates.value[index] = payload;
+        return fallbackWrite(FALLBACK_TEMPLATES, templates.value) ? "localStorage" : "failed";
+      }, "failed");
+    },
     async deleteTemplate(templateId) {
       return useStorageSession(async () => {
         await transaction("templates", "readwrite", (objectStore) => objectStore.delete(templateId));
@@ -405,179 +703,4 @@
     }
   };
   root.ProofnoteStore = store;
-})(window);
-
-// This application has no build step, so the model and store are loaded as
-// adjacent classic scripts before the editor. Keep a compact defence-in-depth
-// layer here to make the untrusted JSON boundary and the local persistence
-// boundary agree on limits and coercions without changing the public 1.0
-// interchange shape.
-(function hardenProofnoteDocumentBoundary(root) {
-  "use strict";
-  const Model = root.ProofnoteDocument;
-  if (!Model || Model.__boundaryHardened) return;
-
-  const MAX_ID_LENGTH = 256;
-  const RESERVED_BLOCK_IDS = new Set(["__proofnote_header__"]);
-  const RESERVED_TEMPLATE_IDS = new Set(["blank-document", "proof-note", "research-note", "lab-report", "essay-report"]);
-  const limits = Model.LIMITS || {};
-  const maxStringLength = limits.maxStringLength || 200000;
-  const maxImageDataUrlLength = limits.maxImageDataUrlLength || 14 * 1024 * 1024;
-  const originalNormalizeBlock = Model.normalizeBlock;
-  const originalNormalizeDocument = Model.normalizeDocument;
-  const originalValidateDocumentRaw = Model.validateDocumentRaw;
-  const originalValidateTemplateRaw = Model.validateTemplateRaw;
-  const originalMakeTemplate = Model.makeTemplate;
-  const originalNormalizeTemplate = Model.normalizeTemplate;
-
-  function isObject(value) { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }
-  function generatedId(prefix) { return (prefix || "item") + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 9); }
-  function idIsUnsafe(value) {
-    return typeof value === "string" && (!value.trim() || value.length > MAX_ID_LENGTH || RESERVED_BLOCK_IDS.has(value));
-  }
-  function templateIdIsUnsafe(value) {
-    return typeof value !== "string" || !value.trim() || value.length > MAX_ID_LENGTH || RESERVED_TEMPLATE_IDS.has(value);
-  }
-  function sanitizeBlock(raw) {
-    if (!isObject(raw)) return raw;
-    const next = Object.assign({}, raw);
-    if (idIsUnsafe(next.id)) next.id = "";
-    if (next.type === "list") next.ordered = next.ordered === true;
-    return next;
-  }
-  function sanitizeDocument(raw) {
-    if (!isObject(raw)) return raw;
-    const next = Object.assign({}, raw);
-    if (Array.isArray(raw.blocks)) next.blocks = raw.blocks.map(sanitizeBlock);
-    return next;
-  }
-  function uniquePush(target, issue) {
-    const key = String(issue && issue.path || "") + "\u0000" + String(issue && issue.message || "");
-    if (!target.some((current) => String(current && current.path || "") + "\u0000" + String(current && current.message || "") === key)) target.push(issue);
-  }
-  function allowedLargeImagePaths(document) {
-    const allowed = new Set();
-    if (!document || !Array.isArray(document.blocks)) return allowed;
-    document.blocks.forEach((block, index) => {
-      const source = block && typeof block.src === "string" ? block.src : "";
-      if (block && block.type === "image"
-        && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(source)
-        && source.length > maxStringLength
-        && source.length <= maxImageDataUrlLength) {
-        allowed.add("blocks[" + index + "].src");
-      }
-    });
-    return allowed;
-  }
-  function filterImageLengthFalsePositives(errors, document, pathPrefix) {
-    const prefix = String(pathPrefix || "");
-    const allowed = new Set(Array.from(allowedLargeImagePaths(document), (path) => prefix + path));
-    return (errors || []).filter((issue) => !(allowed.has(issue.path) && issue.message === "Text exceeds the maximum supported length."));
-  }
-  function prefixDocumentIssue(issue) {
-    return Object.assign({}, issue, { path: issue && issue.path ? "document." + issue.path : "document" });
-  }
-  function hardenDocumentValidation(raw, baseResult) {
-    const result = baseResult || { errors: [], warnings: [] };
-    const errors = filterImageLengthFalsePositives(result.errors, raw);
-    const warnings = (result.warnings || []).slice();
-    const addError = (path, message) => uniquePush(errors, { path, message });
-    const addWarning = (path, message) => uniquePush(warnings, { path, message });
-    const checkLength = (path, value) => {
-      if (typeof value === "string" && value.length > maxStringLength) addError(path, "Text exceeds the maximum supported length.");
-    };
-
-    if (isObject(raw && raw.metadata)) {
-      ["name", "templateName", "documentType", "language", "noteNumber", "author", "date", "status", "source", "createdAt", "updatedAt"].forEach((key) => checkLength("metadata." + key, raw.metadata[key]));
-      if (isObject(raw.metadata.runningHeader)) {
-        checkLength("metadata.runningHeader.left", raw.metadata.runningHeader.left);
-        checkLength("metadata.runningHeader.right", raw.metadata.runningHeader.right);
-      }
-    }
-
-    if (raw && Array.isArray(raw.blocks)) {
-      raw.blocks.slice(0, limits.maxBlocks || 2000).forEach((block, index) => {
-        if (!isObject(block)) return;
-        const path = "blocks[" + index + "]";
-        if (typeof block.id === "string") {
-          if (block.id.length > MAX_ID_LENGTH) addWarning(path + ".id", "Block ID is too long and will be regenerated.");
-          if (RESERVED_BLOCK_IDS.has(block.id)) addWarning(path + ".id", "Reserved block ID will be regenerated.");
-        }
-        if (!Model.BLOCK_TYPES.includes(block.type)) {
-          if (block.content !== undefined && typeof block.content !== "string") addWarning(path + ".content", "Expected a string; it will be treated as empty text.");
-          checkLength(path + ".content", block.content);
-        }
-        if (block.type === "table" && (!Array.isArray(block.columns) || block.columns.length === 0) && Array.isArray(block.rows)) {
-          const expected = 2;
-          block.rows.slice(0, limits.maxTableRows || 500).forEach((row, rowIndex) => {
-            if (!Array.isArray(row)) return;
-            const rowPath = path + ".rows[" + rowIndex + "]";
-            if (row.length < expected) addWarning(rowPath, "Expected 2 cells, found " + row.length + "; missing cells will be filled with empty text.");
-            else if (row.length > expected && row.length <= (limits.maxTableColumns || 50)) addError(rowPath, "Expected 2 cells, found " + row.length + "; importing would discard " + (row.length - expected) + " cell(s).");
-          });
-        }
-      });
-    }
-    return { errors, warnings };
-  }
-
-  Model.normalizeBlock = function (raw, options) {
-    return originalNormalizeBlock.call(Model, sanitizeBlock(raw), options);
-  };
-  Model.normalizeDocument = function (raw, options) {
-    const document = originalNormalizeDocument.call(Model, sanitizeDocument(raw), options);
-    const seen = new Set();
-    (document.blocks || []).forEach((block) => {
-      if (!block) return;
-      while (!block.id || !String(block.id).trim() || block.id.length > MAX_ID_LENGTH || RESERVED_BLOCK_IDS.has(block.id) || seen.has(block.id)) block.id = generatedId("block");
-      seen.add(block.id);
-      if (block.type === "list") block.ordered = block.ordered === true;
-    });
-    return document;
-  };
-  Model.validateDocumentRaw = function (raw) {
-    return hardenDocumentValidation(raw, originalValidateDocumentRaw.call(Model, raw));
-  };
-  Model.validateTemplateRaw = function (raw) {
-    const base = originalValidateTemplateRaw.call(Model, raw);
-    const errors = filterImageLengthFalsePositives(base.errors, raw && raw.document, "document.");
-    const warnings = (base.warnings || []).slice();
-    if (raw && raw.document) {
-      const oldDocument = originalValidateDocumentRaw.call(Model, raw.document);
-      const hardenedDocument = Model.validateDocumentRaw(raw.document);
-      const oldErrorKeys = new Set(filterImageLengthFalsePositives(oldDocument.errors, raw.document).map((issue) => issue.path + "\u0000" + issue.message));
-      const oldWarningKeys = new Set((oldDocument.warnings || []).map((issue) => issue.path + "\u0000" + issue.message));
-      hardenedDocument.errors.forEach((issue) => {
-        if (!oldErrorKeys.has(issue.path + "\u0000" + issue.message)) uniquePush(errors, prefixDocumentIssue(issue));
-      });
-      hardenedDocument.warnings.forEach((issue) => {
-        if (!oldWarningKeys.has(issue.path + "\u0000" + issue.message)) uniquePush(warnings, prefixDocumentIssue(issue));
-      });
-    }
-    if (raw && isObject(raw.template)) {
-      if (typeof raw.template.id === "string") {
-        if (!raw.template.id.trim()) uniquePush(warnings, { path: "template.id", message: "Empty template ID will be regenerated." });
-        if (raw.template.id.length > MAX_ID_LENGTH) uniquePush(warnings, { path: "template.id", message: "Template ID is too long and will be regenerated." });
-        if (RESERVED_TEMPLATE_IDS.has(raw.template.id)) uniquePush(warnings, { path: "template.id", message: "Built-in template ID is reserved and will be regenerated." });
-      }
-      if (typeof raw.template.name === "string" && raw.template.name.length > maxStringLength) uniquePush(errors, { path: "template.name", message: "Text exceeds the maximum supported length." });
-      if (typeof raw.template.description === "string" && raw.template.description.length > maxStringLength) uniquePush(errors, { path: "template.description", message: "Text exceeds the maximum supported length." });
-    }
-    return { errors, warnings };
-  };
-  Model.makeTemplate = function (rawDocument, template) {
-    const info = Object.assign({}, template || {});
-    if (typeof info.id === "string" && templateIdIsUnsafe(info.id)) info.id = "";
-    const result = originalMakeTemplate.call(Model, sanitizeDocument(rawDocument), info);
-    if (result && result.template && templateIdIsUnsafe(result.template.id)) result.template.id = generatedId("template");
-    result.document = Model.normalizeDocument(result.document);
-    return result;
-  };
-  Model.normalizeTemplate = function (raw) {
-    const result = originalNormalizeTemplate.call(Model, raw);
-    if (result && result.template && templateIdIsUnsafe(result.template.id)) result.template.id = generatedId("template");
-    if (result && result.document) result.document = Model.normalizeDocument(result.document);
-    return result;
-  };
-  Object.defineProperty(Model, "__boundaryHardened", { value: true, enumerable: false });
 })(window);

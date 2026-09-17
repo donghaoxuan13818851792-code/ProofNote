@@ -10,6 +10,8 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const modelSource = fs.readFileSync(path.join(root, "src", "document-model.js"), "utf8");
 const storeSource = fs.readFileSync(path.join(root, "src", "document-store.js"), "utf8");
 const projectAiInstructionsSource = fs.readFileSync(path.join(root, "src", "project-ai-instructions.js"), "utf8");
+const rendererSource = fs.readFileSync(path.join(root, "src", "document-renderer.js"), "utf8");
+const legacyBoundarySource = fs.readFileSync(path.join(root, "src", "document-legacy-boundary.js"), "utf8");
 const jsoncParserSource = fs.readFileSync(path.join(root, "vendor", "jsonc-parser", "jsonc-parser.js"), "utf8");
 const prismSource = fs.readFileSync(path.join(root, "vendor", "prism", "prism.js"), "utf8");
 const prismLanguageSources = [
@@ -74,6 +76,8 @@ async function main() {
     window.eval(modelSource);
     window.eval(storeSource);
     window.eval(projectAiInstructionsSource);
+    window.eval(rendererSource);
+    window.eval(legacyBoundarySource);
     const jsoncScript = document.createElement("script");
     jsoncScript.text = jsoncParserSource;
     document.head.appendChild(jsoncScript);
@@ -85,6 +89,7 @@ async function main() {
     const fixture = Model.blankDocument({
       name: "Canvas QA",
       templateName: "Proof Note",
+      templateId: "proof-note",
       blocks: [
         Model.createBlock("title", { content: "Canvas QA" }),
         Model.createBlock("subtitle", { content: "A concise statement of the result." }),
@@ -130,15 +135,16 @@ async function main() {
       && Boolean(window.Prism.languages.python)
       && html.includes('window.Prism = { manual: true }')
       && html.includes('./vendor/prism/prism-python.min.js?v=1.30.0')
+      && Boolean(window.ProofnoteRenderer) && Boolean(window.ProofnoteLegacyBoundary)
       && html.includes('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1')
-      && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260916-52'), "document-model.js, document-store.js, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
+        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260917-58'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
     check(
       "editor-document-typography-is-shared",
       [
         "--pn-doc-body-size", "--pn-doc-body-leading", "--pn-doc-title-size",
         "--pn-doc-summary-size", "--pn-doc-section-1-size", "--pn-doc-label-size", "--pn-doc-meta-size"
       ].every((token) => editorCss.includes(token) && editorSource.includes(token))
-        && editorCss.includes("--pn-doc-page-width: 8.5in")
+        && editorCss.includes("--pn-doc-page-width: 210mm")
         && editorSource.includes("max-width:712px"),
       "canvas and standalone HTML must share the original Proofnote document type scale and reading measure"
     );
@@ -171,6 +177,8 @@ async function main() {
         && editorSource.includes("function outlineEditorialNumber")
         && Array.from(outline.children).map((node) => node.firstElementChild?.querySelector(".pn-outline-number")?.textContent || "").join(",") === "01,02,03,04"
         && editorSource.includes("setOutlineCollapsed")
+        && editorSource.includes("outlineCollapseStorageKey")
+        && editorSource.includes("restoreOutlineCollapseState")
         && editorSource.includes("updateViewportOutlineActive")
         && document.querySelectorAll("#pnOutlinePanel .pn-sidebar-heading").length === 1
         && Boolean(outline)
@@ -260,7 +268,8 @@ async function main() {
       !document.querySelector("#pnCanvas .pn-proof-metadata")
         && inspector.querySelectorAll(".pn-inspector-toggle-control").length === 4
         && /hidden from the page|已从纸面隐藏/.test(inspector.textContent)
-        && editorSource.includes('if (!fields.length) return "";'),
+        && /Source|来源/.test(inspector.textContent)
+        && editorSource.includes("const showSource = Boolean(values.source.trim())"),
       inspector ? inspector.textContent : "missing hidden-metadata inspector"
     );
     const titleCanvasBlock = document.querySelector("#pnCanvas .pn-canvas-proof-header");
@@ -303,9 +312,9 @@ async function main() {
         && !/INSERTABLE_BLOCK_TYPES[^;]*"heading"/.test(editorSource)
         && !/INSERTABLE_BLOCK_TYPES[^;]*"title"/.test(editorSource)
         && !/INSERTABLE_BLOCK_TYPES[^;]*"subtitle"/.test(editorSource)
-        && !/INSERTABLE_BLOCK_TYPES[^;]*"image"/.test(editorSource)
-        && !/INSERTABLE_BLOCK_TYPES[^;]*"key-value"/.test(editorSource)
-        && !/INSERTABLE_BLOCK_TYPES[^;]*"stats"/.test(editorSource)
+        && /INSERTABLE_BLOCK_TYPES[^;]*"image"/.test(editorSource)
+        && /INSERTABLE_BLOCK_TYPES[^;]*"key-value"/.test(editorSource)
+        && /INSERTABLE_BLOCK_TYPES[^;]*"stats"/.test(editorSource)
         && /\["equation", "Standalone equation", "独立公式"\]/.test(editorSource)
         && /\["quote", "Citation", "引文"\]/.test(editorSource)
         && /\["callout", "Callout", "注释框"\]/.test(editorSource),
@@ -367,12 +376,75 @@ async function main() {
     check(
       "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.23"
-        && editorSource.includes('const APP_VERSION = "v1.23";')
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.29"
+        && editorSource.includes('const APP_VERSION = "v1.29";')
         && !document.querySelector("#pnEditMetadata")
         && !document.querySelector("#pnExportLegacy")
         && !/Document info|文档信息|Proofnote Document Format/.test(actionMenu.textContent),
       "the global menu should contain only file actions; document properties live on the paper"
+    );
+    check(
+      "editor-inline-code-remains-literal-through-markdown-rendering",
+      window.ProofnoteRenderer.inline("`**not bold**` and `x_{i}`").includes("<code>**not bold**</code>")
+        && !window.ProofnoteRenderer.inline("`**not bold**`").includes("<strong>"),
+      window.ProofnoteRenderer.inline("`**not bold**` and `x_{i}`")
+    );
+    check(
+      "editor-reader-rendering-and-legacy-hardening-have-explicit-boundaries",
+      !editorSource.includes("__snTest")
+        && !projectAiInstructionsSource.includes("hardenLegacySolutionNoteBoundary")
+        && !projectAiInstructionsSource.includes("hardenPortableObjectGraph")
+        && legacyBoundarySource.includes("function validateSolutionNote")
+        && rendererSource.includes("root.ProofnoteRenderer")
+        && html.indexOf("./src/document-renderer.js?v=workspace-20260917-58") < html.indexOf("./src/document-editor.js?v=workspace-20260917-58")
+        && html.indexOf("./src/document-legacy-boundary.js?v=workspace-20260917-58") < html.indexOf("./src/document-editor.js?v=workspace-20260917-58"),
+      "reader rendering must not borrow the retired test hook, and legacy hardening must stay in its required boundary module"
+    );
+    const tableHeaderSource = editorSource.slice(editorSource.indexOf("function setTableHeader"), editorSource.indexOf("function imageFilePicker"));
+    check(
+      "editor-table-header-toggle-is-display-only",
+      tableHeaderSource.includes("block.header = Boolean(visible)")
+        && !tableHeaderSource.includes("rows.unshift")
+        && !tableHeaderSource.includes("rows.shift"),
+      tableHeaderSource
+    );
+    check(
+      "editor-hardens-portable-size-render-budget-and-async-images",
+      editorSource.includes("function portableDocumentWithinLimit")
+        && editorSource.includes("Adding this image would make the backup exceed 25 MB")
+        && editorSource.includes("This backup exceeds 25 MB")
+        && editorSource.includes("function hasRenderCapacity")
+        && editorSource.includes("documentGeneration")
+        && editorSource.includes("sourceGeneration !== documentGeneration")
+        && editorSource.includes("if (!hasRenderCapacity(1)) return false")
+        && editorSource.includes("function readImportFile")
+        && editorSource.includes("els.importText.readOnly = true")
+        && editorSource.includes("reader.onabort")
+        && editorSource.includes("els.importFile.value = \"\""),
+      "authoring, file import and portable export need explicit size and document-generation guards"
+    );
+    check(
+      "editor-hardens-print-status-template-and-math-boundaries",
+      editorSource.includes('root.addEventListener("beforeunload"')
+        && editorSource.includes("function setPersistenceStatus")
+        && editorSource.includes("opts.persisted === true")
+        && editorSource.includes("Store.importTemplateIfAbsent(template)")
+        && editorSource.includes("function requestDeleteTemplate")
+        && editorSource.includes("prepareImportedProjectDocument(document, null)")
+        && editorSource.includes("maxLength: Model.LIMITS.maxEquationLength")
+        && editorSource.includes("pn-canvas-code-print")
+        && editorSource.includes("exportLanguageContext"),
+      "print, persistence status, templates, equations, and export labels need explicit safety boundaries"
+    );
+    check(
+      "editor-keeps-project-names-and-export-masthead-singular",
+      editorSource.includes("function cleanProjectName")
+        && editorSource.includes("metadataIndex = documentMetadata")
+        && editorSource.includes("index === metadataIndex")
+        && editorSource.includes("pn-project-export-footer")
+        && editorSource.includes("position:fixed;top:8mm")
+        && editorSource.includes("return state.blocks.findIndex((block) => block.type === \"subtitle\")"),
+      "Project names, metadata placement, and standalone document chrome must remain canonical"
     );
     check(
       "editor-inspector-is-absent-without-selection",
@@ -466,6 +538,15 @@ async function main() {
 
       const editable = problem.querySelector("textarea, input");
       check("editor-canvas-has-editable-input", Boolean(editable), "selected canvas block needs an input or textarea for direct editing");
+      check(
+        "editor-canvas-text-fields-respect-the-portable-length-limit",
+        Boolean(editable) && editable.maxLength === Model.LIMITS.maxStringLength
+          && editorSource.includes("function hasBlockCapacity")
+          && editorSource.includes("Model.LIMITS.maxBlocks")
+          && editorSource.includes("function excessiveJsonNestingDiagnostic")
+          && editorSource.includes("const pending = tree ? [tree] : []"),
+        "canvas edits and import diagnostics must be bounded before normalisation or recursive traversal can discard or exhaust data"
+      );
       if (editable) {
         const beforeInput = editable;
         editable.focus();
@@ -567,8 +648,8 @@ async function main() {
         && Boolean(tableHeaderToggle)
         && Boolean(tableBlock)
         && !tableBlock.querySelector("thead")
-        && tableBlock.querySelectorAll("tbody tr").length === 3
-        && tableBlock.querySelectorAll(".pn-table-row-remove").length === 3,
+        && tableBlock.querySelectorAll("tbody tr").length === 2
+        && tableBlock.querySelectorAll(".pn-table-row-remove").length === 2,
       tableBlock ? tableBlock.textContent : "missing table"
     );
 
@@ -866,8 +947,8 @@ async function main() {
       Boolean(editorialSectionOutlineItem)
         && Boolean(sectionBodyToggle)
         && Boolean(editorialSectionId && !document.getElementById("pn-block-" + editorialSectionId)?.querySelector(".pn-editorial-section-body-input"))
-        && editorSource.includes("setEditorialBodyVisible")
-        && editorSource.includes("editorialBodyVisible(block)"),
+        && editorSource.includes("setSemanticBodyVisible")
+        && editorSource.includes("semanticBodyVisible(block)"),
       inspector ? inspector.textContent : "missing editorial section body display control"
     );
     sectionBodyToggle = Array.from(inspector.querySelectorAll(".pn-inspector-toggle")).find((row) => /Show body|显示正文/.test(row.textContent))?.querySelector("input");
@@ -1002,7 +1083,7 @@ async function main() {
       "editor-project-header-shares-proofnote-editorial-rhythm",
       editorCss.includes(".pn-proofnote-document .pn-document-title,.pn-project-document .pn-document-title")
         && editorCss.includes(".pn-proofnote-document .pn-document-subtitle,.pn-project-document .pn-document-subtitle")
-        && editorSource.includes('const metadataAfter = documentMetadata && subtitleVisible ? "subtitle" : "title";')
+        && editorSource.includes("const metadataIndex = documentMetadata")
         && editorSource.includes('els.canvas.classList.toggle("pn-project-document", isProjectDocument());')
         && editorSource.includes('["introduction", "section"].includes(block.kind)')
         && editorSource.includes('["introduction", "problem", "result", "theorem"].includes(block.kind)'),
@@ -1120,8 +1201,8 @@ check(
     && Boolean(newlyImportedCollisionTemplate)
     && newlyImportedCollisionTemplate.template.id !== "collision-template"
     && /recoverable notice|可恢复提示/.test(document.querySelector("#pnStatus")?.textContent || "")
-    && editorSource.includes("an imported portable file must never")
-    && editorSource.includes("storedTemplateIds.has(template.template.id)"),
+    && editorSource.includes("another tab cannot slip an overwrite")
+    && editorSource.includes("Store.importTemplateIfAbsent(template)"),
   JSON.stringify(collisionTemplatesAfterImport.map((item) => item.template))
 );
     const blankProjectImportPayload = {
@@ -1238,6 +1319,25 @@ check(
         && editorSource.includes("potentialLatexCorruptions"),
       importReport?.textContent || "missing LaTeX corruption diagnostic"
     );
+    const legacySilentlyCorruptedLatexJson = [
+      "{",
+      '  "format": "solution-note",',
+      '  "version": "1.0",',
+      '  "meta": { "title": "Legacy LaTeX" },',
+      '  "core": { "problem": "Use \\nabla f", "result": { "type": "Theorem", "statement": "", "explanation": "" }, "whyItWorks": [], "evidence": [], "reproduce": {} },',
+      '  "optional": {}',
+      "}"
+    ].join("\n");
+    if (importText) importText.value = legacySilentlyCorruptedLatexJson;
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => /Possible malformed LaTeX|可能已损坏的 LaTeX/.test(importReport?.textContent || ""));
+    check(
+      "editor-import-stops-silently-corrupted-legacy-solution-note-latex",
+      /Possible malformed LaTeX|可能已损坏的 LaTeX/.test(importReport?.textContent || "")
+        && /core\.problem/.test(importReport?.textContent || "")
+        && editorSource.includes("isSolutionNoteLatexContent"),
+      importReport?.textContent || "missing legacy LaTeX corruption diagnostic"
+    );
     const invalidSchemaJson = JSON.stringify({ format: "proofnote-document", version: "1.0", metadata: { name: "Bad structure" }, blocks: "not an array" }, null, 2);
     if (importText) importText.value = invalidSchemaJson;
     if (confirmImport) confirmImport.click();
@@ -1257,6 +1357,8 @@ check(
       blocks: [{ type: "table", columns: ["Name", "Score", "Status"], rows: [["Alice", "98"]] }]
     }, null, 2);
     if (importText) importText.value = shortTableRowJson;
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => /recoverable notice|可恢复提示/.test(importReport?.textContent || ""));
     if (confirmImport) confirmImport.click();
     await settle(window, () => /recoverable notice|可恢复提示/.test(document.querySelector("#pnStatus")?.textContent || ""));
     check(
@@ -1490,10 +1592,10 @@ check(
     };
     check(
       "editor-document-transitions-final-flush-before-activation",
-      orderedFinalFlush(openTransitionSource, "await Store.openDocument", "await activateDocument")
-        && orderedFinalFlush(duplicateTransitionSource, "await Store.duplicateDocument", "await activateDocument")
-        && orderedFinalFlush(createTransitionSource, "await Store.createDocument", "await activateDocument")
-        && orderedFinalFlush(templateTransitionSource, "await Store.createDocument", "await activateDocument"),
+      orderedFinalFlush(openTransitionSource, "await Store.openDocument", "selectAndActivateDocument")
+        && orderedFinalFlush(duplicateTransitionSource, "await Store.duplicateDocument", "selectAndActivateDocument")
+        && orderedFinalFlush(createTransitionSource, "await Store.createDocument", "selectAndActivateDocument")
+        && orderedFinalFlush(templateTransitionSource, "await Store.createDocument", "selectAndActivateDocument"),
       "document transitions must flush edits that arrive while storage operations are in flight"
     );
 
@@ -1564,6 +1666,46 @@ check(
         && Boolean(insertedSection && Array.from(insertedSection.querySelectorAll("input, textarea")).some((control) => untitledSectionPattern.test(control.value))),
       insertedSection ? insertedSection.textContent : "the Add block picker did not create an editorial semantic section"
     );
+
+    // The template action has its own import mode: an ordinary document must
+    // be diagnosed there rather than creating/switching a document. The other
+    // checks lock the related renderer, IME, print, and input-size invariants
+    // to their deliberately small implementation points.
+    const templateImportTrigger = document.querySelector("#pnImportTemplate");
+    if (templateImportTrigger) templateImportTrigger.click();
+    await settle(window, () => document.querySelector("#pnImportModal")?.hidden === false);
+    const templateModeText = JSON.stringify({ format: "proofnote-document", version: "1.0", metadata: { name: "Not a template" }, blocks: [] });
+    if (importText) importText.value = templateModeText;
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => /only a Proofnote template|仅接受 Proofnote 模板/.test(importReport?.textContent || ""));
+    check(
+      "editor-hardens-ime-template-import-print-schema-and-a4",
+      editorSource.includes("function isComposingInput(event)")
+        && editorSource.includes('event.key === "Enter" && !event.shiftKey && !isComposingInput(event)')
+        && editorSource.includes('String(state.metadata.templateId || "").trim() === "proof-note"')
+        && !editorSource.includes('String(state.metadata.templateName || "").trim() === "Proof Note"')
+        && editorSource.includes('Model.createBlock("subtitle", { content: "" })')
+        && editorSource.includes('const raw = parser.parse(source, parseErrors, STRICT_JSON_PARSE_OPTIONS);')
+        && !editorSource.includes("JSON.parse(source)")
+        && editorSource.includes("const renameDrafts = new Map()")
+        && editorSource.includes('importMode === "template"')
+        && editorSource.includes("data:image\\/(png|jpe?g|gif|webp);base64")
+        && editorSource.includes("const naturalSheetWidth = 210 / 25.4 * 96")
+        && editorCss.includes("--pn-doc-page-width: 210mm")
+        && !editorCss.includes(".pn-editorial-section { margin: 0 0 21pt; break-inside: avoid")
+        && !editorSource.includes(".pn-editorial-section{margin:0 0 28px;break-inside:avoid")
+        && !html.includes("@bottom-center")
+        && editorSource.includes("const migratedValidation = Model.validateDocumentRaw(next);")
+        && editorSource.includes("MAX_HIGHLIGHTED_CODE_LENGTH")
+        && editorSource.includes("function syncModalIsolation()")
+        && editorCss.includes(".pn-modal-backdrop,.pn-outline-menu,.pn-undo-toast")
+        && document.querySelector(".pn-shell")?.inert === true
+        && /only a Proofnote template|仅接受 Proofnote 模板/.test(importReport?.textContent || ""),
+      importReport?.textContent || "missing template-only import diagnostic"
+    );
+    const importClose = document.querySelector("#pnCloseImport");
+    if (importClose) importClose.click();
+    check("editor-modal-isolation-releases-the-workspace-on-close", document.querySelector(".pn-shell")?.inert === false, String(document.querySelector(".pn-shell")?.inert));
 
     check("editor-no-runtime-errors", runtimeErrors.length === 0, runtimeErrors.join(" | ").slice(0, 500));
   } catch (error) {

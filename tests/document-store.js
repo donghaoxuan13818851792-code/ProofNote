@@ -61,8 +61,27 @@ async function main() {
   check("store-migrates-legacy-current-into-a-local-record", Boolean(initial.record && initial.record.id && initial.record.document.metadata.name === "Migrated note"));
   check("store-migration-clears-the-legacy-single-document-cache", libraryWindow.localStorage.getItem("proofnote-document:current:v1") === "null");
   check("store-local-id-is-not-written-into-portable-document", initial.record && !Object.prototype.hasOwnProperty.call(initial.record.document, "id"));
+  let unusedSeedCalls = 0;
+  const existingLibrary = await Library.initialiseDocumentLibrary(() => {
+    unusedSeedCalls += 1;
+    return { metadata: { name: "This seed must stay lazy" }, blocks: [] };
+  });
+  check(
+    "store-seed-factory-is-never-evaluated-when-a-modern-library-already-exists",
+    unusedSeedCalls === 0 && existingLibrary.record && existingLibrary.record.id === initial.record.id,
+    JSON.stringify({ unusedSeedCalls, existingLibrary })
+  );
   const created = await Library.createDocument({ metadata: { name: "Second note" }, blocks: [] });
   check("store-creates-separate-document-records", Boolean(created && created.record && created.record.id && created.record.id !== initial.record.id));
+  const fallbackEnvelope = JSON.parse(libraryWindow.localStorage.getItem("proofnote-document:library:v2") || "null");
+  check(
+    "store-fallback-library-writes-records-and-current-id-as-one-envelope",
+    Boolean(fallbackEnvelope && fallbackEnvelope.version === 2
+      && Array.isArray(fallbackEnvelope.records)
+      && fallbackEnvelope.records.some((record) => record.id === created.record.id)
+      && typeof fallbackEnvelope.currentId === "string"),
+    JSON.stringify(fallbackEnvelope)
+  );
   const opened = await Library.openDocument(initial.record.id);
   check("store-opens-a-document-by-local-id", Boolean(opened && opened.record && opened.record.id === initial.record.id));
   const renamed = await Library.renameDocument(initial.record.id, "Renamed note");
@@ -70,6 +89,14 @@ async function main() {
   const duplicate = await Library.duplicateDocument(initial.record.id, "Renamed note copy");
   const beforeDelete = await Library.listDocuments();
   check("store-duplicates-with-a-fresh-local-id", Boolean(duplicate && duplicate.record && duplicate.record.id !== initial.record.id && beforeDelete.length === 3));
+  check(
+    "store-duplicate-refreshes-portable-document-timestamps",
+    Boolean(duplicate && duplicate.record
+      && duplicate.record.document.metadata.createdAt
+      && duplicate.record.document.metadata.updatedAt
+      && duplicate.record.document.metadata.createdAt === duplicate.record.document.metadata.updatedAt),
+    JSON.stringify(duplicate && duplicate.record && duplicate.record.document && duplicate.record.document.metadata)
+  );
   await Library.deleteDocument(created.record.id);
   const afterDelete = await Library.listDocuments();
   check("store-deletes-only-the-requested-document", afterDelete.length === 2 && !afterDelete.some((record) => record.id === created.record.id));
@@ -79,10 +106,14 @@ async function main() {
   await Library.deleteDocument(initial.record.id);
   const afterLastDelete = await Library.initialiseDocumentLibrary({ metadata: { name: "Fresh seed" } });
   check("store-deleting-last-document-does-not-resurrect-the-legacy-record", Boolean(afterLastDelete.record && afterLastDelete.record.document.metadata.name === "Fresh seed"));
-  libraryWindow.localStorage.setItem("proofnote-document:documents:v1", JSON.stringify([
-    { id: "opened-later", document: { metadata: { name: "Opened later" }, blocks: [] }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z", lastOpenedAt: "2026-01-04T00:00:00.000Z" },
-    { id: "edited-later", document: { metadata: { name: "Edited later" }, blocks: [] }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-03T00:00:00.000Z", lastOpenedAt: "2026-01-01T12:00:00.000Z" }
-  ]));
+  libraryWindow.localStorage.setItem("proofnote-document:library:v2", JSON.stringify({
+    version: 2,
+    currentId: "opened-later",
+    records: [
+      { id: "opened-later", document: { metadata: { name: "Opened later" }, blocks: [] }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z", lastOpenedAt: "2026-01-04T00:00:00.000Z" },
+      { id: "edited-later", document: { metadata: { name: "Edited later" }, blocks: [] }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-03T00:00:00.000Z", lastOpenedAt: "2026-01-01T12:00:00.000Z" }
+    ]
+  }));
   const modifiedFirst = await Library.listDocuments();
   check("store-lists-documents-by-most-recent-modification", modifiedFirst[0] && modifiedFirst[0].id === "edited-later");
   const openedWithoutEditing = await Library.openDocument("opened-later");
@@ -95,6 +126,23 @@ async function main() {
       && reopenedRecord.updatedAt === "2026-01-02T00:00:00.000Z"
       && reopenedRecord.lastOpenedAt !== "2026-01-04T00:00:00.000Z",
     JSON.stringify(modifiedAfterOpen)
+  );
+
+  // A damaged fallback library must remain recoverable. It is not an empty
+  // library, so startup and listing must fail explicitly without replacing
+  // the original bytes with a seed document.
+  const corruptFallbackValues = new Map([["proofnote-document:library:v2", "{ damaged fallback JSON"]]);
+  const corruptFallbackWindow = { localStorage: memoryStorage(corruptFallbackValues) };
+  vm.runInNewContext(source, { window: corruptFallbackWindow, JSON, Promise, Date, Error, Math, Map, String, Object, Array, WeakSet });
+  const CorruptFallback = corruptFallbackWindow.ProofnoteStore;
+  const corruptFallbackInitial = await CorruptFallback.initialiseDocumentLibrary({ metadata: { name: "Do not overwrite" }, blocks: [] });
+  const corruptFallbackList = await CorruptFallback.listDocumentLibrary();
+  check(
+    "store-corrupt-fallback-library-is-not-treated-as-empty-or-overwritten",
+    corruptFallbackInitial.backend === "failed"
+      && corruptFallbackList.backend === "failed"
+      && corruptFallbackValues.get("proofnote-document:library:v2") === "{ damaged fallback JSON",
+    JSON.stringify({ initial: corruptFallbackInitial, list: corruptFallbackList, stored: corruptFallbackValues.get("proofnote-document:library:v2") })
   );
 
   // Exercise the real IndexedDB upgrade and transaction path. The legacy v1
@@ -129,6 +177,74 @@ async function main() {
       && idbRecords.length === 2
       && !idbRecords.some((record) => record.id === "current-document"),
     JSON.stringify(idbRecords)
+  );
+  const importedTemplate = {
+    format: "proofnote-template", version: "1.0",
+    template: { id: "atomic-import", name: "First imported template" },
+    document: { format: "proofnote-document", version: "1.0", metadata: { name: "Template" }, blocks: [] }
+  };
+  const duplicateImportedTemplate = Object.assign({}, importedTemplate, {
+    template: { id: "atomic-import", name: "Must not overwrite" }
+  });
+  const firstTemplateImport = await IndexedLibrary.importTemplateIfAbsent(importedTemplate);
+  const secondTemplateImport = await IndexedLibrary.importTemplateIfAbsent(duplicateImportedTemplate);
+  const storedTemplates = await IndexedLibrary.listTemplates();
+  check(
+    "store-template-import-adds-atomically-without-upserting-a-collision",
+    firstTemplateImport === "added"
+      && secondTemplateImport === "exists"
+      && storedTemplates.find((template) => template.template && template.template.id === "atomic-import")?.template?.name === "First imported template",
+    JSON.stringify({ firstTemplateImport, secondTemplateImport, storedTemplates })
+  );
+  const malformedStoredTemplate = {
+    format: "proofnote-template", version: "1.0",
+    template: { id: "", name: "Historic template" },
+    document: { format: "proofnote-document", version: "1.0", metadata: { name: "Historic" }, blocks: [] }
+  };
+  const repairedStoredTemplate = Object.assign({}, malformedStoredTemplate, {
+    template: { id: "repaired-template-id", name: "Historic template" }
+  });
+  const savedMalformedTemplate = await IndexedLibrary.saveTemplate(malformedStoredTemplate);
+  const repairTemplateResult = await IndexedLibrary.repairTemplate("", repairedStoredTemplate);
+  const templatesAfterRepair = await IndexedLibrary.listTemplates();
+  check(
+    "store-repairs-a-malformed-template-id-once-and-removes-old-identity",
+    savedMalformedTemplate === "indexeddb"
+      && repairTemplateResult === "indexeddb"
+      && templatesAfterRepair.some((template) => template.template && template.template.id === "repaired-template-id")
+      && !templatesAfterRepair.some((template) => template.template && template.template.id === ""),
+    JSON.stringify({ savedMalformedTemplate, repairTemplateResult, templatesAfterRepair })
+  );
+
+  // Two store instances model two browser tabs sharing one IndexedDB library.
+  // A stale revision must be rejected rather than silently overwriting the
+  // document the other tab has already saved.
+  const concurrentIndexedDB = new IDBFactory();
+  const firstTabWindow = { indexedDB: concurrentIndexedDB, localStorage: memoryStorage(new Map()) };
+  const secondTabWindow = { indexedDB: concurrentIndexedDB, localStorage: memoryStorage(new Map()) };
+  vm.runInNewContext(source, { window: firstTabWindow, JSON, Promise, Date, Error, Math, Map, String, Object, Array });
+  vm.runInNewContext(source, { window: secondTabWindow, JSON, Promise, Date, Error, Math, Map, String, Object, Array });
+  const FirstTab = firstTabWindow.ProofnoteStore;
+  const SecondTab = secondTabWindow.ProofnoteStore;
+  const concurrentCreated = await FirstTab.createDocument({ metadata: { name: "Concurrent original" }, blocks: [] });
+  const openedRevision = concurrentCreated.record.revision;
+  const newerSave = await SecondTab.saveDocument(concurrentCreated.record.id, { metadata: { name: "Saved by second tab" }, blocks: [] }, openedRevision);
+  const staleSave = await FirstTab.saveDocument(concurrentCreated.record.id, { metadata: { name: "Stale first tab write" }, blocks: [] }, openedRevision);
+  const concurrentRecord = (await FirstTab.listDocuments()).find((record) => record.id === concurrentCreated.record.id);
+  check(
+    "store-rejects-stale-cross-tab-revisions-without-losing-newer-content",
+    newerSave === "indexeddb"
+      && staleSave === "conflict"
+      && concurrentRecord && concurrentRecord.document.metadata.name === "Saved by second tab",
+    JSON.stringify({ newerSave, staleSave, concurrentRecord })
+  );
+  const deletedConcurrent = await FirstTab.deleteDocument(concurrentCreated.record.id);
+  const staleAfterDelete = await SecondTab.saveDocument(concurrentCreated.record.id, { metadata: { name: "Must not revive" }, blocks: [] }, openedRevision + 1);
+  check(
+    "store-indexeddb-save-cannot-revive-a-record-deleted-by-another-tab",
+    deletedConcurrent === "indexeddb"
+      && staleAfterDelete === "failed"
+      && !(await FirstTab.listDocuments()).some((record) => record.id === concurrentCreated.record.id)
   );
 
   // A malformed row elsewhere in the old object store is not the v1 current

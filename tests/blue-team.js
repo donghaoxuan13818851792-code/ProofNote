@@ -5,7 +5,7 @@ const { IDBFactory } = require("fake-indexeddb");
 
 const Model = require("../src/document-model.js");
 const storeSource = fs.readFileSync(path.join(__dirname, "..", "src", "document-store.js"), "utf8");
-const projectAiSource = fs.readFileSync(path.join(__dirname, "..", "src", "project-ai-instructions.js"), "utf8");
+const legacyBoundarySource = fs.readFileSync(path.join(__dirname, "..", "src", "document-legacy-boundary.js"), "utf8");
 const results = [];
 
 function check(name, condition, details) {
@@ -31,7 +31,7 @@ function loadStore(options) {
 }
 function loadLegacyBoundary(legacySurface) {
   const window = { ProofnoteDocument: Model, __snTest: legacySurface };
-  vm.runInNewContext(projectAiSource, { window, JSON, Date, Error, Math, Map, Set, WeakSet, String, Object, Array, Boolean, RegExp });
+  vm.runInNewContext(legacyBoundarySource, { window, JSON, Date, Error, Math, Map, Set, WeakSet, String, Object, Array, Boolean, RegExp });
   return window;
 }
 function documentWith(blocks, metadata) {
@@ -211,8 +211,8 @@ async function main() {
   const legacySurface = {
     validateRaw() { return { errors: [], warnings: [], fieldCount: 1 }; }
   };
-  loadLegacyBoundary(legacySurface);
-  check("legacy-boundary-hardening-is-active", Model.__legacyBoundaryHardened === true);
+  const legacyWindow = loadLegacyBoundary(legacySurface);
+  check("legacy-boundary-hardening-is-active", Boolean(legacyWindow.ProofnoteLegacyBoundary && legacyWindow.ProofnoteLegacyBoundary.validateSolutionNote));
   check("portable-object-graph-hardening-is-active", Model.__portableGraphHardened === true);
 
   const deepCompatibility = documentWith([]);
@@ -241,28 +241,28 @@ async function main() {
     cursor.extra = {};
     cursor = cursor.extra;
   }
-  const deepLegacyValidation = legacySurface.validateRaw(deepLegacy);
+  const deepLegacyValidation = legacyWindow.ProofnoteLegacyBoundary.validateSolutionNote(deepLegacy);
   check("legacy-import-rejects-excessive-nesting-before-recursive-code", deepLegacyValidation.errors.length > 0);
 
   const longLegacy = legacyNote();
   longLegacy.core.problem = tooLong;
-  const longLegacyValidation = legacySurface.validateRaw(longLegacy);
+  const longLegacyValidation = legacyWindow.ProofnoteLegacyBoundary.validateSolutionNote(longLegacy);
   check("legacy-import-enforces-string-bounds", longLegacyValidation.errors.length > 0);
 
   const oversizedLegacyList = legacyNote();
   oversizedLegacyList.core.evidence = [{ type: "bullets", items: Array.from({ length: Model.LIMITS.maxListItems + 1 }, () => "x") }];
-  const oversizedLegacyListValidation = legacySurface.validateRaw(oversizedLegacyList);
+  const oversizedLegacyListValidation = legacyWindow.ProofnoteLegacyBoundary.validateSolutionNote(oversizedLegacyList);
   check("legacy-import-blocks-list-truncation", oversizedLegacyListValidation.errors.length > 0);
 
   const lossyLegacyTable = legacyNote();
   lossyLegacyTable.core.evidence = [{ type: "table", text: "| A | B |\n|---|---|\n| 1 | 2 | EXTRA |" }];
-  const lossyLegacyTableValidation = legacySurface.validateRaw(lossyLegacyTable);
+  const lossyLegacyTableValidation = legacyWindow.ProofnoteLegacyBoundary.validateSolutionNote(lossyLegacyTable);
   check("legacy-import-blocks-table-cell-loss", lossyLegacyTableValidation.errors.length > 0);
 
   const aggregateLegacy = legacyNote();
   aggregateLegacy.core.whyItWorks = Array.from({ length: 1995 }, (_, index) => "step " + index);
   aggregateLegacy.optional.proof = Array.from({ length: 20 }, (_, index) => ({ type: "paragraph", text: "extra " + index }));
-  const aggregateLegacyValidation = legacySurface.validateRaw(aggregateLegacy);
+  const aggregateLegacyValidation = legacyWindow.ProofnoteLegacyBoundary.validateSolutionNote(aggregateLegacy);
   check("legacy-import-validates-migrated-block-count-before-storage", aggregateLegacyValidation.errors.length > 0);
 
   const legacyWithUiPayload = legacyNote({ ui: { sections: { proof: true }, unrelated: { nested: "should not persist" } } });

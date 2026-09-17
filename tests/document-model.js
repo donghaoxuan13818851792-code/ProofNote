@@ -1,5 +1,7 @@
 // Proofnote Document Format regression tests. These exercise the DOM-free
 // model directly, including the Solution Note adapter and unsafe-key boundary.
+const fs = require("fs");
+const path = require("path");
 const Model = require("../src/document-model.js");
 
 const results = [];
@@ -36,6 +38,14 @@ const malformedMetadataDisplay = Model.validateDocumentRaw({ format: Model.FORMA
 check("document-proof-metadata-warns-on-unknown-field", malformedMetadataDisplay.warnings.some((warning) => warning.path === "metadata.proofMetadata.fields[1]"), JSON.stringify(malformedMetadataDisplay));
 const runningHeader = Model.normalizeDocument({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Project", runningHeader: { left: "Field notes", right: "Project" } }, blocks: [] });
 check("document-running-header-is-portable", JSON.stringify(runningHeader.metadata.runningHeader) === JSON.stringify({ left: "Field notes", right: "Project" }), JSON.stringify(runningHeader.metadata));
+const implicitRunningHeader = Model.normalizeDocument({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Project" }, blocks: [] });
+const explicitlyBlankRunningHeader = Model.normalizeDocument({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Project", runningHeader: { left: "" } }, blocks: [] });
+check(
+  "document-running-header-preserves-absent-versus-explicit-blank",
+  !Object.prototype.hasOwnProperty.call(implicitRunningHeader.metadata.runningHeader, "left")
+    && explicitlyBlankRunningHeader.metadata.runningHeader.left === "",
+  JSON.stringify({ implicit: implicitRunningHeader.metadata.runningHeader, explicit: explicitlyBlankRunningHeader.metadata.runningHeader })
+);
 const malformedRunningHeader = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad header", runningHeader: { left: 42 } }, blocks: [] });
 check("document-running-header-warns-on-non-string-label", malformedRunningHeader.warnings.some((warning) => warning.path === "metadata.runningHeader.left"), JSON.stringify(malformedRunningHeader));
 const localizedDocument = Model.normalizeDocument({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "中文项目", language: "zh-CN" }, blocks: [] });
@@ -46,6 +56,22 @@ const hiddenHeaderSubtitle = Model.normalizeDocument({ format: Model.FORMAT, ver
 check("document-header-subtitle-display-is-portable", hiddenHeaderSubtitle.metadata.headerSubtitle.visible === false && Model.blankDocument().metadata.headerSubtitle.visible === true, JSON.stringify(hiddenHeaderSubtitle.metadata));
 const malformedHeaderSubtitle = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad subtitle", headerSubtitle: { visible: "no" } }, blocks: [] });
 check("document-header-subtitle-warns-on-non-boolean-display", malformedHeaderSubtitle.warnings.some((warning) => warning.path === "metadata.headerSubtitle.visible"), JSON.stringify(malformedHeaderSubtitle));
+const unknownPortableFields = {
+  format: Model.FORMAT,
+  version: Model.VERSION,
+  metadata: { name: "Extensions", unrecognisedMetadata: "must not disappear silently" },
+  blocks: [{ type: "paragraph", content: "Known content", unrecognisedBlockField: "must not disappear silently" }]
+};
+const unknownPortableFieldsValidation = Model.validateDocumentRaw(unknownPortableFields);
+const normalizedUnknownPortableFields = Model.normalizeDocument(unknownPortableFields);
+check(
+  "document-unknown-portable-fields-are-warned-before-normalization-omits-them",
+  unknownPortableFieldsValidation.warnings.some((warning) => warning.path === "metadata.unrecognisedMetadata")
+    && unknownPortableFieldsValidation.warnings.some((warning) => warning.path === "blocks[0].unrecognisedBlockField")
+    && !Object.prototype.hasOwnProperty.call(normalizedUnknownPortableFields.metadata, "unrecognisedMetadata")
+    && !Object.prototype.hasOwnProperty.call(normalizedUnknownPortableFields.blocks[0], "unrecognisedBlockField"),
+  JSON.stringify({ validation: unknownPortableFieldsValidation, normalized: normalizedUnknownPortableFields })
+);
 
 // Structural type, semantic kind, and typography preset are distinct concepts.
 const heading = Model.createBlock("heading", { level: 3, content: "Details" });
@@ -91,6 +117,7 @@ const legacy = {
 };
 const migrated = Model.migrateSolutionNote(legacy);
 check("document-migrates-legacy-format", migrated.format === "proofnote-document" && migrated.metadata.templateName === "Proof Note", JSON.stringify(migrated.metadata));
+check("document-migrated-solution-note-has-stable-proof-template-identity", migrated.metadata.templateId === "proof-note", JSON.stringify(migrated.metadata));
 check("document-migrates-legacy-title", migrated.blocks.some((block) => block.type === "title" && block.content === "A legacy note"), JSON.stringify(migrated.blocks));
 check("document-migrates-legacy-content", migrated.blocks.some((block) => block.type === "equation" && block.content === "x=2") && migrated.blocks.some((block) => block.type === "list" && block.items[0] === "checked"), JSON.stringify(migrated.blocks));
 check("document-migrates-legacy-metadata", migrated.compatibility.sourceMeta.noteNumber === "7" && migrated.compatibility.sourceMeta.author === "Ada", JSON.stringify(migrated.compatibility));
@@ -115,6 +142,48 @@ check("document-legacy-export-maps-draft-status", draftExport.note.meta.status =
 const genericLegacyExport = Model.documentToSolutionNote(Model.blankDocument({ blocks: [Model.createBlock("heading", { content: "Introduction" }), Model.createBlock("paragraph", { content: "Not a Solution Note section." })] }));
 check("document-legacy-export-warns-on-unmappable-content", genericLegacyExport.warnings.length > 0, JSON.stringify(genericLegacyExport.warnings));
 
+// The legacy adapter is an explicit compatibility boundary. It must never
+// silently corrupt a Markdown table or produce a Solution Note shape that the
+// legacy validator itself rejects.
+const escapedLegacyTable = Model.createBlock("table", {
+  columns: ["Name | role", "Notes"],
+  rows: [["A\\B", "First line\nSecond | line"]]
+});
+const escapedLegacyRoundTrip = Model.migrateSolutionNote({
+  format: "solution-note", version: "1.0",
+  meta: { title: "Table" },
+  core: { problem: "", result: { type: "Theorem", statement: "", explanation: "" }, whyItWorks: [], evidence: [{ type: "table", text: Model.markdownTable(escapedLegacyTable) }], reproduce: {} },
+  optional: {}
+});
+const escapedRoundTripTable = escapedLegacyRoundTrip.blocks.find((block) => block.type === "table");
+check("document-legacy-table-escapes-pipes-newlines-and-backslashes", Boolean(escapedRoundTripTable)
+  && JSON.stringify(escapedRoundTripTable.columns) === JSON.stringify(escapedLegacyTable.columns)
+  && JSON.stringify(escapedRoundTripTable.rows) === JSON.stringify(escapedLegacyTable.rows), JSON.stringify(escapedRoundTripTable));
+const compatibilityLimitDocument = { format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Compatibility" }, blocks: [], compatibility: { entries: Array.from({ length: Model.LIMITS.maxBlocks + 1 }, () => null) } };
+const compatibilityLimitValidation = Model.validateDocumentRaw(compatibilityLimitDocument);
+check("document-compatibility-collection-limit-blocks-normalization-truncation", compatibilityLimitValidation.errors.some((issue) => issue.path === "compatibility.entries"), JSON.stringify(compatibilityLimitValidation));
+const resultCompatibilityDocument = Model.blankDocument({ blocks: [
+  Model.createBlock("semantic", { kind: "problem", content: "First problem" }),
+  Model.createBlock("semantic", { kind: "problem", content: "Second problem" }),
+  Model.createBlock("semantic", { kind: "result", label: "Finding", content: "First result" }),
+  Model.createBlock("semantic", { kind: "result", label: "Bound", content: "Second result" })
+] });
+const resultCompatibilityExport = Model.documentToSolutionNote(resultCompatibilityDocument);
+check("document-legacy-export-keeps-first-problem-result-and-maps-free-label", resultCompatibilityExport.note.core.problem === "First problem"
+  && resultCompatibilityExport.note.core.result.statement === "First result"
+  && resultCompatibilityExport.note.core.result.type === "Theorem"
+  && resultCompatibilityExport.warnings.length >= 3, JSON.stringify(resultCompatibilityExport));
+const numberedHeadingExport = Model.documentToSolutionNote(Model.blankDocument({ blocks: [
+  Model.createBlock("heading", { level: 1, content: "03 Why It Works" }),
+  Model.createBlock("semantic", { kind: "proof", title: "Step", content: "Because." })
+] }));
+check("document-legacy-export-canonicalizes-editorial-heading-folios", numberedHeadingExport.note.core.whyItWorks.length === 1, JSON.stringify(numberedHeadingExport));
+const referencesExport = Model.documentToSolutionNote(Model.blankDocument({ blocks: [
+  Model.createBlock("heading", { level: 1, content: "References" }),
+  Model.createBlock("paragraph", { content: "Not a legacy reference list" })
+] }));
+check("document-legacy-export-never-writes-non-string-references", !referencesExport.note.optional.references && referencesExport.warnings.some((warning) => /References/.test(warning)), JSON.stringify(referencesExport));
+
 // The new format is an untrusted interchange boundary. Shape errors, duplicate
 // editor IDs, and resource limits must be detected before normalization.
 const duplicateIds = {
@@ -135,6 +204,10 @@ const malformedShapes = Model.validateDocumentRaw({
 check("document-raw-validation-covers-block-shapes", malformedShapes.errors.length === 0 && malformedShapes.warnings.length >= 4, JSON.stringify(malformedShapes));
 const malformedTableHeader = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Table" }, blocks: [{ type: "table", header: "yes" }] });
 check("document-table-header-validation", malformedTableHeader.warnings.some((warning) => warning.path === "blocks[0].header"), JSON.stringify(malformedTableHeader));
+const mismatchedPreset = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Preset" }, blocks: [{ type: "semantic", kind: "result", preset: "semantic-proof", title: "Result", content: "x" }] });
+check("document-derived-preset-mismatch-is-never-silent", mismatchedPreset.warnings.some((warning) => warning.path === "blocks[0].preset" && /recompute/.test(warning.message)), JSON.stringify(mismatchedPreset));
+const oversizedEquation = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Large equation" }, blocks: [{ type: "equation", content: "x".repeat(Model.LIMITS.maxEquationLength + 1) }] });
+check("document-equation-has-a-separate-safe-render-limit", oversizedEquation.errors.some((error) => error.path === "blocks[0].content" && /math-rendering/.test(error.message)), JSON.stringify(oversizedEquation));
 const shortTableRow = { format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Short table row" }, blocks: [{ type: "table", columns: ["Name", "Score", "Status"], rows: [["Alice", "98"]] }] };
 const shortTableValidation = Model.validateDocumentRaw(shortTableRow);
 const shortTableNormalized = Model.normalizeDocument(shortTableRow);
@@ -143,6 +216,32 @@ check("document-table-short-row-warns-and-fills-empty-cells", shortTableValidati
   && JSON.stringify(shortTableNormalized.blocks[0].rows[0]) === JSON.stringify(["Alice", "98", ""]), JSON.stringify({ validation: shortTableValidation, normalized: shortTableNormalized.blocks[0] }));
 const longTableRow = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Long table row" }, blocks: [{ type: "table", columns: ["Name", "Score", "Status"], rows: [["Bob", "91", "Pass", "EXTRA CELL"]] }] });
 check("document-table-long-row-blocks-silent-cell-loss", longTableRow.errors.some((error) => error.path === "blocks[0].rows[0]" && /Expected 3 cells, found 4/.test(error.message) && /discard 1 cell/.test(error.message)), JSON.stringify(longTableRow));
+const oversizedTable = {
+  format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Large table" },
+  blocks: [{ type: "table", columns: Array.from({ length: Model.LIMITS.maxTableColumns }, (_, index) => "C" + index), rows: Array.from({ length: Math.ceil((Model.LIMITS.maxTableCells + 1) / Model.LIMITS.maxTableColumns) }, () => Array.from({ length: Model.LIMITS.maxTableColumns }, () => "x")) }]
+};
+const oversizedTableValidation = Model.validateDocumentRaw(oversizedTable);
+const cappedTable = Model.normalizeDocument(oversizedTable).blocks[0];
+check("document-table-cell-budget-blocks-expensive-valid-shapes", oversizedTableValidation.errors.some((error) => error.path === "blocks[0].rows" && /cannot be rendered safely/.test(error.message))
+  && cappedTable.rows.length * cappedTable.columns.length <= Model.LIMITS.maxTableCells,
+JSON.stringify({ validation: oversizedTableValidation, dimensions: [cappedTable.rows.length, cappedTable.columns.length] }));
+const renderBudgetDocument = {
+  format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Many list controls" },
+  blocks: Array.from({ length: 11 }, () => ({ type: "list", items: Array.from({ length: Model.LIMITS.maxListItems }, () => "item") }))
+};
+const renderBudgetValidation = Model.validateDocumentRaw(renderBudgetDocument);
+check("document-global-render-budget-blocks-many-valid-collections", renderBudgetValidation.errors.some((error) => error.path === "blocks" && /render-unit limit/.test(error.message)), JSON.stringify(renderBudgetValidation));
+const emptyCollections = Model.validateDocumentRaw({
+  format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Empty collections" },
+  blocks: [{ type: "table", columns: [], rows: [] }, { type: "list", items: [] }, { type: "key-value", items: [] }, { type: "stats", items: [] }]
+});
+check("document-empty-collections-announce-normalization", emptyCollections.warnings.filter((warning) => /empty/.test(warning.message)).length === 5, JSON.stringify(emptyCollections));
+const diagnosticAmplification = Model.validateDocumentRaw({
+  format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Diagnostic cap" },
+  blocks: [{ type: "list", items: Array.from({ length: Model.LIMITS.maxListItems }, () => 42) }]
+});
+check("document-schema-diagnostics-have-a-global-issue-cap", diagnosticAmplification.errors.length + diagnosticAmplification.warnings.length <= Model.LIMITS.maxDiagnosticIssues
+  && diagnosticAmplification.warnings.some((warning) => /Diagnostic output was limited/.test(warning.message)), JSON.stringify({ count: diagnosticAmplification.errors.length + diagnosticAmplification.warnings.length, warnings: diagnosticAmplification.warnings.slice(-1) }));
 const tooManyBlocks = Model.validateDocumentRaw({ format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Large" }, blocks: Array.from({ length: Model.LIMITS.maxBlocks + 1 }, () => ({ type: "paragraph", content: "" })) });
 check("document-raw-validation-has-block-limit", tooManyBlocks.errors.some((error) => error.path === "blocks"), JSON.stringify(tooManyBlocks.errors));
 let deeplyNestedCompatibility = {};
@@ -161,6 +260,7 @@ check("document-import-warns-on-image-sources-the-renderer-will-refuse", unsuppo
 // document name carried by the template's document metadata.
 const customTemplate = Model.makeTemplate(blank, { name: "My layout" });
 check("document-template-envelope", customTemplate.format === "proofnote-template" && customTemplate.template.name === "My layout" && customTemplate.document.metadata.name === "Working title", JSON.stringify(customTemplate));
+check("document-template-carries-stable-template-identity", customTemplate.document.metadata.templateId === customTemplate.template.id, JSON.stringify(customTemplate.document.metadata));
 check("document-builtin-proof-template", Model.builtInTemplates().some((template) => template.template.id === "proof-note"), "missing Proof Note template");
 const builtIns = Model.builtInTemplates();
 const blankTemplate = builtIns.find((template) => template.template.id === "blank-document");
@@ -169,6 +269,27 @@ check("document-template-controls-running-header", Boolean(blankTemplate) && bla
 check("document-proof-template-is-editorial", Boolean(proofTemplate) && proofTemplate.document.metadata.documentType === "Solution Note" && proofTemplate.document.metadata.status === "Draft" && proofTemplate.document.blocks.filter((block) => block.type === "semantic").every((block) => block.appearance === "editorial"), JSON.stringify(proofTemplate && proofTemplate.document));
 const invalidTemplate = Model.validateTemplateRaw({ format: Model.TEMPLATE_FORMAT, version: Model.VERSION, template: { name: "Bad" }, document: { format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Bad" }, blocks: [{ type: "table", rows: "not rows" }] } });
 check("document-template-raw-validation", invalidTemplate.warnings.some((warning) => warning.path === "document.blocks[0].rows"), JSON.stringify(invalidTemplate));
+
+// The published schema is a contract, not merely a loose description. It
+// must describe the concrete list/data-item shapes that normalisation keeps,
+// and document the durable built-in template identity used by the renderer.
+const publicSchema = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "schema", "proofnote-document-1.0.schema.json"), "utf8"));
+const publicBlockSchema = publicSchema.definitions && publicSchema.definitions.block;
+const publicConditions = Array.isArray(publicBlockSchema && publicBlockSchema.allOf) ? publicBlockSchema.allOf : [];
+const conditionFor = (type) => publicConditions.find((entry) => entry.if && entry.if.properties && entry.if.properties.type && (entry.if.properties.type.const === type));
+const listCondition = conditionFor("list");
+const keyValueCondition = conditionFor("key-value");
+const statsCondition = conditionFor("stats");
+check(
+  "document-public-schema-matches-portable-collection-shapes",
+  publicSchema.properties.metadata.properties.templateId.type === "string"
+    && publicSchema.properties.metadata.additionalProperties === false
+    && publicBlockSchema.additionalProperties === false
+    && listCondition?.then?.properties?.items?.items?.type === "string"
+    && keyValueCondition?.then?.properties?.items?.items?.required?.join(",") === "label,value"
+    && statsCondition?.then?.properties?.items?.items?.required?.join(",") === "kicker,value,body",
+  JSON.stringify({ templateId: publicSchema.properties.metadata.properties.templateId, list: listCondition, keyValue: keyValueCondition, stats: statsCondition })
+);
 
 const pass = results.filter((result) => result.pass).length;
 results.forEach((result) => {
