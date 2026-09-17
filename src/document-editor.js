@@ -10,7 +10,7 @@
   if (!Model || !Store || !Renderer || !LegacyBoundary) return;
 
   // Increment this small, user-facing version for each released workspace update.
-  const APP_VERSION = "v1.29";
+  const APP_VERSION = "v1.30";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Standalone equation", "独立公式"], ["code", "Code", "代码"],
@@ -260,6 +260,11 @@
     };
     control.addEventListener("input", () => { scheduleResize(); onInput(control.value); });
     field.appendChild(control);
+    // A rich text field is initially hidden behind its reading preview. Keep
+    // its resize hook on the field so selection can measure it only after CSS
+    // has made the native textarea visible; measuring while `display:none`
+    // otherwise records a zero-height editor.
+    field.requestAutoGrow = scheduleResize;
     if (opts.autoGrow && opts.multiline) scheduleResize();
     return field;
   }
@@ -1843,6 +1848,16 @@
       const selected = node.dataset.blockId === selectedBlockId || (node.dataset.documentHeader === "proof" && isProofMetadataSelected());
       node.classList.toggle("is-selected", selected);
     });
+    // The selection rule swaps a rich preview for the underlying textarea.
+    // Wait until the browser has applied that display change, then recompute
+    // auto-grow dimensions for every newly visible rich editor. This covers
+    // editorial sections, semantic details, quotes, lists, and paragraphs
+    // through the same mechanism instead of special-casing one block type.
+    root.requestAnimationFrame(() => {
+      document.querySelectorAll(".pn-canvas-block.is-selected .pn-canvas-rich-field > .pn-field").forEach((field) => {
+        if (typeof field.requestAutoGrow === "function") field.requestAutoGrow();
+      });
+    });
   }
   function selectProofMetadata(options) {
     if (!hasDocumentMetadataHeader()) return;
@@ -2828,8 +2843,9 @@
         const candidate = Model.normalizeDocument(state, { allowRemoteImages: true });
         const candidateBlock = candidate.blocks.find((item) => item.id === block.id);
         if (candidateBlock) candidateBlock.src = source;
-        if (!portableDocumentWithinLimit(candidate)) {
-          setStatus(tr("加入这张图片会使备份超过 25MB，无法保证重新导入。", "Adding this image would make the backup exceed 25 MB and unable to re-import."), "error");
+        const portableCheck = portableDocumentCheck(candidate);
+        if (!portableCheck.valid) {
+          setStatus(portableCheck.message, "error");
           return;
         }
         block.src = source;
@@ -2880,11 +2896,40 @@
     }
     return { valid: true };
   }
+  function portableDocumentPayload(document) {
+    return Model.normalizeDocument(document, { allowRemoteImages: true });
+  }
   function portableDocumentJson(document) {
-    return JSON.stringify(Model.normalizeDocument(document, { allowRemoteImages: true }), null, 2);
+    return JSON.stringify(portableDocumentPayload(document), null, 2);
+  }
+  function portableDocumentCheck(document) {
+    try {
+      const payload = portableDocumentPayload(document);
+      const validation = Model.validateDocumentRaw(payload);
+      const portable = JSON.stringify(payload, null, 2);
+      if (validation.errors.length) {
+        const first = validation.errors[0];
+        return {
+          valid: false, payload, portable, validation,
+          message: tr("此备份不符合 Proofnote 的运行时限制，无法保证重新导入：", "This backup does not meet Proofnote's runtime limits and could not be re-imported: ") + (first.path ? first.path + " — " : "") + first.message
+        };
+      }
+      if (utf8ByteLength(portable) > MAX_IMPORT_BYTES) {
+        return {
+          valid: false, payload, portable, validation,
+          message: tr("此备份超过 25MB，无法保证重新导入；请移除部分嵌入图片后重试。", "This backup exceeds 25 MB and could not be re-imported; remove embedded images and try again.")
+        };
+      }
+      return { valid: true, payload, portable, validation, message: "" };
+    } catch (_) {
+      return {
+        valid: false, payload: null, portable: "", validation: { errors: [], warnings: [] },
+        message: tr("无法安全序列化此备份；请先检查文档内容。", "This backup could not be serialized safely; check the document content first.")
+      };
+    }
   }
   function portableDocumentWithinLimit(document) {
-    try { return utf8ByteLength(portableDocumentJson(document)) <= MAX_IMPORT_BYTES; } catch (_) { return false; }
+    return portableDocumentCheck(document).valid;
   }
   function buildCanvasImage(body, block) {
     const source = safeImageSource(block);
@@ -3437,21 +3482,40 @@
     // not all collapse into the same generic export filename.
     return raw.replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/(^-|-$)/g, "").slice(0, 120) || "proofnote-document";
   }
-  function exportDocument() {
-    const portable = portableDocumentJson(state);
-    if (utf8ByteLength(portable) > MAX_IMPORT_BYTES) {
-      setStatus(tr("此备份超过 25MB，无法保证重新导入；请移除部分嵌入图片后重试。", "This backup exceeds 25 MB and could not be re-imported; remove embedded images and try again."), "error");
+  async function exportDocument() {
+    // A backup is only useful when the same Proofnote version can accept it
+    // again. Size alone is insufficient: the model also owns aggregate-text,
+    // table/render, and equation budgets that an authoring session can reach.
+    const checked = portableDocumentCheck(state);
+    if (!checked.valid) {
+      setStatus(checked.message, "error");
       return;
     }
-    download(slug() + ".proofnote.json", portable);
+    const imageSafety = await importedImagesWithinLimit(checked.payload);
+    if (!imageSafety.valid) {
+      setStatus(tr("此备份包含无法安全重新导入的嵌入图片。", "This backup contains an embedded image that could not be safely re-imported."), "error");
+      return;
+    }
+    download(slug() + ".proofnote.json", checked.portable);
     setStatus(tr("已导出 Document JSON", "Document JSON exported"), "saved");
   }
-  function exportTemplate() {
+  async function exportTemplate() {
     const selected = templateById(currentTemplateId());
-    const template = selected || Model.makeTemplate(state, { name: state.metadata.name || tr("我的模板", "My template") });
+    const template = Model.normalizeTemplate(selected || Model.makeTemplate(state, { name: state.metadata.name || tr("我的模板", "My template") }));
+    const validation = Model.validateTemplateRaw(template);
+    if (validation.errors.length) {
+      const first = validation.errors[0];
+      setStatus(tr("此模板不符合 Proofnote 的运行时限制，无法保证重新导入：", "This template does not meet Proofnote's runtime limits and could not be re-imported: ") + (first.path ? first.path + " — " : "") + first.message, "error");
+      return;
+    }
     const portable = JSON.stringify(template, null, 2);
     if (utf8ByteLength(portable) > MAX_IMPORT_BYTES) {
       setStatus(tr("此模板超过 25MB，无法保证重新导入。", "This template exceeds 25 MB and could not be re-imported."), "error");
+      return;
+    }
+    const imageSafety = await importedImagesWithinLimit(template.document);
+    if (!imageSafety.valid) {
+      setStatus(tr("此模板包含无法安全重新导入的嵌入图片。", "This template contains an embedded image that could not be safely re-imported."), "error");
       return;
     }
     download(slug(template.template.name || "proofnote-template") + ".template.json", portable);
@@ -3673,10 +3737,12 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     return new Blob([text]).size;
   }
   const STRICT_JSON_PARSE_OPTIONS = { allowTrailingComma: false, disallowComments: true, allowEmptyContent: false };
-  // A raw JSON escape can silently consume only b, f, n, r, or t. Restrict
-  // the extra diagnostic to commands that are actually LaTeX, rather than
-  // treating ordinary JSON text such as "First line\\nSecond line" as math.
-  const SILENT_JSON_LATEX_COMMANDS = new Set([
+  // A raw JSON escape can silently consume only b, f, n, r, or t. Known
+  // commands are conclusive errors. Other lower-case command-shaped escapes
+  // are surfaced as recoverable notices: `\\nsecond` might be a legitimate
+  // newline, but it might equally be a malformed `\\nu`-style command. This
+  // avoids an unbounded command allowlist without blocking `\\nSecond line`.
+  const KNOWN_SILENT_JSON_LATEX_COMMANDS = new Set([
     "bar", "begin", "beta", "big", "bigg", "binom", "boldsymbol", "boxed", "breve",
     "fbox", "forall", "frac", "floor",
     "nabla", "ne", "neq", "newline", "not", "notin",
@@ -3786,7 +3852,11 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     };
   }
   function potentialLatexCorruptions(parser, source, rawDocument) {
-    const issues = [];
+    const errors = [];
+    const warnings = [];
+    const addIssue = (target, issue) => {
+      if (errors.length + warnings.length < MAX_IMPORT_DIAGNOSTIC_ISSUES) target.push(issue);
+    };
     const matcher = /\\([bfnrt])(?=[A-Za-z])/g;
     let match;
     while ((match = matcher.exec(source))) {
@@ -3802,17 +3872,39 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       // legacy code snippets, where an escaped tab or regex token may be
       // intentional rather than damaged LaTeX.
       if ((!block && !legacyContent) || block && block.type === "code") continue;
-      // Equation fields are explicitly mathematical, so every command-shaped
-      // control escape is unsafe there. Prose remains conservative to avoid
-      // misclassifying valid JSON such as a normal `\\nSecond line`.
-      if (!(SILENT_JSON_LATEX_COMMANDS.has(command.toLowerCase()) || (block.type === "equation" && command.length > 1))) continue;
-      issues.push({
+      const lowerCaseCommand = /^[a-z]+$/.test(command);
+      const knownCommand = KNOWN_SILENT_JSON_LATEX_COMMANDS.has(command.toLowerCase());
+      const mathContext = rawMathContext(source, offset);
+      const issue = {
         path, offset, length: command.length + 1,
         message: tr("\"\\" + command + "\" 看起来像 LaTeX 命令，但 JSON 已把 \\" + match[1] + " 解释为控制字符。请改用 \"\\u005c" + command + "\"。", "\"\\" + command + "\" looks like a LaTeX command, but JSON interpreted \\" + match[1] + " as a control escape. Use \"\\u005c" + command + "\" instead.")
-      });
-      if (issues.length >= MAX_IMPORT_DIAGNOSTIC_ISSUES) break;
+      };
+      // Equations and content inside an explicit inline/display-math region
+      // are unambiguously mathematical. Retain the hard stop for known
+      // commands everywhere else.
+      if (knownCommand || (block && block.type === "equation" && command.length > 1) || mathContext) addIssue(errors, issue);
+      // Without a delimiter, a lower-case word after a JSON control escape is
+      // ambiguous. Keep it visible as a confirmation warning instead of
+      // silently accepting a possible `\\nu`, `\\rho`, `\\bullet`, and so on.
+      else if (lowerCaseCommand) addIssue(warnings, Object.assign({}, issue, {
+        message: tr("\"\\" + command + "\" 可能是被 JSON 控制转义改变的 LaTeX 命令。若这是换行或制表符，可继续导入；若原意是反斜杠命令，请改用 \"\\u005c" + command + "\"。", "\"\\" + command + "\" may be a LaTeX command changed by a JSON control escape. Continue only if it is an intended newline/tab; otherwise use \"\\u005c" + command + "\".")
+      }));
+      if (errors.length + warnings.length >= MAX_IMPORT_DIAGNOSTIC_ISSUES) break;
     }
-    return issues;
+    return { errors, warnings };
+  }
+  function rawMathContext(source, offset) {
+    // Examine only the current JSON string. Properly encoded inline delimiters
+    // appear as `\\\\(` / `\\\\)` in source, so a raw control escape between
+    // them cannot reasonably be an ordinary newline or tab.
+    let start = Math.max(0, Number(offset) || 0);
+    for (let index = start - 1; index >= 0; index -= 1) {
+      if (source[index] === '"' && !escapedBackslashAt(source, index)) { start = index + 1; break; }
+    }
+    const before = source.slice(start, offset);
+    const open = Math.max(before.lastIndexOf("\\\\("), before.lastIndexOf("\\\\["));
+    const close = Math.max(before.lastIndexOf("\\\\)"), before.lastIndexOf("\\\\]"));
+    return open >= 0 && open > close;
   }
   function diagnosticOwningBlock(rawDocument, path) {
     if (!rawDocument || !Array.isArray(path)) return null;
@@ -3929,19 +4021,19 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       return { diagnostic: { title: tr("无法导入文档", "Could not import document"), heading: tr("JSON 语法错误", "JSON syntax error"), message: tr("JSON 解析器发现了无法安全恢复的问题。", "The JSON parser found an error it could not recover safely."), text: tr("JSON 语法错误", "JSON syntax error") } };
     }
     const latexIssues = potentialLatexCorruptions(parser, source, raw);
-    if (latexIssues.length) {
-      const first = latexIssues[0];
+    if (latexIssues.errors.length) {
+      const first = latexIssues.errors[0];
       const excerpt = importSourceExcerpt(source, first.offset);
       return { diagnostic: {
         title: tr("导入需要修正", "Import needs a correction"), heading: tr("可能已损坏的 LaTeX", "Possible malformed LaTeX"),
         position: tr("第 " + excerpt.line + " 行，第 " + excerpt.column + " 列", "Line " + excerpt.line + " · Column " + excerpt.column),
         message: tr("JSON 可以解析，但数学命令可能已经被 JSON 转义悄悄改变。为避免丢失公式，Proofnote 没有导入该文档。", "The JSON parses, but a math command may have been silently changed by a JSON escape. Proofnote did not import the document to avoid losing the formula."),
-        issues: latexIssues, source, offset: first.offset, length: first.length, snippet: excerpt.text,
+        issues: latexIssues.errors, warnings: latexIssues.warnings, source, offset: first.offset, length: first.length, snippet: excerpt.text,
         help: tr("在原始 JSON 中，每个 LaTeX 反斜杠使用 \\u005c 表示。", "In raw JSON, write every LaTeX backslash as \\u005c."),
         text: [tr("可能已损坏的 LaTeX", "Possible malformed LaTeX"), first.path, first.message].join("\n")
       } };
     }
-    return { raw, warnings: duplicateJsonKeyWarnings(parser, source) };
+    return { raw, warnings: duplicateJsonKeyWarnings(parser, source).concat(latexIssues.warnings) };
   }
   function renderImportIssues(report, issues, severity) {
     if (!issues || !issues.length) return;

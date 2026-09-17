@@ -62,6 +62,15 @@ boolean controls whether the columns render as a header row; omitting it keeps
 the established header-on behaviour. This lets authors switch between a data
 table and a plain grid without creating a separate block type.
 
+## Resource limits
+
+The portable contract is also the rendering-safety contract: equation source
+is limited to 12,000 characters, and tables may have at most 500 rows, 50
+columns, and 5,000 cells in total. A document may contain at most 2,000 blocks
+and 20MB of aggregate text. Proofnote refuses to export a backup that fails
+these runtime checks or exceeds the 25MB import-size ceiling, so a downloaded
+`.proofnote.json` remains importable by the same version of Proofnote.
+
 ## Templates
 
 Templates use a separate `proofnote-template` envelope. A template contains a

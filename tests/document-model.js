@@ -231,6 +231,18 @@ const renderBudgetDocument = {
 };
 const renderBudgetValidation = Model.validateDocumentRaw(renderBudgetDocument);
 check("document-global-render-budget-blocks-many-valid-collections", renderBudgetValidation.errors.some((error) => error.path === "blocks" && /render-unit limit/.test(error.message)), JSON.stringify(renderBudgetValidation));
+const aggregatePortableText = {
+  format: Model.FORMAT,
+  version: Model.VERSION,
+  metadata: { name: "Portable backup budget" },
+  blocks: Array.from({ length: 105 }, () => ({ type: "paragraph", content: "x".repeat(Model.LIMITS.maxStringLength) }))
+};
+const aggregatePortableTextValidation = Model.validateDocumentRaw(aggregatePortableText);
+check(
+  "document-aggregate-text-budget-blocks-a-backup-that-cannot-round-trip",
+  aggregatePortableTextValidation.errors.some((error) => /Document text exceeds/.test(error.message)),
+  JSON.stringify(aggregatePortableTextValidation.errors)
+);
 const emptyCollections = Model.validateDocumentRaw({
   format: Model.FORMAT, version: Model.VERSION, metadata: { name: "Empty collections" },
   blocks: [{ type: "table", columns: [], rows: [] }, { type: "list", items: [] }, { type: "key-value", items: [] }, { type: "stats", items: [] }]
@@ -280,15 +292,21 @@ const conditionFor = (type) => publicConditions.find((entry) => entry.if && entr
 const listCondition = conditionFor("list");
 const keyValueCondition = conditionFor("key-value");
 const statsCondition = conditionFor("stats");
+const equationCondition = conditionFor("equation");
+const tableCellBudget = publicSchema.definitions && publicSchema.definitions.tableCellBudget;
 check(
   "document-public-schema-matches-portable-collection-shapes",
   publicSchema.properties.metadata.properties.templateId.type === "string"
     && publicSchema.properties.metadata.additionalProperties === false
     && publicBlockSchema.additionalProperties === false
+    && equationCondition?.then?.properties?.content?.maxLength === Model.LIMITS.maxEquationLength
+    && Array.isArray(tableCellBudget?.anyOf)
+    && tableCellBudget.anyOf.some((entry) => entry.properties?.columns?.maxItems === 10 && entry.properties?.rows?.maxItems === 500)
+    && tableCellBudget.anyOf.some((entry) => entry.properties?.columns?.maxItems === Model.LIMITS.maxTableColumns && entry.properties?.rows?.maxItems === Math.floor(Model.LIMITS.maxTableCells / Model.LIMITS.maxTableColumns))
     && listCondition?.then?.properties?.items?.items?.type === "string"
     && keyValueCondition?.then?.properties?.items?.items?.required?.join(",") === "label,value"
     && statsCondition?.then?.properties?.items?.items?.required?.join(",") === "kicker,value,body",
-  JSON.stringify({ templateId: publicSchema.properties.metadata.properties.templateId, list: listCondition, keyValue: keyValueCondition, stats: statsCondition })
+  JSON.stringify({ templateId: publicSchema.properties.metadata.properties.templateId, equation: equationCondition, tableCellBudget, list: listCondition, keyValue: keyValueCondition, stats: statsCondition })
 );
 
 const pass = results.filter((result) => result.pass).length;

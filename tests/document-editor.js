@@ -137,7 +137,7 @@ async function main() {
       && html.includes('./vendor/prism/prism-python.min.js?v=1.30.0')
       && Boolean(window.ProofnoteRenderer) && Boolean(window.ProofnoteLegacyBoundary)
       && html.includes('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1')
-        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260917-58'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
+        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260917-59'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
     check(
       "editor-document-typography-is-shared",
       [
@@ -376,8 +376,8 @@ async function main() {
     check(
       "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.29"
-        && editorSource.includes('const APP_VERSION = "v1.29";')
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.30"
+        && editorSource.includes('const APP_VERSION = "v1.30";')
         && !document.querySelector("#pnEditMetadata")
         && !document.querySelector("#pnExportLegacy")
         && !/Document info|文档信息|Proofnote Document Format/.test(actionMenu.textContent),
@@ -396,8 +396,8 @@ async function main() {
         && !projectAiInstructionsSource.includes("hardenPortableObjectGraph")
         && legacyBoundarySource.includes("function validateSolutionNote")
         && rendererSource.includes("root.ProofnoteRenderer")
-        && html.indexOf("./src/document-renderer.js?v=workspace-20260917-58") < html.indexOf("./src/document-editor.js?v=workspace-20260917-58")
-        && html.indexOf("./src/document-legacy-boundary.js?v=workspace-20260917-58") < html.indexOf("./src/document-editor.js?v=workspace-20260917-58"),
+        && html.indexOf("./src/document-renderer.js?v=workspace-20260917-59") < html.indexOf("./src/document-editor.js?v=workspace-20260917-59")
+        && html.indexOf("./src/document-legacy-boundary.js?v=workspace-20260917-59") < html.indexOf("./src/document-editor.js?v=workspace-20260917-59"),
       "reader rendering must not borrow the retired test hook, and legacy hardening must stay in its required boundary module"
     );
     const tableHeaderSource = editorSource.slice(editorSource.indexOf("function setTableHeader"), editorSource.indexOf("function imageFilePicker"));
@@ -411,7 +411,11 @@ async function main() {
     check(
       "editor-hardens-portable-size-render-budget-and-async-images",
       editorSource.includes("function portableDocumentWithinLimit")
-        && editorSource.includes("Adding this image would make the backup exceed 25 MB")
+        && editorSource.includes("function portableDocumentCheck")
+        && editorSource.includes("const validation = Model.validateDocumentRaw(payload)")
+        && editorSource.includes("async function exportDocument")
+        && editorSource.includes("async function exportTemplate")
+        && editorSource.includes("const portableCheck = portableDocumentCheck(candidate)")
         && editorSource.includes("This backup exceeds 25 MB")
         && editorSource.includes("function hasRenderCapacity")
         && editorSource.includes("documentGeneration")
@@ -477,12 +481,30 @@ async function main() {
       readingPreview ? readingPreview.innerHTML : "paragraph reading preview missing"
     );
     if (readingPreview) {
+      const readingField = readingParagraph.querySelector(".pn-canvas-paragraph-field");
+      let visibleResizeRequests = 0;
+      if (readingField && typeof readingField.requestAutoGrow === "function") {
+        const requestAutoGrow = readingField.requestAutoGrow;
+        readingField.requestAutoGrow = () => {
+          visibleResizeRequests += 1;
+          requestAutoGrow();
+        };
+      }
       readingPreview.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
       await settle(window, () => readingParagraph.classList.contains("is-selected") && document.activeElement === readingParagraph.querySelector(".pn-canvas-paragraph-input"));
       check(
         "editor-canvas-rich-text-reveals-native-editor-on-intent",
         readingParagraph.classList.contains("is-selected") && document.activeElement === readingParagraph.querySelector(".pn-canvas-paragraph-input"),
         "clicking a reading preview must reveal and focus the native textarea"
+      );
+      await settle(window, () => visibleResizeRequests > 0);
+      check(
+        "editor-rich-text-remeasures-after-selection-reveals-editor",
+        Boolean(readingField)
+          && visibleResizeRequests > 0
+          && editorSource.includes("field.requestAutoGrow = scheduleResize")
+          && editorSource.includes(".pn-canvas-block.is-selected .pn-canvas-rich-field > .pn-field"),
+        "a reading preview must remeasure the native textarea after selection makes it visible"
       );
       const readingInput = readingParagraph.querySelector(".pn-canvas-paragraph-input");
       if (readingInput) {
@@ -1384,6 +1406,28 @@ check(
         && importText?.value.includes("EXTRA CELL"),
       importReport?.textContent || "long table rows should be rejected before cells are lost"
     );
+    const ambiguousLatexEscapeJson = [
+      "{",
+      '  "format": "proofnote-document",',
+      '  "version": "1.0",',
+      '  "metadata": { "name": "Ambiguous LaTeX" },',
+      '  "blocks": [',
+      '    { "type": "paragraph", "content": "The angular parameter \\nu is retained." }',
+      "  ]",
+      "}"
+    ].join("\n");
+    if (importText) importText.value = ambiguousLatexEscapeJson;
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => /recoverable notice|可恢复提示/.test(importReport?.textContent || ""));
+    check(
+      "editor-import-warns-on-unlisted-command-shaped-json-escapes",
+      /recoverable notice|可恢复提示/.test(importReport?.textContent || "")
+        && /\\u005cnu/.test(importReport?.textContent || "")
+        && /nu/.test(importReport?.textContent || "")
+        && editorSource.includes("KNOWN_SILENT_JSON_LATEX_COMMANDS")
+        && editorSource.includes("rawMathContext"),
+      importReport?.textContent || "an ambiguous raw LaTeX command should require an explicit import confirmation"
+    );
     const multilineParagraphJson = JSON.stringify({
       format: "proofnote-document",
       version: "1.0",
@@ -1397,7 +1441,7 @@ check(
       "editor-import-allows-legal-json-newline-escapes",
       document.querySelector("#pnCanvas .pn-canvas-paragraph-input")?.value === "First line\nSecond line"
         && !/Possible malformed LaTeX|可能已损坏的 LaTeX/.test(importReport?.textContent || "")
-        && editorSource.includes("SILENT_JSON_LATEX_COMMANDS"),
+        && editorSource.includes("KNOWN_SILENT_JSON_LATEX_COMMANDS"),
       importReport?.textContent || "a legal JSON newline escape should import as a multiline paragraph"
     );
     const documentCountBeforeProjectImport = documentLibrary ? documentLibrary.querySelectorAll(".pn-document-item").length : 0;

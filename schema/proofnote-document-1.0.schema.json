@@ -80,6 +80,61 @@
         { "type": "object", "maxProperties": 2000, "additionalProperties": { "$ref": "#/definitions/compatibilityValue" } }
       ]
     },
+    "tableCellBudget": {
+      "description": "Table dimensions must not exceed Proofnote's 5,000-cell render budget. Draft-07 cannot multiply array lengths directly, so these bounds encode floor(5000 / columnCount).",
+      "anyOf": [
+        { "properties": { "columns": { "minItems": 1, "maxItems": 1 }, "rows": { "maxItems": 500, "items": { "maxItems": 1 } } } },
+        { "properties": { "columns": { "minItems": 2, "maxItems": 2 }, "rows": { "maxItems": 500, "items": { "maxItems": 2 } } } },
+        { "properties": { "columns": { "minItems": 3, "maxItems": 3 }, "rows": { "maxItems": 500, "items": { "maxItems": 3 } } } },
+        { "properties": { "columns": { "minItems": 4, "maxItems": 4 }, "rows": { "maxItems": 500, "items": { "maxItems": 4 } } } },
+        { "properties": { "columns": { "minItems": 5, "maxItems": 5 }, "rows": { "maxItems": 500, "items": { "maxItems": 5 } } } },
+        { "properties": { "columns": { "minItems": 6, "maxItems": 6 }, "rows": { "maxItems": 500, "items": { "maxItems": 6 } } } },
+        { "properties": { "columns": { "minItems": 7, "maxItems": 7 }, "rows": { "maxItems": 500, "items": { "maxItems": 7 } } } },
+        { "properties": { "columns": { "minItems": 8, "maxItems": 8 }, "rows": { "maxItems": 500, "items": { "maxItems": 8 } } } },
+        { "properties": { "columns": { "minItems": 9, "maxItems": 9 }, "rows": { "maxItems": 500, "items": { "maxItems": 9 } } } },
+        { "properties": { "columns": { "minItems": 10, "maxItems": 10 }, "rows": { "maxItems": 500, "items": { "maxItems": 10 } } } },
+        { "properties": { "columns": { "minItems": 11, "maxItems": 11 }, "rows": { "maxItems": 454, "items": { "maxItems": 11 } } } },
+        { "properties": { "columns": { "minItems": 12, "maxItems": 12 }, "rows": { "maxItems": 416, "items": { "maxItems": 12 } } } },
+        { "properties": { "columns": { "minItems": 13, "maxItems": 13 }, "rows": { "maxItems": 384, "items": { "maxItems": 13 } } } },
+        { "properties": { "columns": { "minItems": 14, "maxItems": 14 }, "rows": { "maxItems": 357, "items": { "maxItems": 14 } } } },
+        { "properties": { "columns": { "minItems": 15, "maxItems": 15 }, "rows": { "maxItems": 333, "items": { "maxItems": 15 } } } },
+        { "properties": { "columns": { "minItems": 16, "maxItems": 16 }, "rows": { "maxItems": 312, "items": { "maxItems": 16 } } } },
+        { "properties": { "columns": { "minItems": 17, "maxItems": 17 }, "rows": { "maxItems": 294, "items": { "maxItems": 17 } } } },
+        { "properties": { "columns": { "minItems": 18, "maxItems": 18 }, "rows": { "maxItems": 277, "items": { "maxItems": 18 } } } },
+        { "properties": { "columns": { "minItems": 19, "maxItems": 19 }, "rows": { "maxItems": 263, "items": { "maxItems": 19 } } } },
+        { "properties": { "columns": { "minItems": 20, "maxItems": 20 }, "rows": { "maxItems": 250, "items": { "maxItems": 20 } } } },
+        { "properties": { "columns": { "minItems": 21, "maxItems": 21 }, "rows": { "maxItems": 238, "items": { "maxItems": 21 } } } },
+        { "properties": { "columns": { "minItems": 22, "maxItems": 22 }, "rows": { "maxItems": 227, "items": { "maxItems": 22 } } } },
+        { "properties": { "columns": { "minItems": 23, "maxItems": 23 }, "rows": { "maxItems": 217, "items": { "maxItems": 23 } } } },
+        { "properties": { "columns": { "minItems": 24, "maxItems": 24 }, "rows": { "maxItems": 208, "items": { "maxItems": 24 } } } },
+        { "properties": { "columns": { "minItems": 25, "maxItems": 25 }, "rows": { "maxItems": 200, "items": { "maxItems": 25 } } } },
+        { "properties": { "columns": { "minItems": 26, "maxItems": 26 }, "rows": { "maxItems": 192, "items": { "maxItems": 26 } } } },
+        { "properties": { "columns": { "minItems": 27, "maxItems": 27 }, "rows": { "maxItems": 185, "items": { "maxItems": 27 } } } },
+        { "properties": { "columns": { "minItems": 28, "maxItems": 28 }, "rows": { "maxItems": 178, "items": { "maxItems": 28 } } } },
+        { "properties": { "columns": { "minItems": 29, "maxItems": 29 }, "rows": { "maxItems": 172, "items": { "maxItems": 29 } } } },
+        { "properties": { "columns": { "minItems": 30, "maxItems": 30 }, "rows": { "maxItems": 166, "items": { "maxItems": 30 } } } },
+        { "properties": { "columns": { "minItems": 31, "maxItems": 31 }, "rows": { "maxItems": 161, "items": { "maxItems": 31 } } } },
+        { "properties": { "columns": { "minItems": 32, "maxItems": 32 }, "rows": { "maxItems": 156, "items": { "maxItems": 32 } } } },
+        { "properties": { "columns": { "minItems": 33, "maxItems": 33 }, "rows": { "maxItems": 151, "items": { "maxItems": 33 } } } },
+        { "properties": { "columns": { "minItems": 34, "maxItems": 34 }, "rows": { "maxItems": 147, "items": { "maxItems": 34 } } } },
+        { "properties": { "columns": { "minItems": 35, "maxItems": 35 }, "rows": { "maxItems": 142, "items": { "maxItems": 35 } } } },
+        { "properties": { "columns": { "minItems": 36, "maxItems": 36 }, "rows": { "maxItems": 138, "items": { "maxItems": 36 } } } },
+        { "properties": { "columns": { "minItems": 37, "maxItems": 37 }, "rows": { "maxItems": 135, "items": { "maxItems": 37 } } } },
+        { "properties": { "columns": { "minItems": 38, "maxItems": 38 }, "rows": { "maxItems": 131, "items": { "maxItems": 38 } } } },
+        { "properties": { "columns": { "minItems": 39, "maxItems": 39 }, "rows": { "maxItems": 128, "items": { "maxItems": 39 } } } },
+        { "properties": { "columns": { "minItems": 40, "maxItems": 40 }, "rows": { "maxItems": 125, "items": { "maxItems": 40 } } } },
+        { "properties": { "columns": { "minItems": 41, "maxItems": 41 }, "rows": { "maxItems": 121, "items": { "maxItems": 41 } } } },
+        { "properties": { "columns": { "minItems": 42, "maxItems": 42 }, "rows": { "maxItems": 119, "items": { "maxItems": 42 } } } },
+        { "properties": { "columns": { "minItems": 43, "maxItems": 43 }, "rows": { "maxItems": 116, "items": { "maxItems": 43 } } } },
+        { "properties": { "columns": { "minItems": 44, "maxItems": 44 }, "rows": { "maxItems": 113, "items": { "maxItems": 44 } } } },
+        { "properties": { "columns": { "minItems": 45, "maxItems": 45 }, "rows": { "maxItems": 111, "items": { "maxItems": 45 } } } },
+        { "properties": { "columns": { "minItems": 46, "maxItems": 46 }, "rows": { "maxItems": 108, "items": { "maxItems": 46 } } } },
+        { "properties": { "columns": { "minItems": 47, "maxItems": 47 }, "rows": { "maxItems": 106, "items": { "maxItems": 47 } } } },
+        { "properties": { "columns": { "minItems": 48, "maxItems": 48 }, "rows": { "maxItems": 104, "items": { "maxItems": 48 } } } },
+        { "properties": { "columns": { "minItems": 49, "maxItems": 49 }, "rows": { "maxItems": 102, "items": { "maxItems": 49 } } } },
+        { "properties": { "columns": { "minItems": 50, "maxItems": 50 }, "rows": { "maxItems": 100, "items": { "maxItems": 50 } } } }
+      ]
+    },
     "block": {
       "type": "object",
       "required": ["type"],
@@ -116,12 +171,12 @@
         { "if": { "properties": { "type": { "const": "title" } } }, "then": { "properties": { "preset": { "const": "document-title" } } } },
         { "if": { "properties": { "type": { "const": "subtitle" } } }, "then": { "properties": { "preset": { "const": "document-subtitle" } } } },
         { "if": { "properties": { "type": { "const": "paragraph" } } }, "then": { "properties": { "preset": { "const": "paragraph" } } } },
-        { "if": { "properties": { "type": { "const": "equation" } } }, "then": { "properties": { "preset": { "const": "equation" } } } },
+        { "if": { "properties": { "type": { "const": "equation" } } }, "then": { "required": ["content"], "properties": { "content": { "type": "string", "maxLength": 12000, "description": "Equation source is capped at 12,000 characters so KaTeX can render it safely." }, "preset": { "const": "equation" } } } },
         { "if": { "properties": { "type": { "const": "heading" }, "level": { "const": 1 } } }, "then": { "properties": { "preset": { "const": "heading-1" } } } },
         { "if": { "properties": { "type": { "const": "heading" }, "level": { "const": 2 } } }, "then": { "properties": { "preset": { "const": "heading-2" } } } },
         { "if": { "properties": { "type": { "const": "heading" }, "level": { "const": 3 } } }, "then": { "properties": { "preset": { "const": "heading-3" } } } },
         {
-          "if": { "properties": { "type": { "enum": ["title", "subtitle", "paragraph", "equation"] } } },
+          "if": { "properties": { "type": { "enum": ["title", "subtitle", "paragraph"] } } },
           "then": { "required": ["content"], "properties": { "content": { "type": "string", "maxLength": 200000 } } }
         },
         {
@@ -130,7 +185,7 @@
         },
         {
           "if": { "properties": { "type": { "const": "table" } } },
-          "then": { "required": ["columns", "rows"], "properties": { "header": { "type": "boolean" }, "columns": { "type": "array", "minItems": 1, "maxItems": 50, "items": { "type": "string", "maxLength": 200000 } }, "rows": { "type": "array", "minItems": 1, "maxItems": 500, "items": { "type": "array", "maxItems": 50, "items": { "type": "string", "maxLength": 200000 } } }, "preset": { "const": "table" } } }
+          "then": { "required": ["columns", "rows"], "allOf": [{ "$ref": "#/definitions/tableCellBudget" }], "properties": { "header": { "type": "boolean" }, "columns": { "type": "array", "minItems": 1, "maxItems": 50, "items": { "type": "string", "maxLength": 200000 } }, "rows": { "type": "array", "minItems": 1, "maxItems": 500, "items": { "type": "array", "maxItems": 50, "items": { "type": "string", "maxLength": 200000 } } }, "preset": { "const": "table" } } }
         },
         {
           "if": { "properties": { "type": { "const": "image" } } },
