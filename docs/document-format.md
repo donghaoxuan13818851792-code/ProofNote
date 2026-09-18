@@ -214,9 +214,10 @@ normal document plus a name and description. Built-in templates include Blank
 Document, Proof Note, Research Note, Lab Report, and Essay / Report. User
 templates are saved locally and can be exported or imported as JSON.
 
-Proofnote stores documents and templates in IndexedDB when available. It falls
-back to local storage only when IndexedDB cannot be used. This keeps local
-image data practical without binding the format to a small storage quota.
+Proofnote stores documents, templates, and local Project containers in
+IndexedDB when available. It falls back to local storage only when IndexedDB
+cannot be used. This keeps local image data practical without binding the
+format to a small storage quota.
 
 ## Local document library
 
@@ -230,6 +231,22 @@ library record without changing its document payload. `+ New document` uses the
 same blank-document factory but creates a new record; it never replaces the
 currently open document. The Templates view presents approved starting points
 separately from recent local documents.
+
+### Local Project containers
+
+A **local Project container** is a navigator and workspace concept, not a new
+portable document type. It has its own local ID, name, timestamps, and local
+revision. A document record may refer to one Project and may carry a local
+group, pinned state, and position for that Project’s tree. These fields live on
+the device-only library record; they are never added to the portable
+`proofnote-document` object.
+
+Consequently, moving a document between Projects, grouping it, pinning it, or
+reordering it does not alter the document body, canonical metadata, Editable
+HTML lineage, JSON backup, template payload, or HTML export. A Project’s
+landing page is a local overview of its independent documents. It deliberately
+does not expose a filesystem, arbitrary folders, source files, assets, or an
+implicit project-wide AI context.
 
 ## Solution Note compatibility
 

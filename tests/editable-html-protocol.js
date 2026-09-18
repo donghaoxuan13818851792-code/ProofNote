@@ -121,6 +121,32 @@ async function main() {
       JSON.stringify({ status: exact.status, changes: exact.changes, diagnostic: exact.diagnostic, table: exactTable, semantic: exactSemantic })
     );
 
+    const noticeStart = built.html.indexOf("<!--\nPROOFNOTE EDITABLE HTML — AI AGENT INSTRUCTIONS");
+    const magicMeta = built.html.indexOf('<meta name="proofnote-magic"');
+    const headClose = built.html.indexOf("</head>");
+    check(
+      "editable-html-protocol-places-an-advisory-agent-notice-before-the-magic-marker",
+      noticeStart >= 0
+        && noticeStart < magicMeta
+        && magicMeta < headClose
+        && built.html.includes("Edit semantic values; preserve semantic identity.")
+        && built.html.includes('Do not "clean up", simplify, deduplicate, or reformat Proofnote infrastructure.'),
+      built.html.slice(0, Math.max(1000, headClose + 7))
+    );
+
+    // The notice helps agents edit safely, but it is not protocol metadata.
+    // Deleting it must leave a semantically recoverable editable document.
+    const withoutNotice = built.html.replace(/<!--\s*PROOFNOTE EDITABLE HTML — AI AGENT INSTRUCTIONS[\s\S]*?-->\s*/, "");
+    const noticeRemoved = await Protocol.inspect(withoutNotice);
+    const noticeRemovedRevision = noticeRemoved.document ? await revisionIdFor(Protocol, noticeRemoved.document) : "";
+    check(
+      "editable-html-protocol-treats-the-agent-notice-as-advisory-only",
+      noticeRemoved.status === "RECOVERED"
+        && noticeRemoved.changes && noticeRemoved.changes.visualOnly === true
+        && noticeRemovedRevision === builtRevision,
+      JSON.stringify({ status: noticeRemoved.status, changes: noticeRemoved.changes, diagnostic: noticeRemoved.diagnostic })
+    );
+
     // Being an exact export does not authorize replacing an unrelated open
     // document. Replacement is allowed only for the same portable lineage at
     // the exported baseline; unrelated documents remain a new-import path.

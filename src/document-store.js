@@ -9,7 +9,7 @@
   "use strict";
 
   const DB_NAME = "proofnote-document-store";
-  const DB_VERSION = 2;
+  const DB_VERSION = 3;
   const CURRENT_KEY = "current-document"; // v1 record, retained for migration
   const CURRENT_DOCUMENT_ID_KEY = "currentDocumentId";
   const FALLBACK_CURRENT = "proofnote-document:current:v1";
@@ -33,22 +33,73 @@
     return typeof seedSource === "function" ? seedSource() : seedSource;
   }
   function newDocumentId() { return "doc_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 9); }
+  function newProjectId() { return "project_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 9); }
   // `revision` is local-library metadata, never part of portable document
   // JSON. It lets a tab prove that it is saving the same record it opened,
   // rather than silently replacing a newer write from another tab.
   function revisionOf(record) {
     return Number.isSafeInteger(record && record.revision) && record.revision >= 0 ? record.revision : 0;
   }
-  function recordFor(document, existing) {
+  function projectMembership(source) {
+    const raw = source && typeof source === "object" ? source : {};
+    const position = Number(raw.projectPosition);
+    return {
+      projectId: typeof raw.projectId === "string" ? raw.projectId.trim() : "",
+      projectGroup: typeof raw.projectGroup === "string" ? raw.projectGroup.trim().slice(0, 80) : "",
+      projectPinned: raw.projectPinned === true,
+      projectPosition: Number.isFinite(position) && position >= 0 ? position : 0
+    };
+  }
+  function recordFor(document, existing, local) {
     const now = timestamp();
+    const membership = projectMembership(local || existing);
     return {
       id: existing && existing.id || newDocumentId(),
       document: clone(document),
       createdAt: existing && existing.createdAt || now,
       updatedAt: now,
       lastOpenedAt: existing && existing.lastOpenedAt || now,
+      revision: existing ? revisionOf(existing) + 1 : 1,
+      projectId: membership.projectId,
+      projectGroup: membership.projectGroup,
+      projectPinned: membership.projectPinned,
+      projectPosition: membership.projectPosition
+    };
+  }
+  function projectFor(name, existing) {
+    const projectName = String(name || "").trim().slice(0, 200);
+    const now = timestamp();
+    return {
+      id: existing && existing.id || newProjectId(),
+      name: projectName,
+      createdAt: existing && existing.createdAt || now,
+      updatedAt: now,
       revision: existing ? revisionOf(existing) + 1 : 1
     };
+  }
+  function validProject(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value)
+      && typeof value.id === "string" && value.id.trim()
+      && typeof value.name === "string" && value.name.trim());
+  }
+  function orderedProjects(projects) {
+    return projects.filter(validProject).sort((first, second) => String(first.name || "").localeCompare(String(second.name || "")) || String(first.id).localeCompare(String(second.id)));
+  }
+  function sameProjectMembership(first, second) {
+    const firstMembership = projectMembership(first);
+    const secondMembership = projectMembership(second);
+    return firstMembership.projectId === secondMembership.projectId
+      && firstMembership.projectGroup === secondMembership.projectGroup
+      && firstMembership.projectPinned === secondMembership.projectPinned
+      && firstMembership.projectPosition === secondMembership.projectPosition;
+  }
+  function projectDocumentOrder(first, second) {
+    const firstMembership = projectMembership(first);
+    const secondMembership = projectMembership(second);
+    if (firstMembership.projectPinned !== secondMembership.projectPinned) return firstMembership.projectPinned ? -1 : 1;
+    if (firstMembership.projectGroup !== secondMembership.projectGroup) return firstMembership.projectGroup.localeCompare(secondMembership.projectGroup);
+    if (firstMembership.projectPosition !== secondMembership.projectPosition) return firstMembership.projectPosition - secondMembership.projectPosition;
+    return String(second.updatedAt || second.lastOpenedAt || "").localeCompare(String(first.updatedAt || first.lastOpenedAt || ""));
   }
   // Project documents expose one reader-facing name in the library, title,
   // running header, and footer. Library-level rename/duplicate operations must
@@ -136,6 +187,7 @@
         if (!db.objectStoreNames.contains("documents")) db.createObjectStore("documents");
         if (!db.objectStoreNames.contains("templates")) db.createObjectStore("templates", { keyPath: "template.id" });
         if (!db.objectStoreNames.contains("settings")) db.createObjectStore("settings", { keyPath: "key" });
+        if (!db.objectStoreNames.contains("projects")) db.createObjectStore("projects", { keyPath: "id" });
       };
       request.onsuccess = () => resolve(request.result);
       // A version upgrade held behind another tab otherwise leaves the
@@ -204,26 +256,31 @@
       // Never reinterpret damaged library JSON as an empty library and write
       // a seed document over it. Keep the original value untouched so it can
       // be recovered manually or by a future repair flow.
-      return { records: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+      return { records: [], projects: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
     }
     const usingEnvelope = envelope.value !== null;
     const stored = usingEnvelope ? envelope : fallbackReadChecked(FALLBACK_DOCUMENTS, []);
     if (!stored.valid || (usingEnvelope && (!stored.value || typeof stored.value !== "object" || Array.isArray(stored.value) || !Array.isArray(stored.value.records))) || (!usingEnvelope && !Array.isArray(stored.value))) {
-      return { records: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+      return { records: [], projects: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
     }
     const raw = usingEnvelope ? stored.value.records : stored.value;
+    const rawProjects = usingEnvelope ? (stored.value.projects === undefined ? [] : stored.value.projects) : [];
     // A malformed row is evidence of corruption, not permission to silently
     // drop that document during a later write.
     if (raw.some((record) => !validRecord(record))) {
-      return { records: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+      return { records: [], projects: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+    }
+    if (!Array.isArray(rawProjects) || rawProjects.some((project) => !validProject(project))) {
+      return { records: [], projects: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
     }
     const records = raw.slice();
+    const projects = rawProjects.slice();
     const legacyStored = usingEnvelope ? { value: null, valid: true } : fallbackReadChecked(FALLBACK_CURRENT, null);
     // The legacy v1 slot can be the only remaining copy of a document. Treat
     // malformed JSON there just like damaged library JSON: do not call the
     // state "empty" and then erase the bytes during a migration write.
     if (!legacyStored.valid) {
-      return { records, current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+      return { records, projects, current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
     }
     const legacy = legacyStored.value;
     const hasLegacy = Boolean(legacy && typeof legacy === "object");
@@ -231,20 +288,21 @@
     let current = records.find((record) => record.id === currentId) || null;
     if (!current) {
       const remembered = ordered(records)[0] || null;
-      if (remembered) return { records, current: remembered, currentId: remembered.id, migrated: true, hasLegacy, corrupt: false };
+      if (remembered) return { records, projects, current: remembered, currentId: remembered.id, migrated: true, hasLegacy, corrupt: false };
       const document = legacy && typeof legacy === "object" ? legacy : resolveSeed(seedDocument);
-      if (!document || typeof document !== "object") return { records, current: null, currentId, migrated: false, hasLegacy, corrupt: false };
+      if (!document || typeof document !== "object") return { records, projects, current: null, currentId, migrated: false, hasLegacy, corrupt: false };
       current = recordFor(document);
       records.push(current);
       currentId = current.id;
-      return { records, current, currentId, migrated: true, hasLegacy, corrupt: false };
+      return { records, projects, current, currentId, migrated: true, hasLegacy, corrupt: false };
     }
-    return { records, current, currentId, migrated: false, hasLegacy, corrupt: false };
+    return { records, projects, current, currentId, migrated: false, hasLegacy, corrupt: false };
   }
   function persistFallbackLibrary(library, includeLegacy) {
     const saved = fallbackWrite(FALLBACK_LIBRARY, {
-      version: 2,
+      version: 3,
       records: library.records,
+      projects: Array.isArray(library.projects) ? library.projects : [],
       currentId: library.currentId
     });
     if (!saved) return false;
@@ -276,6 +334,15 @@
         legacy,
         currentId: values[2] && typeof values[2].value === "string" ? values[2].value : ""
       };
+    } finally { db.close(); }
+  }
+  async function readIndexedProjects() {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction("projects", "readonly");
+      const values = await requestValue(tx.objectStore("projects").getAll());
+      await transactionDone(tx);
+      return orderedProjects(Array.isArray(values) ? values : []).map(clone);
     } finally { db.close(); }
   }
   async function writeIndexedLibrary(options) {
@@ -324,9 +391,130 @@
     const db = await openDatabase();
     try {
       const tx = db.transaction(["documents", "settings"], "readwrite");
-      tx.objectStore("documents").put(clone(record), record.id);
+      const documents = tx.objectStore("documents");
+      const next = clone(record);
+      const membership = projectMembership(next);
+      if (membership.projectId && opts.projectPosition === undefined) {
+        const records = await requestValue(documents.getAll());
+        next.projectPosition = nextProjectPosition(Array.isArray(records) ? records : [], membership.projectId, membership.projectGroup, membership.projectPinned);
+      }
+      documents.put(next, next.id);
       if (opts.currentId !== undefined) tx.objectStore("settings").put({ key: CURRENT_DOCUMENT_ID_KEY, value: opts.currentId });
       await transactionDone(tx);
+      return clone(next);
+    } finally { db.close(); }
+  }
+  async function createIndexedProject(project) {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction("projects", "readwrite");
+      tx.objectStore("projects").add(clone(project));
+      await transactionDone(tx);
+      return clone(project);
+    } finally { db.close(); }
+  }
+  async function mutateIndexedProject(id, expectedRevision, apply) {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction("projects", "readwrite");
+      const store = tx.objectStore("projects");
+      const existing = await requestValue(store.get(id));
+      if (!validProject(existing)) { await transactionDone(tx); return { status: "missing", project: null }; }
+      if (expectedRevision !== undefined && revisionOf(existing) !== expectedRevision) {
+        await transactionDone(tx);
+        return { status: "conflict", project: clone(existing) };
+      }
+      const project = apply(clone(existing));
+      if (!validProject(project)) throw new Error("Invalid project mutation");
+      store.put(clone(project));
+      await transactionDone(tx);
+      return { status: "ok", project: clone(project) };
+    } finally { db.close(); }
+  }
+  function membershipRecord(record, assignment) {
+    const previous = projectMembership(record);
+    const input = assignment && typeof assignment === "object" ? assignment : {};
+    const projectId = input.projectId === undefined ? previous.projectId : String(input.projectId || "").trim();
+    const group = input.projectGroup === undefined ? previous.projectGroup : String(input.projectGroup || "").trim().slice(0, 80);
+    const pinned = input.projectPinned === undefined ? previous.projectPinned : input.projectPinned === true;
+    const position = input.projectPosition === undefined ? previous.projectPosition : Math.max(0, Number(input.projectPosition) || 0);
+    return Object.assign({}, record, {
+      projectId,
+      projectGroup: projectId ? group : "",
+      projectPinned: projectId ? pinned : false,
+      projectPosition: projectId ? position : 0,
+      revision: revisionOf(record) + 1
+    });
+  }
+  function nextProjectPosition(records, projectId, group, pinned) {
+    return records.filter((record) => validRecord(record)
+      && projectMembership(record).projectId === projectId
+      && projectMembership(record).projectGroup === group
+      && projectMembership(record).projectPinned === pinned)
+      .reduce((largest, record) => Math.max(largest, projectMembership(record).projectPosition), -1) + 1;
+  }
+  async function assignIndexedDocumentProject(id, assignment, expectedRevision) {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction(["documents", "projects"], "readwrite");
+      const documents = tx.objectStore("documents");
+      const projects = tx.objectStore("projects");
+      const existing = await requestValue(documents.get(id));
+      if (!validRecord(existing)) { await transactionDone(tx); return { status: "missing", record: null }; }
+      if (expectedRevision !== undefined && revisionOf(existing) !== expectedRevision) {
+        await transactionDone(tx);
+        return { status: "conflict", record: clone(existing) };
+      }
+      const request = assignment && assignment.projectId !== undefined ? String(assignment.projectId || "").trim() : projectMembership(existing).projectId;
+      if (request && !validProject(await requestValue(projects.get(request)))) {
+        await transactionDone(tx);
+        return { status: "missing-project", record: clone(existing) };
+      }
+      const requestedGroup = request ? String(assignment && assignment.projectGroup !== undefined ? assignment.projectGroup : projectMembership(existing).projectGroup || "").trim().slice(0, 80) : "";
+      const requestedPinned = request && assignment && assignment.projectPinned !== undefined ? assignment.projectPinned === true : projectMembership(existing).projectPinned;
+      let requestedPosition = assignment && assignment.projectPosition;
+      if (request && requestedPosition === undefined && projectMembership(existing).projectId !== request) {
+        const records = await requestValue(documents.getAll());
+        requestedPosition = nextProjectPosition(Array.isArray(records) ? records : [], request, requestedGroup, requestedPinned);
+      }
+      const record = membershipRecord(existing, {
+        projectId: request,
+        projectGroup: requestedGroup,
+        projectPinned: requestedPinned,
+        projectPosition: requestedPosition
+      });
+      if (sameProjectMembership(existing, record)) { await transactionDone(tx); return { status: "ok", record: clone(existing) }; }
+      documents.put(clone(record), record.id);
+      await transactionDone(tx);
+      return { status: "ok", record: clone(record) };
+    } finally { db.close(); }
+  }
+  async function reorderIndexedProjectDocument(id, direction, expectedRevision) {
+    const delta = direction === "up" ? -1 : direction === "down" ? 1 : 0;
+    if (!delta) return { status: "failed", records: [] };
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction("documents", "readwrite");
+      const documents = tx.objectStore("documents");
+      const source = await requestValue(documents.get(id));
+      if (!validRecord(source)) { await transactionDone(tx); return { status: "missing", records: [] }; }
+      if (expectedRevision !== undefined && revisionOf(source) !== expectedRevision) { await transactionDone(tx); return { status: "conflict", records: [clone(source)] }; }
+      const membership = projectMembership(source);
+      if (!membership.projectId) { await transactionDone(tx); return { status: "ok", records: [clone(source)] }; }
+      const all = await requestValue(documents.getAll());
+      const siblings = (Array.isArray(all) ? all : []).filter((record) => validRecord(record)
+        && projectMembership(record).projectId === membership.projectId
+        && projectMembership(record).projectGroup === membership.projectGroup
+        && projectMembership(record).projectPinned === membership.projectPinned).sort(projectDocumentOrder);
+      const index = siblings.findIndex((record) => record.id === id);
+      const target = siblings[index + delta];
+      if (index < 0 || !target) { await transactionDone(tx); return { status: "ok", records: [clone(source)] }; }
+      const first = membershipRecord(source, { projectPosition: projectMembership(target).projectPosition });
+      const second = membershipRecord(target, { projectPosition: membership.projectPosition });
+      documents.put(clone(first), first.id);
+      documents.put(clone(second), second.id);
+      await transactionDone(tx);
+      return { status: "ok", records: [clone(first), clone(second)] };
     } finally { db.close(); }
   }
   async function selectIndexedDocument(id) {
@@ -358,7 +546,12 @@
       const document = duplicateDocumentPayload(source.document, nextName, opts);
       const now = timestamp();
       document.metadata = Object.assign({}, document.metadata, { createdAt: now, updatedAt: now });
-      const record = recordFor(document);
+      const record = recordFor(document, null, source);
+      const membership = projectMembership(record);
+      if (membership.projectId) {
+        const records = await requestValue(documents.getAll());
+        record.projectPosition = nextProjectPosition(Array.isArray(records) ? records : [], membership.projectId, membership.projectGroup, membership.projectPinned);
+      }
       documents.put(clone(record), record.id);
       if (opts.makeCurrent === true) tx.objectStore("settings").put({ key: CURRENT_DOCUMENT_ID_KEY, value: record.id });
       await transactionDone(tx);
@@ -511,16 +704,123 @@
     async listDocuments() {
       return (await this.listDocumentLibrary()).records;
     },
-    async createDocument(document, options) {
-      const opts = options || {};
-      const makeCurrent = opts.makeCurrent !== false;
-      const record = recordFor(document);
+    // Projects are device-local containers. They deliberately live beside
+    // document records rather than inside portable Proofnote JSON, so moving
+    // a document never changes its content, revision lineage, or exports.
+    async listProjects() {
+      return useStorageSession(
+        async () => ({ projects: await readIndexedProjects(), backend: "indexeddb" }),
+        () => {
+          const library = fallbackLibrary(null);
+          return library.corrupt
+            ? { projects: [], backend: "failed" }
+            : { projects: orderedProjects(library.projects).map(clone), backend: "localStorage" };
+        },
+        () => ({ projects: [], backend: "failed" })
+      );
+    },
+    async createProject(name) {
+      const project = projectFor(name);
+      if (!validProject(project)) return { project: null, backend: "failed" };
       return useStorageSession(async () => {
-        await createIndexedRecord(record, makeCurrent ? { currentId: record.id } : {});
-        return { record: clone(record), backend: "indexeddb" };
+        const created = await createIndexedProject(project);
+        return { project: created, backend: "indexeddb" };
+      }, () => {
+        const library = fallbackLibrary(null);
+        if (library.corrupt) return { project: null, backend: "failed" };
+        library.projects.push(project);
+        return { project: clone(project), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
+      }, () => ({ project: null, backend: "failed" }));
+    },
+    async renameProject(id, name, expectedRevision) {
+      const nextName = String(name || "").trim().slice(0, 200);
+      if (!nextName) return { project: null, backend: "failed" };
+      const apply = (project) => Object.assign(projectFor(nextName, project), { updatedAt: timestamp() });
+      return useStorageSession(async () => {
+        const result = await mutateIndexedProject(id, expectedRevision, apply);
+        return { project: result.project || null, backend: result.status === "ok" ? "indexeddb" : result.status };
+      }, () => {
+        const library = fallbackLibrary(null);
+        if (library.corrupt) return { project: null, backend: "failed" };
+        const index = library.projects.findIndex((project) => project && project.id === id);
+        if (index < 0) return { project: null, backend: "missing" };
+        const existing = library.projects[index];
+        if (expectedRevision !== undefined && revisionOf(existing) !== expectedRevision) return { project: clone(existing), backend: "conflict" };
+        const project = apply(existing);
+        library.projects[index] = project;
+        return { project: clone(project), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
+      }, () => ({ project: null, backend: "failed" }));
+    },
+    async assignDocumentToProject(id, assignment, expectedRevision) {
+      const next = assignment && typeof assignment === "object" ? assignment : {};
+      return useStorageSession(async () => {
+        const result = await assignIndexedDocumentProject(id, next, expectedRevision);
+        return { record: result.record || null, backend: result.status === "ok" ? "indexeddb" : result.status };
       }, () => {
         const library = fallbackLibrary(null);
         if (library.corrupt) return { record: null, backend: "failed" };
+        const index = library.records.findIndex((record) => record && record.id === id);
+        if (index < 0) return { record: null, backend: "missing" };
+        const existing = library.records[index];
+        if (expectedRevision !== undefined && revisionOf(existing) !== expectedRevision) return { record: clone(existing), backend: "conflict" };
+        const previous = projectMembership(existing);
+        const projectId = next.projectId === undefined ? previous.projectId : String(next.projectId || "").trim();
+        if (projectId && !library.projects.some((project) => project && project.id === projectId)) return { record: clone(existing), backend: "missing-project" };
+        const group = projectId ? String(next.projectGroup === undefined ? previous.projectGroup : next.projectGroup || "").trim().slice(0, 80) : "";
+        const pinned = projectId ? (next.projectPinned === undefined ? previous.projectPinned : next.projectPinned === true) : false;
+        const position = projectId && next.projectPosition === undefined && previous.projectId !== projectId
+          ? nextProjectPosition(library.records, projectId, group, pinned)
+          : next.projectPosition;
+        const record = membershipRecord(existing, { projectId, projectGroup: group, projectPinned: pinned, projectPosition: position });
+        if (sameProjectMembership(existing, record)) return { record: clone(existing), backend: "localStorage" };
+        library.records[index] = record;
+        if (library.currentId === record.id) library.current = record;
+        return { record: clone(record), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
+      }, () => ({ record: null, backend: "failed" }));
+    },
+    async reorderProjectDocument(id, direction, expectedRevision) {
+      return useStorageSession(async () => {
+        const result = await reorderIndexedProjectDocument(id, direction, expectedRevision);
+        return { records: result.records || [], backend: result.status === "ok" ? "indexeddb" : result.status };
+      }, () => {
+        const library = fallbackLibrary(null);
+        if (library.corrupt) return { records: [], backend: "failed" };
+        const index = library.records.findIndex((record) => record && record.id === id);
+        const source = index >= 0 ? library.records[index] : null;
+        if (!source) return { records: [], backend: "missing" };
+        if (expectedRevision !== undefined && revisionOf(source) !== expectedRevision) return { records: [clone(source)], backend: "conflict" };
+        const membership = projectMembership(source);
+        const delta = direction === "up" ? -1 : direction === "down" ? 1 : 0;
+        const siblings = library.records.filter((record) => validRecord(record)
+          && projectMembership(record).projectId === membership.projectId
+          && projectMembership(record).projectGroup === membership.projectGroup
+          && projectMembership(record).projectPinned === membership.projectPinned).sort(projectDocumentOrder);
+        const sourceIndex = siblings.findIndex((record) => record.id === id);
+        const target = siblings[sourceIndex + delta];
+        if (!membership.projectId || !delta || sourceIndex < 0 || !target) return { records: [clone(source)], backend: "localStorage" };
+        const first = membershipRecord(source, { projectPosition: projectMembership(target).projectPosition });
+        const second = membershipRecord(target, { projectPosition: membership.projectPosition });
+        library.records[library.records.findIndex((record) => record.id === first.id)] = first;
+        library.records[library.records.findIndex((record) => record.id === second.id)] = second;
+        if (library.currentId === first.id) library.current = first;
+        if (library.currentId === second.id) library.current = second;
+        return { records: [clone(first), clone(second)], backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
+      }, () => ({ records: [], backend: "failed" }));
+    },
+    async createDocument(document, options) {
+      const opts = options || {};
+      const makeCurrent = opts.makeCurrent !== false;
+      const record = recordFor(document, null, opts);
+      return useStorageSession(async () => {
+        const created = await createIndexedRecord(record, Object.assign({}, opts, makeCurrent ? { currentId: record.id } : {}));
+        return { record: created, backend: "indexeddb" };
+      }, () => {
+        const library = fallbackLibrary(null);
+        if (library.corrupt) return { record: null, backend: "failed" };
+        const membership = projectMembership(record);
+        if (membership.projectId && opts.projectPosition === undefined) {
+          record.projectPosition = nextProjectPosition(library.records, membership.projectId, membership.projectGroup, membership.projectPinned);
+        }
         library.records.push(record);
         if (makeCurrent) { library.current = record; library.currentId = record.id; }
         return { record: clone(record), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
@@ -653,7 +953,9 @@
         const document = duplicateDocumentPayload(source.document, nextName, opts);
         const now = timestamp();
         document.metadata = Object.assign({}, document.metadata, { createdAt: now, updatedAt: now });
-        const record = recordFor(document);
+        const record = recordFor(document, null, source);
+        const membership = projectMembership(record);
+        if (membership.projectId) record.projectPosition = nextProjectPosition(library.records, membership.projectId, membership.projectGroup, membership.projectPinned);
         library.records.push(record);
         if (makeCurrent) { library.current = record; library.currentId = record.id; }
         return { record: clone(record), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };

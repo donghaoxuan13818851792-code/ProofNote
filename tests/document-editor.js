@@ -181,7 +181,7 @@ async function main() {
       && html.includes('./vendor/prism/prism-python.min.js?v=1.30.0')
       && Boolean(window.ProofnoteRenderer) && Boolean(window.ProofnoteEditableHtml) && Boolean(window.ProofnoteLegacyBoundary)
       && html.includes('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1')
-        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260918-64'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
+        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260918-75'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
     check(
       "editor-document-typography-is-shared",
       [
@@ -421,10 +421,12 @@ async function main() {
     check(
       "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.34"
-        && editorSource.includes('const APP_VERSION = "v1.34";')
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.44"
+        && editorSource.includes('const APP_VERSION = "v1.44";')
         && Boolean(document.querySelector("#pnImportEditableHtml"))
         && Boolean(document.querySelector("#pnExportEditableHtml"))
+        && document.querySelector("#pnImportEditableHtml")?.textContent.trim() === "导入可编辑 HTML"
+        && document.querySelector("#pnExportHtml")?.textContent.trim() === "导出 HTML"
         && !document.querySelector("#pnEditMetadata")
         && !document.querySelector("#pnExportLegacy")
         && !/Document info|文档信息|Proofnote Document Format/.test(actionMenu.textContent),
@@ -443,8 +445,8 @@ async function main() {
         && !projectAiInstructionsSource.includes("hardenPortableObjectGraph")
         && legacyBoundarySource.includes("function validateSolutionNote")
         && rendererSource.includes("root.ProofnoteRenderer")
-        && html.indexOf("./src/document-renderer.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260918-64")
-        && html.indexOf("./src/document-legacy-boundary.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260918-64"),
+        && html.indexOf("./src/document-renderer.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260918-75")
+        && html.indexOf("./src/document-legacy-boundary.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260918-75"),
       "reader rendering must not borrow the retired test hook, and legacy hardening must stay in its required boundary module"
     );
     const tableHeaderSource = editorSource.slice(editorSource.indexOf("function setTableHeader"), editorSource.indexOf("function imageFilePicker"));
@@ -1696,7 +1698,7 @@ check(
     await new Promise((resolve) => window.setTimeout(resolve, 450));
     const duplicateSourceRow = Array.from(document.querySelectorAll(".pn-document-item")).find((row) => Boolean(row.querySelector('.pn-document-open[aria-current="false"]')));
     const duplicateSourceActions = duplicateSourceRow && duplicateSourceRow.querySelector(".pn-document-more");
-    const duplicateOther = duplicateSourceActions && Array.from(duplicateSourceActions.querySelectorAll("button")).find((control) => /Duplicate|制作副本/.test(control.textContent));
+    const duplicateOther = duplicateSourceActions && Array.from(duplicateSourceActions.querySelectorAll("button")).find((control) => /Duplicate|Copy|制作副本|复制/.test(control.textContent));
     const originalTransitionSave = window.ProofnoteStore.saveDocument;
     const originalTransitionDuplicate = window.ProofnoteStore.duplicateDocument;
     const duplicateTransitionEvents = [];
@@ -2091,7 +2093,7 @@ check(
     const lineageDuplicateSourceRow = document.querySelector("#pnDocuments .pn-document-item.is-active");
     const lineageDuplicateActions = lineageDuplicateSourceRow?.querySelector(".pn-document-more");
     const duplicateControl = Array.from(lineageDuplicateActions?.querySelectorAll("button") || [])
-      .find((control) => /Duplicate|制作副本/.test(control.textContent || ""));
+      .find((control) => /Duplicate|Copy|制作副本|复制/.test(control.textContent || ""));
     if (lineageDuplicateActions) lineageDuplicateActions.open = true;
     if (duplicateControl) duplicateControl.click();
     await settle(window, () => document.querySelectorAll("#pnDocuments .pn-document-item").length === duplicateCountBefore + 1
@@ -2160,6 +2162,112 @@ check(
         && jsonImportedLineage !== jsonSourceLineage
         && /independent identity|独立身份/.test(document.querySelector("#pnStatus")?.textContent || ""),
       JSON.stringify({ sourceLineage: jsonSourceLineage, importedLineage: jsonImportedLineage, beforeId: jsonImportActiveBefore, importedId: jsonImportedId, count: document.querySelectorAll("#pnDocuments .pn-document-item").length, status: document.querySelector("#pnStatus")?.textContent, report: importReport?.textContent })
+    );
+
+    // Projects are local navigation containers rather than a second portable
+    // document format. Creating one, opening its landing page, and creating a
+    // document from there must keep membership out of the document payload.
+    const projectTrigger = document.querySelector("#pnNewContainer");
+    if (projectTrigger) projectTrigger.click();
+    await settle(window, () => document.querySelector("#pnProjectModal")?.hidden === false);
+    const projectNameInput = document.querySelector("#pnProjectName");
+    if (projectNameInput) projectNameInput.value = "Project container QA";
+    document.querySelector("#pnProjectCreate")?.click();
+    await settle(window, () => document.querySelector("#pnProjectModal")?.hidden === true && document.querySelector("#pnProjectLanding")?.hidden === false, 4000);
+    const projectContainers = await window.ProofnoteStore.listProjects();
+    const projectContainer = projectContainers.projects.find((project) => project && project.name === "Project container QA");
+    check(
+      "editor-project-landing-is-the-only-active-library-selection",
+      document.querySelectorAll("#pnProjects .pn-project-item.is-active").length === 1
+        && document.querySelectorAll(".pn-document-item.is-active").length === 0,
+      JSON.stringify({ activeProjects: document.querySelectorAll("#pnProjects .pn-project-item.is-active").length, activeDocuments: document.querySelectorAll(".pn-document-item.is-active").length })
+    );
+    check(
+      "editor-project-child-selection-does-not-use-the-library-rail",
+      editorCss.includes(".pn-project-group .pn-document-item.is-active .pn-document-open { border-left-color: transparent; background: color-mix(in srgb, var(--color-accent-100) 42%, transparent); color: var(--color-text); font-weight: 400; }"),
+      "Project child rows must follow the outline's quiet selection instead of the top-level library rail"
+    );
+    document.querySelector("#pnProjectLanding .pn-project-landing-new")?.click();
+    await settle(window, () => document.querySelector("#pnNewProjectModal")?.hidden === false);
+    const projectDocumentName = document.querySelector("#pnNewProjectName");
+    if (projectDocumentName) projectDocumentName.value = "Contained proof";
+    document.querySelector("#pnCreateProject")?.click();
+    await settle(window, () => document.querySelector("#pnNewProjectModal")?.hidden === true
+      && document.querySelector("#pnProjectLanding")?.hidden === true
+      && Array.from(document.querySelectorAll("#pnProjects .pn-document-item")).some((row) => /Contained proof/.test(row.textContent || "")), 5000);
+    const containedRecord = (await window.ProofnoteStore.listDocuments()).find((record) => record && record.document && record.document.metadata && record.document.metadata.name === "Contained proof");
+    check(
+      "editor-project-containers-provide-a-local-landing-tree-and-contained-document-flow",
+      Boolean(projectContainer)
+        && Boolean(containedRecord)
+        && containedRecord.projectId === projectContainer.id
+        && !Object.prototype.hasOwnProperty.call(containedRecord.document, "projectId")
+        && document.querySelector("#pnProjectLanding")?.hidden === true
+        && Array.from(document.querySelectorAll("#pnProjects .pn-document-item")).some((row) => row.dataset.documentId === containedRecord.id)
+        && document.querySelectorAll("#pnProjects .pn-project-item.is-active").length === 0
+        && document.querySelectorAll(".pn-document-item.is-active").length === 1
+        && document.querySelector(".pn-document-item.is-active")?.dataset.documentId === containedRecord.id,
+      JSON.stringify({ projectContainer, containedRecord, landingHidden: document.querySelector("#pnProjectLanding")?.hidden, activeProjects: document.querySelectorAll("#pnProjects .pn-project-item.is-active").length, activeDocuments: Array.from(document.querySelectorAll(".pn-document-item.is-active")).map((row) => row.dataset.documentId) })
+    );
+    if (projectTrigger) projectTrigger.click();
+    await settle(window, () => document.querySelector("#pnProjectModal")?.hidden === false);
+    if (projectNameInput) projectNameInput.value = "Other Project container QA";
+    document.querySelector("#pnProjectCreate")?.click();
+    await settle(window, () => document.querySelector("#pnProjectModal")?.hidden === true
+      && document.querySelector("#pnProjectLanding")?.hidden === false
+      && /Other Project container QA/.test(document.querySelector("#pnProjectLanding")?.textContent || ""), 4000);
+    const containedOpen = Array.from(document.querySelectorAll("#pnProjects .pn-document-item"))
+      .find((row) => row.dataset.documentId === containedRecord?.id)?.querySelector(".pn-document-open");
+    if (containedOpen) containedOpen.click();
+    await settle(window, () => document.querySelector("#pnProjectLanding")?.hidden === true && document.querySelector("#pnDocPage")?.hidden === false, 4000);
+    const containedRow = Array.from(document.querySelectorAll("#pnProjects .pn-document-item")).find((row) => row.dataset.documentId === containedRecord?.id);
+    check(
+      "editor-project-landing-can-reopen-its-current-document",
+      Boolean(containedOpen)
+        && document.querySelector("#pnProjectLanding")?.hidden === true
+        && document.querySelector("#pnDocPage")?.hidden === false
+        && containedRow?.classList.contains("is-active"),
+      JSON.stringify({ hasContainedOpen: Boolean(containedOpen), landingHidden: document.querySelector("#pnProjectLanding")?.hidden, documentHidden: document.querySelector("#pnDocPage")?.hidden, containedActive: containedRow?.classList.contains("is-active") })
+    );
+    const containedOverflow = containedRow?.querySelector("details.pn-document-more");
+    const projectOverflow = containedRow?.closest(".pn-project-item")?.querySelector("details.pn-project-more");
+    projectOverflow?.querySelector("summary")?.click();
+    await settle(window, () => projectOverflow?.open === true, 2000);
+    containedOverflow?.querySelector("summary")?.click();
+    await settle(window, () => containedOverflow?.open === true && projectOverflow?.open === false, 2000);
+    document.querySelector("#pnActionsToggle")?.click();
+    await settle(window, () => document.querySelector("#pnActionMenu")?.hidden === false && containedOverflow?.open === false, 2000);
+    check(
+      "editor-transient-menus-are-mutually-exclusive",
+      projectOverflow?.open === false
+        && containedOverflow?.open === false
+        && document.querySelector("#pnActionMenu")?.hidden === false,
+      JSON.stringify({ projectOpen: projectOverflow?.open, documentOpen: containedOverflow?.open, actionHidden: document.querySelector("#pnActionMenu")?.hidden })
+    );
+    const containedMenuText = containedOverflow?.querySelector(".pn-document-more-menu")?.textContent || "";
+    const projectOrderSource = editorSource.slice(editorSource.indexOf("function projectDocumentOrder"), editorSource.indexOf("function projectById"));
+    const projectOrderImplementation = projectOrderSource.replace(/\/\/.*$/gm, "");
+    check(
+      "editor-project-documents-follow-content-recency-without-manual-order-controls",
+      !/固定|Pin|上移|Move up|下移|Move down/.test(containedMenuText)
+        && projectOrderSource.includes("updatedAt || second.createdAt")
+        && !projectOrderImplementation.includes("lastOpenedAt")
+        && !projectOrderImplementation.includes("projectPinned")
+        && !projectOrderImplementation.includes("projectPosition"),
+      JSON.stringify({ menu: containedMenuText, projectOrderSource })
+    );
+    const directProjectTrigger = containedRow?.querySelector(".pn-document-more-project-trigger");
+    if (directProjectTrigger) directProjectTrigger.click();
+    const directProjectMenu = document.querySelector("#pnProjectMoveMenu");
+    check(
+      "editor-project-move-opens-a-direct-right-hand-project-menu",
+      !document.querySelector("#pnMoveDocumentModal")
+        && Boolean(directProjectMenu)
+        && directProjectMenu.hidden === false
+        && directProjectTrigger?.getAttribute("aria-expanded") === "true"
+        && /Remove from project|移出项目/.test(directProjectMenu.textContent || "")
+        && /Other Project container QA/.test(directProjectMenu.textContent || ""),
+      JSON.stringify({ hasModal: Boolean(document.querySelector("#pnMoveDocumentModal")), hasMenu: Boolean(directProjectMenu), menuHidden: directProjectMenu?.hidden, expanded: directProjectTrigger?.getAttribute("aria-expanded"), menuText: directProjectMenu?.textContent })
     );
     check("editor-no-runtime-errors", runtimeErrors.length === 0, runtimeErrors.join(" | ").slice(0, 500));
   } catch (error) {

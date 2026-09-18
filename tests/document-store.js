@@ -76,12 +76,50 @@ async function main() {
   const fallbackEnvelope = JSON.parse(libraryWindow.localStorage.getItem("proofnote-document:library:v2") || "null");
   check(
     "store-fallback-library-writes-records-and-current-id-as-one-envelope",
-    Boolean(fallbackEnvelope && fallbackEnvelope.version === 2
+    Boolean(fallbackEnvelope && fallbackEnvelope.version === 3
       && Array.isArray(fallbackEnvelope.records)
+      && Array.isArray(fallbackEnvelope.projects)
       && fallbackEnvelope.records.some((record) => record.id === created.record.id)
       && typeof fallbackEnvelope.currentId === "string"),
     JSON.stringify(fallbackEnvelope)
   );
+  const fallbackProject = await Library.createProject("Fallback research");
+  const fallbackAssigned = await Library.assignDocumentToProject(created.record.id, {
+    projectId: fallbackProject.project && fallbackProject.project.id,
+    projectGroup: "Research",
+    projectPinned: true
+  }, created.record.revision);
+  const fallbackProjects = await Library.listProjects();
+  check(
+    "store-keeps-project-membership-local-and-preserves-portable-document-payloads",
+    Boolean(fallbackProject && fallbackProject.project && fallbackAssigned && fallbackAssigned.record)
+      && fallbackAssigned.record.projectId === fallbackProject.project.id
+      && fallbackAssigned.record.projectGroup === "Research"
+      && fallbackAssigned.record.projectPinned === true
+      && !Object.prototype.hasOwnProperty.call(fallbackAssigned.record.document, "projectId")
+      && fallbackProjects.projects.some((project) => project.id === fallbackProject.project.id),
+    JSON.stringify({ fallbackProject, fallbackAssigned, fallbackProjects })
+  );
+  const fallbackUnpinned = await Library.assignDocumentToProject(created.record.id, { projectPinned: false }, fallbackAssigned.record && fallbackAssigned.record.revision);
+  const fallbackSibling = await Library.createDocument({ metadata: { name: "Contained sibling" }, blocks: [] }, {
+    makeCurrent: false,
+    projectId: fallbackProject.project && fallbackProject.project.id,
+    projectGroup: "Research"
+  });
+  const fallbackReordered = await Library.reorderProjectDocument(fallbackSibling.record && fallbackSibling.record.id, "up", fallbackSibling.record && fallbackSibling.record.revision);
+  const fallbackOrderedRecords = (await Library.listDocuments()).filter((record) => record.projectId === fallbackProject.project.id && record.projectGroup === "Research");
+  check(
+    "store-project-membership-supports-stable-local-pinning-and-reordering",
+    Boolean(fallbackUnpinned && fallbackUnpinned.record)
+      && Boolean(fallbackSibling && fallbackSibling.record)
+      && fallbackSibling.record.projectPosition > fallbackUnpinned.record.projectPosition
+      && fallbackReordered.backend === "localStorage"
+      && fallbackOrderedRecords.some((record) => record.id === fallbackSibling.record.id && record.projectPosition === fallbackUnpinned.record.projectPosition),
+    JSON.stringify({ fallbackUnpinned, fallbackSibling, fallbackReordered, fallbackOrderedRecords })
+  );
+  // Keep the following legacy-library lifecycle assertions independent from
+  // this extra Project fixture record.
+  await Library.deleteDocument(fallbackSibling.record.id);
   const opened = await Library.openDocument(initial.record.id);
   check("store-opens-a-document-by-local-id", Boolean(opened && opened.record && opened.record.id === initial.record.id));
   const renamed = await Library.renameDocument(initial.record.id, "Renamed note");
@@ -199,6 +237,22 @@ async function main() {
       && idbRecords.length === 2
       && !idbRecords.some((record) => record.id === "current-document"),
     JSON.stringify(idbRecords)
+  );
+  const indexedProject = await IndexedLibrary.createProject("Indexed research");
+  const indexedCurrentRecord = (await IndexedLibrary.listDocuments()).find((record) => record.id === idbInitial.record.id);
+  const indexedAssigned = await IndexedLibrary.assignDocumentToProject(idbInitial.record.id, {
+    projectId: indexedProject.project && indexedProject.project.id,
+    projectGroup: "Main"
+  }, indexedCurrentRecord && indexedCurrentRecord.revision);
+  const indexedProjectRecords = await IndexedLibrary.listProjects();
+  check(
+    "store-indexeddb-persists-projects-and-document-membership-in-local-records",
+    Boolean(indexedProject && indexedProject.project && indexedAssigned && indexedAssigned.record)
+      && indexedAssigned.record.projectId === indexedProject.project.id
+      && indexedAssigned.record.projectGroup === "Main"
+      && !Object.prototype.hasOwnProperty.call(indexedAssigned.record.document, "projectId")
+      && indexedProjectRecords.projects.some((project) => project.id === indexedProject.project.id),
+    JSON.stringify({ indexedProject, indexedAssigned, indexedProjectRecords })
   );
 
   const indexedLineageSource = await IndexedLibrary.createDocument({

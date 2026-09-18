@@ -10,7 +10,7 @@
   if (!Model || !Store || !Renderer || !LegacyBoundary) return;
 
   // Increment this small, user-facing version for each released workspace update.
-  const APP_VERSION = "v1.34";
+  const APP_VERSION = "v1.44";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Standalone equation", "独立公式"], ["code", "Code", "代码"],
@@ -65,8 +65,18 @@
   let state = null;
   let templates = [];
   let documents = [];
+  // A Project is a device-local container for independent Proofnote
+  // documents. It is intentionally distinct from the portable `Project`
+  // document preset: a document can remain fully portable and still belong
+  // to a local research project, group, pin order, or landing page.
+  let projects = [];
+  let activeProjectId = "";
+  let projectLandingId = "";
+  const projectRevisions = new Map();
   let currentDocumentId = "";
   let renamingDocumentId = "";
+  let renamingProjectId = "";
+  let projectMoveAnchor = null;
   let saveTimer = null;
   // A document may be edited again while an earlier IndexedDB write is still
   // in flight. Keep immutable snapshots in a serial queue so an older save
@@ -358,8 +368,8 @@
           <div class="pn-action-menu" id="pnActionMenu" role="menu" aria-label="${tr("文档操作", "Document actions")}" hidden>
             <div class="pn-action-menu-label">${tr("文件", "File")}</div>
             <button class="pn-action-menu-item" id="pnImport" type="button" role="menuitem">${tr("导入 JSON", "Import JSON")}</button>
-            <button class="pn-action-menu-item" id="pnImportEditableHtml" type="button" role="menuitem">${tr("导入 Proofnote 可编辑 HTML…", "Import Proofnote editable HTML…")}</button>
-            <button class="pn-action-menu-item" id="pnExportHtml" type="button" role="menuitem">${tr("导出 HTML（展示版）", "Export HTML (presentation)")}</button>
+            <button class="pn-action-menu-item" id="pnImportEditableHtml" type="button" role="menuitem">${tr("导入可编辑 HTML", "Import editable HTML")}</button>
+            <button class="pn-action-menu-item" id="pnExportHtml" type="button" role="menuitem">${tr("导出 HTML", "Export HTML")}</button>
             <div class="pn-action-menu-submenu-wrap">
               <button class="pn-action-menu-item pn-action-menu-submenu-trigger" id="pnExportMore" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="pnExportMoreMenu"><span>${tr("更多导出", "More exports")}</span><span class="pn-action-menu-arrow" aria-hidden="true">›</span></button>
               <div class="pn-action-menu pn-action-menu-submenu" id="pnExportMoreMenu" role="menu" aria-label="${tr("更多导出", "More exports")}" hidden>
@@ -386,9 +396,13 @@
                 <div class="pn-sidebar-heading" id="pnTemplatesHeading">${tr("模板", "Templates")}</div>
                 <div class="pn-template-list" id="pnTemplates" role="list" aria-label="${tr("选择模板", "Choose template")}"></div>
               </section>
+              <section class="pn-library-section pn-library-projects" aria-labelledby="pnProjectsHeading">
+                <div class="pn-library-heading-row"><div class="pn-sidebar-heading" id="pnProjectsHeading">${tr("项目", "Projects")}</div><button class="pn-template-new" id="pnNewContainer" type="button">${tr("＋ 新建项目", "+ New project")}</button></div>
+                <div class="pn-project-list" id="pnProjects" role="list" aria-label="${tr("项目", "Projects")}"></div>
+              </section>
               <section class="pn-library-section pn-library-documents" aria-labelledby="pnDocumentsHeading">
-                <div class="pn-library-heading-row"><div class="pn-sidebar-heading" id="pnDocumentsHeading">${tr("文档", "Documents")}</div><button class="pn-template-new" id="pnNew" type="button">${tr("＋ 新建项目", "+ New project")}</button></div>
-                <div class="pn-document-list" id="pnDocuments" role="list" aria-label="${tr("文档，按最近修改排序", "Documents, most recently modified first")}"></div>
+                <div class="pn-library-heading-row"><div class="pn-sidebar-heading" id="pnDocumentsHeading">${tr("文档", "Documents")}</div><button class="pn-template-new" id="pnNew" type="button">${tr("＋ 新建文档", "+ New document")}</button></div>
+                <div class="pn-document-list" id="pnDocuments" role="list" aria-label="${tr("未归属文档，按最近修改排序", "Unfiled documents, most recently modified first")}"></div>
               </section>
               <div class="pn-template-footer">
                 <div class="pn-template-menu-wrap">
@@ -409,6 +423,7 @@
         </aside>
         <div class="pn-sidebar-resize" id="pnSidebarResize" role="separator" aria-orientation="vertical" aria-label="${tr("调整导航栏宽度", "Resize navigation sidebar")}" aria-valuemin="${SIDEBAR_MIN_WIDTH}" aria-valuemax="${SIDEBAR_MAX_WIDTH}" tabindex="-1"></div>
         <main class="pn-canvas-pane" aria-label="${tr("可编辑文档", "Editable document")}">
+          <section class="pn-project-landing" id="pnProjectLanding" aria-live="polite" hidden></section>
           <doc-page margin="0.85in" size="a4" id="pnDocPage">
             <div slot="header" class="pn-page-chrome" id="pnPageHeader" hidden></div>
             <article class="pn-document pn-document-canvas" id="pnCanvas" aria-label="${tr("文档内容", "Document content")}"></article>
@@ -445,20 +460,30 @@
       <div class="pn-modal-backdrop" id="pnNewProjectModal" hidden>
         <section class="pn-modal pn-confirm-modal pn-new-project-modal" role="dialog" aria-modal="true" aria-labelledby="pnNewProjectTitle" aria-describedby="pnNewProjectCopy">
           <p class="pn-confirm-kicker">${tr("新建文档", "NEW DOCUMENT")}</p>
-          <h2 id="pnNewProjectTitle">${tr("新建项目", "New project")}</h2>
-          <p id="pnNewProjectCopy" class="pn-modal-copy">${tr("命名项目后，Proofnote 会自动创建同名文档、填入今天的日期，并添加一个“引言”语义小节。", "Name the project and Proofnote will create a matching document, add today’s date, and start it with an editorial Introduction section.")}</p>
-          <label class="pn-new-project-field" for="pnNewProjectName"><span class="pn-new-project-label">${tr("项目名称", "Project name")}</span><input class="pn-new-project-input" id="pnNewProjectName" type="text" autocomplete="off" maxlength="200" required></label>
-          <div class="pn-actions pn-confirm-actions"><button class="btn btn-secondary" id="pnNewProjectCancel" type="button">${tr("取消", "Cancel")}</button><button class="btn btn-primary" id="pnCreateProject" type="button">${tr("创建项目", "Create project")}</button></div>
+          <h2 id="pnNewProjectTitle">${tr("新建文档", "New document")}</h2>
+          <p id="pnNewProjectCopy" class="pn-modal-copy">${tr("命名文档后，Proofnote 会自动创建同名文档、填入今天的日期，并添加一个“引言”语义小节。若当前打开某个项目，文档会加入该项目。", "Name the document and Proofnote will create a matching document, add today’s date, and start it with an editorial Introduction section. When a Project is open, the document joins it.")}</p>
+          <label class="pn-new-project-field" for="pnNewProjectName"><span class="pn-new-project-label">${tr("文档名称", "Document name")}</span><input class="pn-new-project-input" id="pnNewProjectName" type="text" autocomplete="off" maxlength="200" required></label>
+          <div class="pn-actions pn-confirm-actions"><button class="btn btn-secondary" id="pnNewProjectCancel" type="button">${tr("取消", "Cancel")}</button><button class="btn btn-primary" id="pnCreateProject" type="button">${tr("创建文档", "Create document")}</button></div>
+        </section>
+      </div>
+      <div class="pn-modal-backdrop" id="pnProjectModal" hidden>
+        <section class="pn-modal pn-confirm-modal pn-new-project-modal" role="dialog" aria-modal="true" aria-labelledby="pnProjectModalTitle" aria-describedby="pnProjectModalCopy">
+          <p class="pn-confirm-kicker">${tr("新建项目", "NEW PROJECT")}</p>
+          <h2 id="pnProjectModalTitle">${tr("新建项目", "New project")}</h2>
+          <p id="pnProjectModalCopy" class="pn-modal-copy">${tr("项目是本设备上的文档容器。它不会改变文档的 Proofnote 文件、版本或可编辑 HTML 身份。", "A Project is a device-local container for independent documents. It never changes a document’s Proofnote file, revision lineage, or editable-HTML identity.")}</p>
+          <label class="pn-new-project-field" for="pnProjectName"><span class="pn-new-project-label">${tr("项目名称", "Project name")}</span><input class="pn-new-project-input" id="pnProjectName" type="text" autocomplete="off" maxlength="200" required></label>
+          <div class="pn-actions pn-confirm-actions"><button class="btn btn-secondary" id="pnProjectCancel" type="button">${tr("取消", "Cancel")}</button><button class="btn btn-primary" id="pnProjectCreate" type="button">${tr("创建项目", "Create project")}</button></div>
         </section>
       </div>
       <div class="pn-outline-menu" id="pnOutlineMenu" role="menu" aria-label="${tr("大纲结构操作", "Outline structure actions")}" hidden></div>
+      <div class="pn-project-move-menu" id="pnProjectMoveMenu" role="menu" aria-label="${tr("可用项目", "Available projects")}" hidden></div>
       <div class="pn-undo-toast" id="pnUndoToast" role="status" hidden><span id="pnUndoCopy"></span><button class="pn-undo-button" id="pnUndoButton" type="button">${tr("撤销", "Undo")}</button></div>`;
     document.body.appendChild(app);
     els = {
-      app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), exportMore: app.querySelector("#pnExportMore"), exportMoreMenu: app.querySelector("#pnExportMoreMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), templates: app.querySelector("#pnTemplates"), documents: app.querySelector("#pnDocuments"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
-      outline: app.querySelector("#pnOutline"), canvasPane: app.querySelector(".pn-canvas-pane"), docPage: app.querySelector("#pnDocPage"), canvas: app.querySelector("#pnCanvas"), inspector: app.querySelector("#pnInspector"), inspectorTopLabel: app.querySelector("#pnInspectorTopLabel"), pageHeader: app.querySelector("#pnPageHeader"), footer: app.querySelector("#pnFooterName"), footerStatus: app.querySelector("#pnFooterStatus"), modal: app.querySelector("#pnImportModal"), confirmModal: app.querySelector("#pnConfirmModal"), confirmTitle: app.querySelector("#pnConfirmTitle"), confirmCopy: app.querySelector("#pnConfirmCopy"), confirmCancel: app.querySelector("#pnConfirmCancel"), confirmAccept: app.querySelector("#pnConfirmAccept"), newProjectModal: app.querySelector("#pnNewProjectModal"), newProjectName: app.querySelector("#pnNewProjectName"), newProjectCancel: app.querySelector("#pnNewProjectCancel"), newProjectCreate: app.querySelector("#pnCreateProject"),
+      app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), exportMore: app.querySelector("#pnExportMore"), exportMoreMenu: app.querySelector("#pnExportMoreMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), templates: app.querySelector("#pnTemplates"), projects: app.querySelector("#pnProjects"), documents: app.querySelector("#pnDocuments"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
+      outline: app.querySelector("#pnOutline"), canvasPane: app.querySelector(".pn-canvas-pane"), projectLanding: app.querySelector("#pnProjectLanding"), docPage: app.querySelector("#pnDocPage"), canvas: app.querySelector("#pnCanvas"), inspector: app.querySelector("#pnInspector"), inspectorTopLabel: app.querySelector("#pnInspectorTopLabel"), pageHeader: app.querySelector("#pnPageHeader"), footer: app.querySelector("#pnFooterName"), footerStatus: app.querySelector("#pnFooterStatus"), modal: app.querySelector("#pnImportModal"), confirmModal: app.querySelector("#pnConfirmModal"), confirmTitle: app.querySelector("#pnConfirmTitle"), confirmCopy: app.querySelector("#pnConfirmCopy"), confirmCancel: app.querySelector("#pnConfirmCancel"), confirmAccept: app.querySelector("#pnConfirmAccept"), newProjectModal: app.querySelector("#pnNewProjectModal"), newProjectName: app.querySelector("#pnNewProjectName"), newProjectCancel: app.querySelector("#pnNewProjectCancel"), newProjectCreate: app.querySelector("#pnCreateProject"), projectModal: app.querySelector("#pnProjectModal"), projectName: app.querySelector("#pnProjectName"), projectCancel: app.querySelector("#pnProjectCancel"), projectCreate: app.querySelector("#pnProjectCreate"),
       importText: app.querySelector("#pnImportText"), importFile: app.querySelector("#pnImportFile"), importFileTrigger: app.querySelector("#pnImportFileTrigger"), importFileLabel: app.querySelector("#pnImportFileLabel"), editableHtmlSummary: app.querySelector("#pnEditableHtmlSummary"), importConfirm: app.querySelector("#pnConfirmImport"), importReplace: app.querySelector("#pnReplaceImport"), importReport: app.querySelector("#pnImportReport"),
-      outlineMenu: app.querySelector("#pnOutlineMenu"), undoToast: app.querySelector("#pnUndoToast"), undoCopy: app.querySelector("#pnUndoCopy"), undoButton: app.querySelector("#pnUndoButton")
+      outlineMenu: app.querySelector("#pnOutlineMenu"), projectMoveMenu: app.querySelector("#pnProjectMoveMenu"), undoToast: app.querySelector("#pnUndoToast"), undoCopy: app.querySelector("#pnUndoCopy"), undoButton: app.querySelector("#pnUndoButton")
     };
     bindToolbar(app);
     bindProjectFooterNameEditing();
@@ -481,7 +506,16 @@
 
   function bindToolbar(app) {
     app.querySelector("#pnUtilityToggle").addEventListener("click", () => setUtilityOpen(!els.utility.classList.contains("is-open")));
-    els.actionToggle.addEventListener("click", () => setActionMenuOpen(els.actionMenu.hidden));
+    els.actionToggle.addEventListener("click", () => {
+      const opening = els.actionMenu.hidden;
+      if (opening) {
+        closeDocumentMoreMenus();
+        closeProjectMoveMenu();
+        closeOutlineMenu();
+        setTemplateMenuOpen(false);
+      }
+      setActionMenuOpen(opening);
+    });
     els.exportMore.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -491,12 +525,37 @@
       if (event.key === "ArrowRight") { event.preventDefault(); setExportMoreOpen(true, true); }
       if (event.key === "Escape") { event.preventDefault(); setExportMoreOpen(false); els.actionToggle.focus(); }
     });
-    els.templateMenuToggle.addEventListener("click", () => setTemplateMenuOpen(els.templateMenu.hidden));
+    els.templateMenuToggle.addEventListener("click", () => {
+      const opening = els.templateMenu.hidden;
+      if (opening) {
+        closeDocumentMoreMenus();
+        closeProjectMoveMenu();
+        closeOutlineMenu();
+        setActionMenuOpen(false);
+      }
+      setTemplateMenuOpen(opening);
+    });
     els.detailClose.addEventListener("click", () => setDetailOpen(false));
     app.addEventListener("click", (event) => {
       if (!event.target.closest(".pn-toolbar-menu")) setActionMenuOpen(false);
       if (!event.target.closest(".pn-template-menu-wrap")) setTemplateMenuOpen(false);
+      if (!event.target.closest(".pn-document-more") && !event.target.closest("#pnProjectMoveMenu")) {
+        closeProjectMoveMenu();
+        closeDocumentMoreMenus();
+      }
     });
+    // Native <details> menus do not close their siblings themselves. Treat
+    // every overflow menu as one shared transient surface, so menus cannot
+    // stack or overlap in the navigator.
+    app.addEventListener("toggle", (event) => {
+      const menu = event.target;
+      if (!menu || !menu.matches || !menu.matches("details.pn-document-more") || !menu.open) return;
+      closeDocumentMoreMenus(menu);
+      closeProjectMoveMenu();
+      closeOutlineMenu();
+      setActionMenuOpen(false);
+      setTemplateMenuOpen(false);
+    }, true);
     // The paper remains the primary editing surface. A click on its open
     // whitespace should return it to a quiet reading state, rather than
     // leaving a formerly selected block visually pinned in place.
@@ -527,13 +586,16 @@
       setActionMenuOpen(false);
       setTemplateMenuOpen(false);
       closeOutlineMenu();
+      closeProjectMoveMenu();
       if (!els.modal.hidden) closeImport();
       if (!els.confirmModal.hidden) closeConfirm();
       if (!els.newProjectModal.hidden) closeNewProject();
+      if (!els.projectModal.hidden) closeProjectModal();
     });
     app.querySelector("#pnTemplatesTab").addEventListener("click", () => setSidebarTab("templates"));
     app.querySelector("#pnOutlineTab").addEventListener("click", () => setSidebarTab("outline"));
     app.querySelector("#pnNew").addEventListener("click", () => chooseNewDocument());
+    app.querySelector("#pnNewContainer").addEventListener("click", openProjectModal);
     app.querySelector("#pnSaveTemplate").addEventListener("click", () => { setTemplateMenuOpen(false); saveCurrentAsTemplate(); });
     app.querySelector("#pnImport").addEventListener("click", () => openImport("document"));
     app.querySelector("#pnImportEditableHtml").addEventListener("click", () => openImport("editable-html"));
@@ -555,6 +617,15 @@
       if (event.key !== "Enter" || isComposingInput(event)) return;
       event.preventDefault();
       createNewProject();
+    });
+    els.projectCancel.addEventListener("click", closeProjectModal);
+    els.projectCreate.addEventListener("click", createProjectContainer);
+    els.projectModal.addEventListener("click", (event) => { if (event.target === els.projectModal) closeProjectModal(); });
+    els.projectName.addEventListener("input", () => els.projectName.removeAttribute("aria-invalid"));
+    els.projectName.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || isComposingInput(event)) return;
+      event.preventDefault();
+      createProjectContainer();
     });
     els.undoButton.addEventListener("click", undoLastStructuralDelete);
     els.importConfirm.addEventListener("click", importFromDialog);
@@ -697,6 +768,12 @@
     els.templateMenu.hidden = !open;
     els.templateMenuToggle.setAttribute("aria-expanded", String(Boolean(open)));
   }
+  function closeDocumentMoreMenus(except) {
+    if (!els || !els.app) return;
+    els.app.querySelectorAll("details.pn-document-more[open]").forEach((menu) => {
+      if (menu !== except) menu.open = false;
+    });
+  }
   function openImport(mode) {
     if (editableHtmlImportInProgress) return;
     setActionMenuOpen(false);
@@ -810,7 +887,7 @@
     // Confirmation/new-project sheets sit above the import sheet if a flow
     // ever opens them consecutively, so trap focus in the visually topmost
     // dialog rather than whichever backdrop appears first in the DOM.
-    return [els.newProjectModal, els.confirmModal, els.modal].find((modal) => modal && !modal.hidden) || null;
+    return [els.projectModal, els.newProjectModal, els.confirmModal, els.modal].find((modal) => modal && !modal.hidden) || null;
   }
   function modalFocusableElements(modal) {
     if (!modal) return [];
@@ -1157,13 +1234,26 @@
     return editableHtmlLineageRepair;
   }
   async function refreshDocuments() {
-    const library = typeof Store.listDocumentLibrary === "function"
-      ? await Store.listDocumentLibrary()
-      : { records: await Store.listDocuments(), backend: "unknown" };
+    const [library, projectLibrary] = await Promise.all([
+      typeof Store.listDocumentLibrary === "function"
+        ? Store.listDocumentLibrary()
+        : Promise.resolve({ records: Store.listDocuments ? Store.listDocuments() : [], backend: "unknown" }),
+      typeof Store.listProjects === "function"
+        ? Store.listProjects()
+        : Promise.resolve({ projects: [], backend: "unknown" })
+    ]);
     documents = Array.isArray(library && library.records) ? library.records : [];
+    projects = Array.isArray(projectLibrary && projectLibrary.projects) ? projectLibrary.projects : [];
+    projectRevisions.clear();
+    projects.forEach((project) => projectRevisions.set(project.id, Number.isSafeInteger(project.revision) ? project.revision : 0));
+    if (activeProjectId && !projects.some((project) => project.id === activeProjectId)) activeProjectId = "";
+    if (projectLandingId && !projects.some((project) => project.id === projectLandingId)) projectLandingId = "";
+    renderProjectLibrary();
     renderDocumentLibrary();
+    renderProjectLanding();
     if (library && library.backend !== "failed") await repairDuplicateEditableHtmlLineages();
-    return library && library.backend || "failed";
+    return library && library.backend !== "failed" && projectLibrary && projectLibrary.backend !== "failed"
+      ? library.backend : "failed";
   }
   function currentTemplateId() {
     if (templateById(selectedTemplateId)) return selectedTemplateId;
@@ -1228,43 +1318,225 @@
     const titleName = String(title && title.content || "").trim();
     return portableName || titleName || tr("未命名文档", "Untitled document");
   }
-  function renderDocumentLibrary() {
-    if (!els.documents) return;
-    els.documents.innerHTML = "";
-    if (!documents.length) {
-      els.documents.appendChild(element("p", { class: "pn-library-empty" }, tr("还没有其他文档。", "No other documents yet.")));
+  function localProjectMembership(record) {
+    const position = Number(record && record.projectPosition);
+    return {
+      projectId: String(record && record.projectId || "").trim(),
+      projectGroup: String(record && record.projectGroup || "").trim(),
+      projectPinned: Boolean(record && record.projectPinned),
+      projectPosition: Number.isFinite(position) && position >= 0 ? position : 0
+    };
+  }
+  function projectDocumentOrder(first, second) {
+    // Project navigation follows work that changed, not a manual queue or
+    // reading history. Opening only updates lastOpenedAt, which is never used
+    // here, so it cannot move a document within its Project.
+    const recency = String(second.updatedAt || second.createdAt || "").localeCompare(String(first.updatedAt || first.createdAt || ""));
+    if (recency) return recency;
+    return documentName(first).localeCompare(documentName(second)) || String(first.id || "").localeCompare(String(second.id || ""));
+  }
+  function projectById(projectId) { return projects.find((project) => project && project.id === projectId) || null; }
+  function projectDocuments(projectId) {
+    return documents.filter((record) => localProjectMembership(record).projectId === projectId).sort(projectDocumentOrder);
+  }
+  function projectGroupLabel(group) {
+    const labels = {
+      Main: tr("主线", "Main"), Research: tr("研究", "Research"),
+      Experiments: tr("实验", "Experiments"), Archive: tr("归档", "Archive")
+    };
+    return labels[group] || tr("文档", "Documents");
+  }
+  function projectGroupBuckets(records) {
+    const buckets = new Map();
+    records.forEach((record) => {
+      const group = localProjectMembership(record).projectGroup;
+      const bucket = buckets.get(group) || [];
+      bucket.push(record);
+      buckets.set(group, bucket);
+    });
+    return Array.from(buckets.entries()).sort(([first], [second]) => {
+      if (!first) return -1;
+      if (!second) return 1;
+      return first.localeCompare(second);
+    });
+  }
+  function renderProjectLibrary() {
+    if (!els.projects) return;
+    closeProjectMoveMenu();
+    els.projects.innerHTML = "";
+    if (!projects.length) {
+      els.projects.appendChild(element("p", { class: "pn-library-empty" }, tr("还没有项目。", "No projects yet.")));
       return;
     }
-    documents.forEach((record) => {
-      const row = element("div", { class: "pn-document-item" + (record.id === currentDocumentId ? " is-active" : ""), role: "listitem" });
-      row.dataset.documentId = record.id;
-      if (renamingDocumentId === record.id) {
-        const rename = element("input", { class: "pn-document-rename", type: "text", value: renameDrafts.has(record.id) ? renameDrafts.get(record.id) : documentName(record), "aria-label": tr("重命名文档", "Rename document") });
-        const save = () => finishDocumentRename(record.id, rename.value);
-        rename.addEventListener("input", () => renameDrafts.set(record.id, rename.value));
-        rename.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" && !isComposingInput(event)) { event.preventDefault(); save(); }
-          if (event.key === "Escape") { event.preventDefault(); renameDrafts.delete(record.id); renamingDocumentId = ""; renderDocumentLibrary(); }
-        });
-        row.append(rename, button(tr("保存", "Save"), "pn-document-rename-save", save), button(tr("取消", "Cancel"), "pn-document-rename-cancel", () => { renameDrafts.delete(record.id); renamingDocumentId = ""; renderDocumentLibrary(); }));
-        els.documents.appendChild(row);
-        root.requestAnimationFrame(() => rename.focus());
-        return;
-      }
-      const open = button(documentName(record), "pn-document-open", () => openLibraryDocument(record.id), documentName(record));
-      open.setAttribute("aria-current", String(record.id === currentDocumentId));
-      const actions = element("details", { class: "pn-document-more" });
-      actions.appendChild(element("summary", { class: "pn-document-more-trigger", "aria-label": tr("文档操作", "Document actions") }, "•••"));
+    projects.forEach((project) => {
+      const projectId = project.id;
+      // A Project landing page and a document row are alternative selections.
+      // `activeProjectId` remains the creation/import context, but must never
+      // make the parent Project look selected alongside its open document.
+      const projectSelected = projectId === projectLandingId;
+      const row = element("section", { class: "pn-project-item" + (projectSelected ? " is-active" : ""), role: "listitem" });
+      const heading = element("div", { class: "pn-project-heading" });
+      const open = button(project.name, "pn-project-open", () => showProjectLanding(projectId), project.name);
+      open.setAttribute("aria-current", String(projectSelected));
+      const actions = element("details", { class: "pn-document-more pn-project-more" });
+      actions.appendChild(element("summary", { class: "pn-document-more-trigger", "aria-label": tr("项目操作", "Project actions") }, "•••"));
       const menu = element("div", { class: "pn-document-more-menu" });
       menu.append(
-        button(tr("重命名", "Rename"), "pn-document-more-item", () => { renameDrafts.set(record.id, documentName(record)); renamingDocumentId = record.id; renderDocumentLibrary(); }),
-        button(tr("制作副本", "Duplicate"), "pn-document-more-item", () => duplicateLibraryDocument(record.id)),
-        button(tr("删除文档", "Delete document"), "pn-document-more-item pn-document-danger", () => requestDeleteLibraryDocument(record.id))
+        button(tr("重命名", "Rename"), "pn-document-more-item", () => requestRenameProject(project)),
+        button(tr("查看概览", "View overview"), "pn-document-more-item", () => showProjectLanding(projectId))
       );
       actions.appendChild(menu);
-      row.append(open, actions);
-      els.documents.appendChild(row);
+      heading.append(open, actions);
+      row.appendChild(heading);
+      const projectRecords = projectDocuments(projectId);
+      if (!projectRecords.length) {
+        row.appendChild(element("p", { class: "pn-library-empty pn-project-empty" }, tr("还没有文档。", "No documents yet.")));
+      } else {
+        projectGroupBuckets(projectRecords).forEach(([group, records]) => {
+          const groupNode = element("div", { class: "pn-project-group" });
+          if (group || projectRecords.some((record) => localProjectMembership(record).projectGroup)) groupNode.appendChild(element("div", { class: "pn-library-subheading" }, projectGroupLabel(group)));
+          records.forEach((record) => groupNode.appendChild(renderDocumentRow(record)));
+          row.appendChild(groupNode);
+        });
+      }
+      els.projects.appendChild(row);
     });
+  }
+  function renderDocumentRow(record) {
+    const documentSelected = !projectLandingId && record.id === currentDocumentId;
+    const row = element("div", { class: "pn-document-item" + (documentSelected ? " is-active" : ""), role: "listitem" });
+    row.dataset.documentId = record.id;
+    if (renamingDocumentId === record.id) {
+      const rename = element("input", { class: "pn-document-rename", type: "text", value: renameDrafts.has(record.id) ? renameDrafts.get(record.id) : documentName(record), "aria-label": tr("重命名文档", "Rename document") });
+      const save = () => finishDocumentRename(record.id, rename.value);
+      rename.addEventListener("input", () => renameDrafts.set(record.id, rename.value));
+      rename.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !isComposingInput(event)) { event.preventDefault(); save(); }
+        if (event.key === "Escape") { event.preventDefault(); renameDrafts.delete(record.id); renamingDocumentId = ""; renderProjectLibrary(); renderDocumentLibrary(); }
+      });
+      row.append(rename, button(tr("保存", "Save"), "pn-document-rename-save", save), button(tr("取消", "Cancel"), "pn-document-rename-cancel", () => { renameDrafts.delete(record.id); renamingDocumentId = ""; renderProjectLibrary(); renderDocumentLibrary(); }));
+      root.requestAnimationFrame(() => rename.focus());
+      return row;
+    }
+    const open = button(documentName(record), "pn-document-open", () => openLibraryDocument(record.id), documentName(record));
+    open.setAttribute("aria-current", String(documentSelected));
+    const actions = element("details", { class: "pn-document-more" });
+    actions.appendChild(element("summary", { class: "pn-document-more-trigger", "aria-label": tr("文档操作", "Document actions") }, "•••"));
+    const menu = element("div", { class: "pn-document-more-menu" });
+    const menuItems = [
+      button(tr("重命名", "Rename"), "pn-document-more-item", () => { renameDrafts.set(record.id, documentName(record)); renamingDocumentId = record.id; renderProjectLibrary(); renderDocumentLibrary(); }),
+      button(tr("复制", "Copy"), "pn-document-more-item", () => duplicateLibraryDocument(record.id)),
+      projectMoveTrigger(record),
+      button(tr("删除文档", "Delete document"), "pn-document-more-item pn-document-danger", () => requestDeleteLibraryDocument(record.id))
+    ].filter(Boolean);
+    menu.append(...menuItems);
+    actions.appendChild(menu);
+    row.append(open, actions);
+    return row;
+  }
+  function projectMoveTrigger(record) {
+    const trigger = button("", "pn-document-more-item pn-document-more-project-trigger", () => toggleProjectMoveMenu(record, trigger));
+    trigger.setAttribute("aria-haspopup", "menu");
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.append(
+      element("span", {}, tr("移动至项目", "Move to project")),
+      element("span", { class: "pn-document-more-project-arrow", "aria-hidden": "true" }, "›")
+    );
+    return trigger;
+  }
+  function closeProjectMoveMenu() {
+    if (!els || !els.projectMoveMenu) return;
+    els.projectMoveMenu.hidden = true;
+    els.projectMoveMenu.replaceChildren();
+    if (projectMoveAnchor) projectMoveAnchor.setAttribute("aria-expanded", "false");
+    projectMoveAnchor = null;
+  }
+  function toggleProjectMoveMenu(record, anchor) {
+    if (!record || !anchor || !els.projectMoveMenu) return;
+    if (!els.projectMoveMenu.hidden && projectMoveAnchor === anchor) {
+      closeProjectMoveMenu();
+      return;
+    }
+    const owner = anchor.closest ? anchor.closest("details.pn-document-more") : null;
+    closeDocumentMoreMenus(owner);
+    closeProjectMoveMenu();
+    closeOutlineMenu();
+    setActionMenuOpen(false);
+    setTemplateMenuOpen(false);
+    const membership = localProjectMembership(record);
+    const menu = els.projectMoveMenu;
+    if (membership.projectId) menu.appendChild(button(tr("移出项目", "Remove from project"), "pn-document-more-item", () => moveDocumentDirect(record.id, "")));
+    const available = projects.filter((project) => project && project.id !== membership.projectId);
+    if (!available.length) {
+      menu.appendChild(element("p", { class: "pn-document-more-project-empty" }, tr("没有其他可用项目。", "No other available projects.")));
+    } else {
+      available.forEach((project) => menu.appendChild(button(project.name, "pn-document-more-item pn-document-more-project-choice", () => moveDocumentDirect(record.id, project.id), project.name)));
+    }
+    const anchorBox = anchor.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(anchorBox.right + 4, root.innerWidth - 238)) + "px";
+    menu.style.top = Math.max(8, anchorBox.top - 4) + "px";
+    menu.hidden = false;
+    projectMoveAnchor = anchor;
+    anchor.setAttribute("aria-expanded", "true");
+    const menuBox = menu.getBoundingClientRect();
+    if (menuBox.right > root.innerWidth - 8) menu.style.left = Math.max(8, anchorBox.left - menuBox.width - 4) + "px";
+    if (menuBox.bottom > root.innerHeight - 8) menu.style.top = Math.max(8, root.innerHeight - menuBox.height - 8) + "px";
+  }
+  function renderDocumentLibrary() {
+    if (!els.documents) return;
+    closeProjectMoveMenu();
+    els.documents.innerHTML = "";
+    // A stale local membership must never make a document disappear from the
+    // navigator. Treat an unknown project ID as unfiled until the author
+    // deliberately moves it again.
+    const unfiled = documents.filter((record) => {
+      const projectId = localProjectMembership(record).projectId;
+      return !projectId || !projectById(projectId);
+    });
+    if (!unfiled.length) {
+      els.documents.appendChild(element("p", { class: "pn-library-empty" }, projects.length ? tr("没有未归属文档。", "No unfiled documents.") : tr("还没有其他文档。", "No other documents yet.")));
+      return;
+    }
+    unfiled.forEach((record) => els.documents.appendChild(renderDocumentRow(record)));
+  }
+  function renderProjectLanding() {
+    if (!els.projectLanding || !els.docPage) return;
+    const project = projectById(projectLandingId);
+    const open = Boolean(project);
+    els.projectLanding.hidden = !open;
+    els.docPage.hidden = open;
+    if (!open) return;
+    const records = projectDocuments(project.id);
+    const recent = records.slice(0, 5);
+    const contents = [
+      element("p", { class: "pn-project-landing-kicker" }, tr("项目概览", "PROJECT OVERVIEW")),
+      element("h1", { class: "pn-project-landing-title" }, project.name),
+      element("p", { class: "pn-project-landing-summary" }, tr(
+        records.length + " 份文档，按最近编辑排序。项目归属仅保存在本设备，不会进入 Proofnote 文件或可编辑 HTML。",
+        records.length + " document" + (records.length === 1 ? "" : "s") + ", ordered by most recent edit. Project membership stays on this device; it is never written into a Proofnote file or editable HTML."
+      )),
+      button(tr("＋ 新建文档", "+ New document"), "pn-project-landing-new", () => chooseNewDocument()),
+      projectLandingSection(tr("最近编辑", "Recent"), recent)
+    ].filter(Boolean);
+    els.projectLanding.replaceChildren(...contents);
+  }
+  function projectLandingSection(title, records) {
+    const section = element("section", { class: "pn-project-landing-section" });
+    section.appendChild(element("h2", {}, title));
+    if (!records.length) {
+      section.appendChild(element("p", { class: "pn-library-empty" }, tr("还没有文档。", "No documents yet.")));
+      return section;
+    }
+    const list = element("div", { class: "pn-project-landing-list" });
+    records.forEach((record) => {
+      const row = button("", "pn-project-landing-document", () => openLibraryDocument(record.id), documentName(record));
+      row.append(element("span", { class: "pn-project-landing-document-name" }, documentName(record)));
+      const membership = localProjectMembership(record);
+      row.append(element("span", { class: "pn-project-landing-document-meta" }, membership.projectGroup ? projectGroupLabel(membership.projectGroup) : tr("文档", "Document")));
+      list.appendChild(row);
+    });
+    section.appendChild(list);
+    return section;
   }
   function templateById(templateId) { return templates.find((template) => template.template.id === templateId); }
   async function activateDocument(record, options) {
@@ -1272,6 +1544,8 @@
     documentGeneration += 1;
     clearStructuralUndo();
     currentDocumentId = record.id;
+    projectLandingId = "";
+    activeProjectId = localProjectMembership(record).projectId;
     documentRevisions.set(record.id, Number.isSafeInteger(record.revision) ? record.revision : 0);
     restoreOutlineCollapseState(record.id, false);
     selectedTemplateId = "";
@@ -1316,6 +1590,122 @@
     els.newProjectName.removeAttribute("aria-invalid");
     syncModalIsolation();
   }
+  function showProjectLanding(projectId) {
+    const project = projectById(projectId);
+    if (!project) return;
+    activeProjectId = project.id;
+    projectLandingId = project.id;
+    clearCanvasSelection();
+    setDetailOpen(false);
+    renderProjectLibrary();
+    renderDocumentLibrary();
+    renderProjectLanding();
+    root.requestAnimationFrame(syncCanvasScale);
+  }
+  function openProjectModal() {
+    els.projectName.value = "";
+    els.projectName.removeAttribute("aria-invalid");
+    els.projectModal.hidden = false;
+    syncModalIsolation();
+    root.requestAnimationFrame(() => els.projectName.focus());
+  }
+  function closeProjectModal() {
+    els.projectModal.hidden = true;
+    els.projectName.removeAttribute("aria-invalid");
+    syncModalIsolation();
+  }
+  function uniqueProjectName(requestedName, excludedId) {
+    const name = String(requestedName || "").trim();
+    const normalise = (value) => String(value || "").trim().toLocaleLowerCase();
+    const occupied = new Set(projects.filter((project) => project && project.id !== excludedId).map((project) => normalise(project.name)).filter(Boolean));
+    if (!occupied.has(normalise(name))) return name;
+    let suffix = 1;
+    let candidate = name + " (" + suffix + ")";
+    while (occupied.has(normalise(candidate))) {
+      suffix += 1;
+      candidate = name + " (" + suffix + ")";
+    }
+    return candidate;
+  }
+  async function createProjectContainer() {
+    const requestedName = String(els.projectName.value || "").trim();
+    if (!requestedName) {
+      els.projectName.setAttribute("aria-invalid", "true");
+      els.projectName.focus();
+      return;
+    }
+    return enqueueDocumentTransition(async (generation) => {
+      const saved = await saveActiveDocumentNow();
+      if (!saveSucceeded(saved)) { reportSaveFailure(saved); return; }
+      await refreshDocuments();
+      if (!transitionIsCurrent(generation)) return;
+      const created = await Store.createProject(uniqueProjectName(requestedName));
+      if (!created || !created.project || !saveSucceeded(created.backend)) {
+        setStatus(tr("新建项目失败。", "Could not create project."), "error");
+        return;
+      }
+      closeProjectModal();
+      projects.push(created.project);
+      projectRevisions.set(created.project.id, Number.isSafeInteger(created.project.revision) ? created.project.revision : 0);
+      if (!transitionIsCurrent(generation)) return;
+      showProjectLanding(created.project.id);
+      setStatus(tr("已新建项目", "New project created"), "saved");
+    });
+  }
+  async function requestRenameProject(project) {
+    if (!project) return;
+    const requested = root.prompt(tr("项目名称", "Project name"), project.name);
+    if (requested == null) return;
+    const nextName = String(requested || "").trim();
+    if (!nextName) return;
+    const renamed = await Store.renameProject(project.id, uniqueProjectName(nextName, project.id), projectRevisions.get(project.id));
+    if (!renamed || !renamed.project || !saveSucceeded(renamed.backend)) {
+      setStatus(renamed && renamed.backend === "conflict" ? tr("项目已在另一标签页更新；请刷新项目列表后重试。", "This project changed in another tab. Refresh the project list and try again.") : tr("重命名项目失败。", "Could not rename project."), "error");
+      return;
+    }
+    projectRevisions.set(project.id, Number.isSafeInteger(renamed.project.revision) ? renamed.project.revision : 0);
+    projects = projects.map((entry) => entry.id === project.id ? renamed.project : entry);
+    renderProjectLibrary();
+    renderProjectLanding();
+    setStatus(tr("项目已重命名", "Project renamed"), "saved");
+  }
+  async function updateDocumentProject(documentId, assignment) {
+    const record = documents.find((entry) => entry && entry.id === documentId);
+    if (!record || typeof Store.assignDocumentToProject !== "function") return false;
+    if (documentId === currentDocumentId) {
+      const saved = await saveActiveDocumentNow();
+      if (!saveSucceeded(saved)) { reportSaveFailure(saved); return false; }
+    }
+    const result = await Store.assignDocumentToProject(documentId, assignment, documentRevisions.get(documentId));
+    if (!result || !result.record || !saveSucceeded(result.backend)) {
+      setStatus(result && result.backend === "conflict" ? tr("文档已在另一标签页更新；请刷新后再整理。", "This document changed in another tab. Refresh before organizing it.") : tr("无法更新文档项目归属。", "Could not update the document’s project membership."), "error");
+      return false;
+    }
+    documentRevisions.set(documentId, Number.isSafeInteger(result.record.revision) ? result.record.revision : 0);
+    documents = documents.map((entry) => entry.id === documentId ? result.record : entry);
+    if (documentId === currentDocumentId) activeProjectId = localProjectMembership(result.record).projectId;
+    renderProjectLibrary();
+    renderDocumentLibrary();
+    renderProjectLanding();
+    return true;
+  }
+  async function moveDocumentDirect(documentId, projectId) {
+    const record = documents.find((entry) => entry && entry.id === documentId);
+    const destination = String(projectId || "").trim();
+    if (!record || localProjectMembership(record).projectId === destination) return;
+    const project = destination ? projectById(destination) : null;
+    if (destination && !project) {
+      setStatus(tr("目标项目已不存在；请刷新后重试。", "That Project no longer exists. Refresh and try again."), "error");
+      return;
+    }
+    const moved = await updateDocumentProject(documentId, {
+      projectId: destination,
+      projectGroup: "",
+      projectPinned: false
+    });
+    if (!moved) return;
+    setStatus(destination ? tr("文档已移至“" + project.name + "”", "Document moved to “" + project.name + "”") : tr("文档已移出项目", "Document removed from Project"), "saved");
+  }
   function uniqueLibraryDocumentName(requestedName, excludedId) {
     const name = String(requestedName || "").trim();
     const normalise = (value) => String(value || "").trim().toLocaleLowerCase();
@@ -1358,9 +1748,9 @@
       ]
     });
     if (!transitionIsCurrent(generation)) return;
-    const created = await Store.createDocument(project, { makeCurrent: false });
+    const created = await Store.createDocument(project, { makeCurrent: false, projectId: activeProjectId || "" });
     if (!created || !created.record || created.backend === "failed") {
-      setStatus(tr("新建项目失败。", "Could not create project."), "error");
+      setStatus(tr("新建文档失败。", "Could not create document."), "error");
       return;
     }
     const finalSaved = await saveActiveDocumentNow();
@@ -1368,7 +1758,7 @@
     if (!transitionIsCurrent(generation)) return;
     closeNewProject();
     if (!await selectAndActivateDocument(created.record, generation, { status: false })) return;
-    setStatus(tr("已新建项目", "New project created"), "saved");
+    setStatus(tr("已新建文档", "New document created"), "saved");
     });
   }
   function chooseNewDocument() { openNewProject(); }
@@ -1397,7 +1787,7 @@
     // collisions before the document receives a local identity.
     if (document.metadata.documentType === "Project") prepareImportedProjectDocument(document, null);
     if (!transitionIsCurrent(generation)) return;
-    const created = await Store.createDocument(document, { makeCurrent: false });
+    const created = await Store.createDocument(document, { makeCurrent: false, projectId: activeProjectId || "" });
     if (!created || !created.record || created.backend === "failed") { setStatus(tr("无法从模板创建文档。", "Could not create a document from this template."), "error"); return; }
     const finalSaved = await saveActiveDocumentNow();
     if (!saveSucceeded(finalSaved)) { reportSaveFailure(finalSaved); return; }
@@ -1410,7 +1800,10 @@
     });
   }
   async function openLibraryDocument(id) {
-    if (!id || id === currentDocumentId) return;
+    // A Project landing page deliberately retains the previously open document
+    // as the active record.  That document must still be reopenable from the
+    // landing tree; otherwise its row is incorrectly treated as a no-op.
+    if (!id || (id === currentDocumentId && !projectLandingId)) return;
     return enqueueDocumentTransition(async (generation) => {
     const saved = await saveActiveDocumentNow();
     if (!saveSucceeded(saved)) { reportSaveFailure(saved); return; }
@@ -1925,6 +2318,10 @@
   }
   function openOutlineMenu(node, position) {
     if (!node || !els.outlineMenu) return;
+    closeDocumentMoreMenus();
+    closeProjectMoveMenu();
+    setActionMenuOpen(false);
+    setTemplateMenuOpen(false);
     outlineMenuNodeId = node.id;
     els.outlineMenu.innerHTML = "";
     populateOutlineMenu(node);
@@ -4843,7 +5240,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       setEditableHtmlImportBusy(true);
       setEditableHtmlImportSummary(tr("正在创建新文档；请稍候。", "Creating a new document; please wait."));
       try {
-        const created = await Store.createDocument(prepared.document, { makeCurrent: false });
+        const created = await Store.createDocument(prepared.document, { makeCurrent: false, projectId: activeProjectId || "" });
         if (!created || !created.record || created.backend === "failed") {
           showImportMessage(tr("可编辑 HTML 无法保存到此设备。", "The editable HTML could not be saved on this device."), "error");
           return;
@@ -5116,7 +5513,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     }
     if (!confirmImportWarnings(warnings, tr("导入文档需要确认", "Document import needs confirmation"))) return;
     if (!transitionIsCurrent(generation)) return;
-    const created = await Store.createDocument(next, { makeCurrent: false });
+    const created = await Store.createDocument(next, { makeCurrent: false, projectId: activeProjectId || "" });
     if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
     const finalSaved = await saveActiveDocumentNow();
     if (!saveSucceeded(finalSaved)) { showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error"); return; }

@@ -44,6 +44,16 @@ The Outline is a structural view of the document, not a second copy of it. Add
 peer sections and subsections, collapse a branch, move or duplicate a complete
 subtree, and remove an entire section only with an explicit confirmation.
 
+### Organise a research project without turning it into an IDE
+
+Projects are device-local containers for multiple independent Proofnote
+documents. A Project has a compact landing page, a document tree, one optional
+level of groups, and local pin/reorder controls. Move a document between
+Projects without changing its portable JSON, revision lineage, Editable HTML
+identity, title, or export. This keeps the lightweight “open and write” flow
+for a single document while giving a research effort a calm home for its main
+proof, experiments, audits, and archive.
+
 ### Work with AI without trusting it blindly
 
 Copy a format-aware AI brief, then import one strict `proofnote-document` JSON
@@ -73,13 +83,13 @@ presentation-only deliverable.
 | **Research structure** | Built-in Blank Document, Proof Note, Research Note, Lab Report, and Essay / Report templates; reusable custom templates; Project documents with editable running headers and footer. |
 | **Mathematics and code** | Inline and display KaTeX; syntax-labelled code blocks; restrained Prism rendering in standalone HTML exports. |
 | **AI import** | A schema-backed JSON format, actionable syntax and schema diagnostics, duplicate-key checks, table-shape protection, and LaTeX escape guidance. |
-| **Local documents** | Separate recent-document library, rename, duplicate, delete, import-as-new-document, revision protection, and local template storage. |
+| **Local documents** | Separate recent-document library; device-local Projects with landing pages, groups, pinning and reordering; rename, duplicate, delete, import-as-new-document, revision protection, and local template storage. |
 | **Portable output** | Presentation HTML, strict re-importable Editable HTML, a Proofnote JSON backup, and explicit Solution Note 1.0 compatibility export. |
 | **Language and privacy** | Chinese and English UI; no account or backend required; remote images require an explicit per-image approval. |
 
 ## Typical workflow
 
-1. Start a Project or choose a built-in template.
+1. Start a document, choose a built-in template, or create a local Project container for related documents.
 2. Write on the page, or use **Copy AI format** to prepare a structured JSON
    import prompt.
 3. Import as a new document. Proofnote tells you precisely what to repair if
@@ -103,6 +113,8 @@ Proofnote is deliberately conservative at document boundaries:
   `trust: false`.
 - Local images are stored in the document and embedded in standalone HTML.
   Remote images stay unloaded until the reader approves the exact URL.
+- Project membership, groups, pinning, and ordering are local library metadata.
+  They never enter a portable document, template, backup, or Editable HTML.
 - Editable HTML is a strict, versioned Proofnote protocol—not a generic HTML
   importer. Proofnote reconstructs only explicit semantic fields marked by the
   protocol. CSS, classes, non-semantic wrappers, and rendered KaTeX are
