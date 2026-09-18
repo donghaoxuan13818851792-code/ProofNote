@@ -71,6 +71,142 @@ and 20MB of aggregate text. Proofnote refuses to export a backup that fails
 these runtime checks or exceeds the 25MB import-size ceiling, so a downloaded
 `.proofnote.json` remains importable by the same version of Proofnote.
 
+## Proofnote Editable HTML 2
+
+Proofnote has two intentionally different HTML exports:
+
+- **HTML (presentation)** is a standalone reading and printing artifact. It
+  contains rendered typography, KaTeX output, code highlighting, and local
+  images, but no Editable HTML protocol. It cannot be re-imported as a
+  Proofnote document.
+- **Editable HTML 2** is a strict, single-file *semantic* round-trip
+  protocol. It contains a baseline canonical Proofnote document and a visible,
+  protocol-marked semantic representation of its current content. Use it when
+  the file needs to be edited outside Proofnote and then return for further
+  editing.
+
+Editable HTML is not a generic HTML importer and is not a visual round-trip
+format. Proofnote never executes an imported file and never infers document
+structure from arbitrary tags, classes, page layout, or KaTeX output. It reads
+only the dedicated version-2 protocol and then applies the normal JSON, schema,
+resource, image, and remote-image-approval boundaries before content reaches
+the editor.
+
+### Scope: semantic content, not arbitrary visual HTML
+
+The canonical source of truth remains a `proofnote-document`. Editable HTML
+preserves and reconciles the semantic fields that Proofnote owns:
+
+- block identity and order;
+- supported block type and its schema fields, including heading level,
+  callout kind, semantic kind/appearance, table columns/rows/header, list
+  ordering, code language, image source metadata, and document metadata; and
+- text and explicit raw mathematics source.
+
+It deliberately does **not** preserve arbitrary visual edits. CSS rules,
+classes, font choices, layout wrappers, margins, and other presentation-only
+markup do not enter the canonical document. They may change or disappear
+between imports. The next export regenerates Proofnote's own CSS, classes, and
+derived rendering.
+
+Likewise, a KaTeX preview is derived output, not source. Equations and inline
+math retain an explicit protocol field containing their raw TeX; import ignores
+the rendered KaTeX subtree and regenerates it from that source. Code previews
+and other generated reader markup follow the same principle.
+
+### Three protocol layers
+
+An Editable HTML 2 file has three related layers:
+
+1. **Protocol identity.** Required versioned metadata identifies the file as
+   `editable-html` version `2`, carries a non-secret Proofnote magic marker,
+   and identifies the portable document and baseline revision. The marker is a
+   file signature for recognition, not an authentication credential.
+2. **Embedded baseline.** One inert, versioned
+   `proofnote-editable-source` JSON carrier contains the canonical Proofnote
+   document from which the export was made. Its source integrity data protects
+   the baseline from accidental corruption.
+3. **Semantic HTML.** A unique protocol document root contains current visible
+   content. Stable `data-pn-block-id`, `data-pn-type`, and `data-pn-field`
+   attributes identify the canonical blocks and fields that may be reconciled.
+
+The source carrier is a baseline, not a hidden winner over external edits. On
+import Proofnote compares it with the current semantic HTML to construct the
+next canonical document. Each later Editable HTML export embeds that latest
+canonical revision as its next baseline, enabling repeated Proofnote → external
+editor → Proofnote cycles.
+
+### Semantic DOM rules
+
+Classes are never protocol data. A compatible external editor may add, remove,
+or rearrange non-semantic wrappers and may change CSS or classes, provided that
+the protocol's block/field relationships stay unique and unambiguous.
+
+For an existing block, its stable `data-pn-block-id` identifies the same
+canonical block regardless of its DOM position. Moving it changes ordering;
+omitting it requests deletion; editing an explicit field changes that field.
+External blocks use the protocol's external-ID namespace and receive a normal
+Proofnote block ID after a successful import. The importer rejects rather than
+guesses when it encounters any of the following:
+
+- duplicate, unknown, or invalid block IDs;
+- duplicate fields, missing required fields, unsupported field names, or a
+  field belonging to more than one block;
+- a field whose closest protocol block does not own it;
+- an unsupported block type or invalid schema value; or
+- an absent, duplicated, or malformed source carrier, protocol root, or
+  identity metadata.
+
+This deliberate strictness protects semantic meaning while still allowing
+ordinary HTML cleanup around the protocol fields.
+
+### Import outcomes and revision safety
+
+The importer reports one of four outcomes:
+
+| Outcome | Meaning | Available action |
+| --- | --- | --- |
+| **EXACT** | The generated file is unchanged and its baseline is current. | Import the canonical baseline, or replace the current document when its revision still matches. |
+| **RECOVERED** | The file changed, but the protocol still maps every semantic field clearly. | Review the recovered edits, insertions, deletions, moves, and warnings; then import or replace when current. |
+| **STALE** | The file is structurally valid but came from an older baseline than the local document. | Import as a new document or branch. It cannot silently replace newer local work. |
+| **INVALID** | The protocol, baseline, or semantic mapping cannot be trusted or reconstructed uniquely. | Repair or re-export the file; Proofnote will not guess. |
+
+A whole-file fingerprint is useful for the `EXACT` fast path and for deciding
+whether reconciliation is needed. It is **not** a digital signature or proof
+of origin. A fingerprint mismatch caused only by CSS, classes, wrappers, or
+derived preview markup is a `RECOVERED` result, not an error. Proofnote reports
+that no content changed and ignores those visual-only changes.
+
+When replacing the current document, Proofnote first creates a recovery copy
+and then uses revision-aware storage. A concurrent local change converts the
+operation to a stale/conflict outcome rather than overwriting it. **Import as
+new document** always keeps the currently open document untouched and assigns
+the imported copy a fresh Editable HTML lineage. This prevents a later export
+from that copy from being used to replace the source document. Library
+duplicates, template instances, and recovery copies receive the same lineage
+isolation; only an explicit replace continues an existing lineage. When an
+older library contains historical duplicate lineages, Proofnote retains one
+deterministic owner and forks the other records through revision-checked
+writes. If another tab prevents that repair from completing, replacement stays
+disabled until the collision is resolved.
+
+### Privacy, limits, and compatibility
+
+Because an Editable HTML file includes the baseline source—potentially raw
+code and TeX, hidden semantic body/notes, metadata, and embedded images—treat
+it like a project backup and share it only with people who should have that
+source. It is limited to 64MB; its embedded and reconstructed document must
+also meet the normal portable 25MB and runtime limits.
+
+Older Proofnote standalone HTML files are presentation-only. They can contain
+Proofnote-looking classes and rendered KaTeX, yet still lack the complete
+baseline and semantic mapping needed for reliable recovery. They are reported
+as unsupported presentation exports rather than reconstructed with lossy DOM
+inference. Where an older Editable HTML 1.0 source carrier is supported, it is
+an intact-source compatibility transport only; it does not provide the version-2
+semantic reconciliation workflow. Use the original `.proofnote.json` backup or
+export the document again as Editable HTML 2 to begin a durable round trip.
+
 ## Templates
 
 Templates use a separate `proofnote-template` envelope. A template contains a

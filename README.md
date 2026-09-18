@@ -54,9 +54,12 @@ blocking problem from a recoverable warning.
 ### Keep the source; share the result
 
 Every document stays in an on-device library backed by IndexedDB where
-available. Export a `.proofnote.json` backup to continue editing elsewhere, or
-export self-contained HTML with embedded typography, KaTeX output, code
-highlighting, and local images for reading, printing, or sharing.
+available. Export a `.proofnote.json` backup to continue editing elsewhere,
+export **HTML (presentation)** for reading and printing, or export **editable
+HTML** when one self-contained file needs to round-trip into Proofnote later.
+Editable HTML carries a baseline Proofnote source plus a protocol-marked
+semantic document surface, so it is intentionally more private than a
+presentation-only deliverable.
 
 <p align="center">
   <img src="docs/assets/proofnote-hero.png" width="820" alt="A standalone Proofnote research note with editorial typography, mathematics, sections, and a highlighted result">
@@ -71,7 +74,7 @@ highlighting, and local images for reading, printing, or sharing.
 | **Mathematics and code** | Inline and display KaTeX; syntax-labelled code blocks; restrained Prism rendering in standalone HTML exports. |
 | **AI import** | A schema-backed JSON format, actionable syntax and schema diagnostics, duplicate-key checks, table-shape protection, and LaTeX escape guidance. |
 | **Local documents** | Separate recent-document library, rename, duplicate, delete, import-as-new-document, revision protection, and local template storage. |
-| **Portable output** | Self-contained HTML, a re-importable Proofnote JSON backup, and explicit Solution Note 1.0 compatibility export. |
+| **Portable output** | Presentation HTML, strict re-importable Editable HTML, a Proofnote JSON backup, and explicit Solution Note 1.0 compatibility export. |
 | **Language and privacy** | Chinese and English UI; no account or backend required; remote images require an explicit per-image approval. |
 
 ## Typical workflow
@@ -83,8 +86,9 @@ highlighting, and local images for reading, printing, or sharing.
    the JSON, schema, table shape, or LaTeX serialization is unsafe.
 4. Use the Outline to shape the whole argument rather than rearranging isolated
    paragraphs.
-5. Export **HTML** for a polished deliverable and **Proofnote source** for a
-   durable, editable backup.
+5. Export **HTML (presentation)** for a polished deliverable, **Editable HTML**
+   for a single-file Proofnote round trip, and **Proofnote source** for a
+   durable editable backup.
 
 ## Data safety by design
 
@@ -99,6 +103,12 @@ Proofnote is deliberately conservative at document boundaries:
   `trust: false`.
 - Local images are stored in the document and embedded in standalone HTML.
   Remote images stay unloaded until the reader approves the exact URL.
+- Editable HTML is a strict, versioned Proofnote protocol—not a generic HTML
+  importer. Proofnote reconstructs only explicit semantic fields marked by the
+  protocol. CSS, classes, non-semantic wrappers, and rendered KaTeX are
+  presentation details: visual-only edits are ignored and regenerated on the
+  next export. Ambiguous, duplicated, cross-block, legacy, presentation-only,
+  or unrelated HTML is rejected rather than guessed.
 
 Read the full [format and storage contract](docs/document-format.md), the
 [JSON/LaTeX escaping guide](docs/escaping.md), and the
@@ -134,8 +144,62 @@ npm test
 | Format | Use it for |
 | --- | --- |
 | [`proofnote-document` 1.0](schema/proofnote-document-1.0.schema.json) | The native portable format for AI integrations, backups, templates, and further editing. |
-| Standalone HTML | A self-contained, presentation-ready document that retains Proofnote typography, KaTeX, code highlighting, and local images. |
+| HTML (presentation) | A self-contained, presentation-ready document that retains Proofnote typography, KaTeX, code highlighting, and local images. It deliberately has no editable source payload and cannot be re-imported. |
+| Proofnote Editable HTML 2 | A strict single-file semantic round-trip format. It includes a baseline canonical source and protocol-marked editable semantic content. It can recover supported external content edits, import them as a new document, or replace the current document with an automatic recovery copy when the revision is current. Do not share it where its complete source should stay private. |
 | [`solution-note` 1.0](schema/solution-note-1.0.schema.json) | Importing older Solution Notes and exporting a compatibility view when a collaborator still needs that format. |
+
+### Editable HTML is deliberately semantic
+
+Use **More exports → Export editable HTML (re-importable)**, then choose
+**Import editable HTML…** from the document menu when you want to continue
+editing that same document later. The importer accepts only the dedicated
+Proofnote Editable HTML 2 carrier; it does not execute a file or try to
+infer a document from arbitrary page markup.
+
+An editable export has a baseline canonical Proofnote document and a visible
+semantic surface whose stable `data-pn-block-id`, `data-pn-type`, and
+`data-pn-field` relationships identify supported content. Existing blocks can
+be edited, moved, or deleted; protocol-compliant external blocks can be added.
+Proofnote uses the baseline and those semantic fields to reconstruct a new
+canonical document. This supports a deliberate loop such as Proofnote → AI or
+external editor → Proofnote → new editable export.
+
+**Import as new document is intentionally a fork.** Proofnote gives the new
+local document a fresh Editable HTML lineage, so a later export from that copy
+cannot accidentally replace the source document. The same isolation applies
+to library duplicates, template instances, and automatic recovery copies.
+Use **Replace current document** only when you intentionally want to continue
+the same document lineage. On upgrade, Proofnote also separates any older
+local records that accidentally share a lineage; while a concurrent repair is
+unresolved, replacement stays disabled rather than risk crossing documents.
+
+The contract is semantic, not visual. CSS changes, class changes, harmless
+wrapper changes, and KaTeX or other rendered previews do not become document
+content. If they are the only external changes, import reports that no
+Proofnote content changed, accepts the file as recovered, and the next export
+uses Proofnote's own CSS and rendered output again. In contrast, heading
+levels, callout kinds, table structure, and other fields represented by the
+Proofnote schema remain canonical and round-trip normally.
+
+Proofnote refuses to guess when the protocol no longer identifies one clear
+document: duplicate or unknown block IDs, duplicate fields, fields belonging
+to the wrong block, unsupported block types, or malformed source/baseline data
+are invalid. A whole-file fingerprint is used to distinguish an unchanged
+export from a candidate that needs reconciliation; it is not a digital
+signature and a changed visual layer is not, by itself, an import failure.
+
+This distinction matters for older exports. A historical Proofnote `.html`
+file can look exactly like a Proofnote document but may contain only rendered
+HTML and KaTeX output—not the baseline and semantic protocol needed to recover
+its original block mapping, hidden semantic body, notes, metadata, and editor
+settings. Rendered or KaTeX fragments are insufficient for lossless recovery.
+Proofnote reports such a file as a presentation export instead of guessing and
+risking data loss.
+
+The earlier Editable HTML 1.0 carrier, where present, is retained only as a
+compatibility transport for its intact embedded source. It does not offer the
+version-2 semantic reconciliation workflow; export a document again to begin a
+version-2 round trip.
 
 ## Documentation
 
@@ -157,6 +221,7 @@ proofnote/
 ├── src/document-model.js         portable Document Format and migration model
 ├── src/document-store.js         IndexedDB-first document and template library
 ├── src/document-renderer.js      shared Markdown, KaTeX, and export rendering
+├── src/editable-html-protocol.js semantic Editable HTML 2 transport and reconciliation
 ├── src/document-editor.*         paper-first editor workspace and styles
 ├── src/doc-page.js               print-aware document page shell
 ├── schema/                       Proofnote and Solution Note schemas

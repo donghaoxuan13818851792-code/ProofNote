@@ -145,6 +145,28 @@ async function main() {
     JSON.stringify({ initial: corruptFallbackInitial, list: corruptFallbackList, stored: corruptFallbackValues.get("proofnote-document:library:v2") })
   );
 
+  // Protocol-specific local identity changes must be applied during the
+  // duplicate transaction on both persistence backends. This is how the
+  // editor ensures a copied/recovery document cannot later look like the
+  // source document to Editable HTML replacement.
+  const lineageFallbackValues = new Map();
+  const lineageFallbackWindow = { localStorage: memoryStorage(lineageFallbackValues) };
+  vm.runInNewContext(source, { window: lineageFallbackWindow, JSON, Promise, Date, Error, Math, Map, String, Object, Array, WeakSet });
+  const LineageFallback = lineageFallbackWindow.ProofnoteStore;
+  const fallbackLineageSource = await LineageFallback.createDocument({
+    metadata: { name: "Fallback lineage source" }, blocks: [],
+    compatibility: { proofnoteEditable: { documentId: "pn_doc_fallbacksource123456" } }
+  });
+  const forkLineage = (document) => {
+    const next = JSON.parse(JSON.stringify(document));
+    next.compatibility = Object.assign({}, next.compatibility, { proofnoteEditable: { documentId: "pn_doc_fallbackforked123456" } });
+    return next;
+  };
+  const fallbackLineageCopy = await LineageFallback.duplicateDocument(fallbackLineageSource.record.id, "Fallback lineage copy", {
+    makeCurrent: false,
+    transformDocument: forkLineage
+  });
+
   // Exercise the real IndexedDB upgrade and transaction path. The legacy v1
   // record intentionally has no local id in its value; it lived under the
   // `current-document` key in the old object store.
@@ -177,6 +199,29 @@ async function main() {
       && idbRecords.length === 2
       && !idbRecords.some((record) => record.id === "current-document"),
     JSON.stringify(idbRecords)
+  );
+
+  const indexedLineageSource = await IndexedLibrary.createDocument({
+    metadata: { name: "Indexed lineage source" }, blocks: [],
+    compatibility: { proofnoteEditable: { documentId: "pn_doc_indexedsource123456" } }
+  }, { makeCurrent: false });
+  const indexedLineageCopy = await IndexedLibrary.duplicateDocument(indexedLineageSource.record.id, "Indexed lineage copy", {
+    makeCurrent: false,
+    transformDocument: (document) => {
+      const next = JSON.parse(JSON.stringify(document));
+      next.compatibility = Object.assign({}, next.compatibility, { proofnoteEditable: { documentId: "pn_doc_indexedforked123456" } });
+      return next;
+    }
+  });
+  check(
+    "store-duplicate-applies-a-document-transform-in-both-fallback-and-indexeddb-transactions",
+    fallbackLineageSource && fallbackLineageCopy
+      && fallbackLineageSource.record.document.compatibility.proofnoteEditable.documentId === "pn_doc_fallbacksource123456"
+      && fallbackLineageCopy.record.document.compatibility.proofnoteEditable.documentId === "pn_doc_fallbackforked123456"
+      && indexedLineageSource && indexedLineageCopy
+      && indexedLineageSource.record.document.compatibility.proofnoteEditable.documentId === "pn_doc_indexedsource123456"
+      && indexedLineageCopy.record.document.compatibility.proofnoteEditable.documentId === "pn_doc_indexedforked123456",
+    JSON.stringify({ fallbackLineageSource, fallbackLineageCopy, indexedLineageSource, indexedLineageCopy })
   );
   const importedTemplate = {
     format: "proofnote-template", version: "1.0",
@@ -237,6 +282,27 @@ async function main() {
       && staleSave === "conflict"
       && concurrentRecord && concurrentRecord.document.metadata.name === "Saved by second tab",
     JSON.stringify({ newerSave, staleSave, concurrentRecord })
+  );
+  const otherCurrent = await SecondTab.createDocument({ metadata: { name: "Other selected document" }, blocks: [] }, { makeCurrent: false });
+  await SecondTab.setCurrentDocument(otherCurrent.record.id);
+  // Editable-HTML replacement must use the same compare-and-swap boundary as
+  // autosave: it keeps the local record ID, commits one new revision, and
+  // cannot overwrite a concurrent replacement with an old revision token.
+  // Its successful transaction also owns the current-document pointer, so a
+  // reload does not reopen a different tab's previously selected document.
+  const replacement = await SecondTab.replaceDocument(concurrentCreated.record.id, { metadata: { name: "Replaced from editable HTML" }, blocks: [] }, openedRevision + 1, { makeCurrent: true });
+  const staleReplacement = await FirstTab.replaceDocument(concurrentCreated.record.id, { metadata: { name: "Stale replacement must not win" }, blocks: [] }, openedRevision + 1);
+  const replacedRecord = (await FirstTab.listDocuments()).find((record) => record.id === concurrentCreated.record.id);
+  const currentAfterReplacement = await FirstTab.initialiseDocumentLibrary(() => ({ metadata: { name: "Unexpected seed" }, blocks: [] }));
+  check(
+    "store-editable-html-replacement-preserves-record-identity-current-selection-and-rejects-a-stale-revision",
+    replacement && replacement.backend === "indexeddb"
+      && replacement.record && replacement.record.id === concurrentCreated.record.id
+      && staleReplacement && staleReplacement.backend === "conflict"
+      && replacedRecord && replacedRecord.id === concurrentCreated.record.id
+      && replacedRecord.document.metadata.name === "Replaced from editable HTML"
+      && currentAfterReplacement && currentAfterReplacement.record && currentAfterReplacement.record.id === concurrentCreated.record.id,
+    JSON.stringify({ replacement, staleReplacement, replacedRecord, currentAfterReplacement })
   );
   const deletedConcurrent = await FirstTab.deleteDocument(concurrentCreated.record.id);
   const staleAfterDelete = await SecondTab.saveDocument(concurrentCreated.record.id, { metadata: { name: "Must not revive" }, blocks: [] }, openedRevision + 1);

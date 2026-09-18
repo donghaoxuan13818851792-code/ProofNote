@@ -10,7 +10,7 @@
   if (!Model || !Store || !Renderer || !LegacyBoundary) return;
 
   // Increment this small, user-facing version for each released workspace update.
-  const APP_VERSION = "v1.30";
+  const APP_VERSION = "v1.34";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Standalone equation", "独立公式"], ["code", "Code", "代码"],
@@ -105,6 +105,20 @@
   const SIDEBAR_MIN_WIDTH = 180;
   const SIDEBAR_MAX_WIDTH = 360;
   const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
+  // A self-contained editable HTML includes both the reader-facing document
+  // and an embedded portable source payload. It is necessarily larger than a
+  // `.proofnote.json`, but the embedded document itself remains subject to
+  // the same 25 MB portable boundary.
+  const MAX_EDITABLE_HTML_BYTES = 64 * 1024 * 1024;
+  const MAX_EDITABLE_HTML_SOURCE_BYTES = MAX_IMPORT_BYTES + 16 * 1024;
+  const EDITABLE_HTML_FORMAT = "proofnote-editable-html";
+  const EDITABLE_HTML_VERSION = "1.0";
+  const EDITABLE_HTML_SOURCE_ID = "proofnote-editable-source";
+  const EDITABLE_HTML_SOURCE_TYPE = "application/vnd.proofnote.editable-html+json";
+  // The full-file integrity check is calculated with this placeholder in
+  // place. It lets an importer detect edits to the visible presentation as
+  // well as edits to the embedded JSON, without a self-referential hash.
+  const EDITABLE_HTML_HASH_PLACEHOLDER = "0".repeat(64);
   // Prism grammars are intentionally optional publication polish. Do not let
   // a schema-valid but very large code sample turn HTML export into a long
   // synchronous regex task; the raw escaped source remains a faithful export.
@@ -124,6 +138,21 @@
   let persistenceAvailable = true;
   let importFileReadGeneration = 0;
   let importMode = "document";
+  // HTML is never inferred from the visible page. This is the only source
+  // accepted by the editable-HTML path after its envelope, checksum and
+  // document boundary have all passed.
+  let pendingEditableHtml = null;
+  // Older workspace versions could copy an Editable HTML replacement lineage
+  // into a second local record. Repair those historical collisions once they
+  // are observed, and keep a promise so concurrent library refreshes never
+  // run two competing repair passes.
+  let editableHtmlLineageRepair = null;
+  let editableHtmlLineageRepairNotice = null;
+  // An editable HTML commit is intentionally non-cancellable once its write
+  // phase starts. The sheet stays open but inert while it creates a new
+  // record or runs its recovery-copy + CAS transaction. This prevents a late
+  // close or file-picker event from making a committed import look cancelled.
+  let editableHtmlImportInProgress = false;
   // Recoverable normalisation notices are content decisions. Keep the import
   // sheet open and require a second, explicit action before committing them.
   let importWarningConfirmation = null;
@@ -329,10 +358,12 @@
           <div class="pn-action-menu" id="pnActionMenu" role="menu" aria-label="${tr("文档操作", "Document actions")}" hidden>
             <div class="pn-action-menu-label">${tr("文件", "File")}</div>
             <button class="pn-action-menu-item" id="pnImport" type="button" role="menuitem">${tr("导入 JSON", "Import JSON")}</button>
-            <button class="pn-action-menu-item" id="pnExportHtml" type="button" role="menuitem">${tr("导出 HTML", "Export HTML")}</button>
+            <button class="pn-action-menu-item" id="pnImportEditableHtml" type="button" role="menuitem">${tr("导入 Proofnote 可编辑 HTML…", "Import Proofnote editable HTML…")}</button>
+            <button class="pn-action-menu-item" id="pnExportHtml" type="button" role="menuitem">${tr("导出 HTML（展示版）", "Export HTML (presentation)")}</button>
             <div class="pn-action-menu-submenu-wrap">
               <button class="pn-action-menu-item pn-action-menu-submenu-trigger" id="pnExportMore" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="pnExportMoreMenu"><span>${tr("更多导出", "More exports")}</span><span class="pn-action-menu-arrow" aria-hidden="true">›</span></button>
               <div class="pn-action-menu pn-action-menu-submenu" id="pnExportMoreMenu" role="menu" aria-label="${tr("更多导出", "More exports")}" hidden>
+                <button class="pn-action-menu-item" id="pnExportEditableHtml" type="button" role="menuitem">${tr("导出 Proofnote 可编辑 HTML（可回导）", "Export Proofnote editable HTML (re-importable)")}</button>
                 <button class="pn-action-menu-item" id="pnExport" type="button" role="menuitem">${tr("备份项目（Proofnote 文件）", "Back up project (Proofnote file)")}</button>
               </div>
             </div>
@@ -398,7 +429,8 @@
           <div class="pn-modal-heading"><h2>${tr("导入 JSON", "Import JSON")}</h2><button type="button" class="pn-close" id="pnCloseImport" aria-label="${tr("关闭", "Close")}">×</button></div>
           <p class="pn-modal-copy">${tr("支持 Proofnote Document、用户模板和原有 Solution Note 1.0。Solution Note 会无损优先地迁移为可编辑 blocks。导入文档会新建一份文档，不会覆盖当前文档。", "Supports Proofnote Document, user templates, and Solution Note 1.0. Solution Notes are migrated into editable blocks. Importing creates a new document and never replaces the current one.")}</p>
           <textarea class="input pn-import-text" id="pnImportText" rows="10" placeholder='{ "format": "proofnote-document", ... }'></textarea>
-          <div class="pn-actions"><label class="btn btn-secondary pn-file-label">${tr("选择文件", "Choose file")}<input id="pnImportFile" type="file" accept="application/json" hidden></label><button class="btn btn-primary" id="pnConfirmImport" type="button">${tr("导入为新文档", "Import as new document")}</button></div>
+          <p class="pn-import-editable-summary" id="pnEditableHtmlSummary" role="status" aria-live="polite" hidden></p>
+          <div class="pn-actions"><button class="btn btn-secondary pn-file-label" id="pnImportFileTrigger" type="button"><span id="pnImportFileLabel">${tr("选择文件", "Choose file")}</span></button><input id="pnImportFile" type="file" accept="application/json" hidden><button class="btn btn-primary" id="pnConfirmImport" type="button">${tr("导入为新文档", "Import as new document")}</button><button class="btn btn-danger" id="pnReplaceImport" type="button" hidden>${tr("覆盖当前文档…", "Replace current document…")}</button></div>
           <section id="pnImportReport" class="pn-import-report" role="status" aria-live="polite"></section>
         </section>
       </div>
@@ -425,7 +457,7 @@
     els = {
       app, utility: app.querySelector("#pnUtility"), utilityToggle: app.querySelector("#pnUtilityToggle"), sidebarResize: app.querySelector("#pnSidebarResize"), detail: app.querySelector("#pnDetail"), detailClose: app.querySelector("#pnCloseInspector"), actionToggle: app.querySelector("#pnActionsToggle"), actionMenu: app.querySelector("#pnActionMenu"), exportMore: app.querySelector("#pnExportMore"), exportMoreMenu: app.querySelector("#pnExportMoreMenu"), templateMenuToggle: app.querySelector("#pnTemplateMenuToggle"), templateMenu: app.querySelector("#pnTemplateMenu"), templates: app.querySelector("#pnTemplates"), documents: app.querySelector("#pnDocuments"), outlineCount: app.querySelector("#pnOutlineCount"), status: app.querySelector("#pnStatus"),
       outline: app.querySelector("#pnOutline"), canvasPane: app.querySelector(".pn-canvas-pane"), docPage: app.querySelector("#pnDocPage"), canvas: app.querySelector("#pnCanvas"), inspector: app.querySelector("#pnInspector"), inspectorTopLabel: app.querySelector("#pnInspectorTopLabel"), pageHeader: app.querySelector("#pnPageHeader"), footer: app.querySelector("#pnFooterName"), footerStatus: app.querySelector("#pnFooterStatus"), modal: app.querySelector("#pnImportModal"), confirmModal: app.querySelector("#pnConfirmModal"), confirmTitle: app.querySelector("#pnConfirmTitle"), confirmCopy: app.querySelector("#pnConfirmCopy"), confirmCancel: app.querySelector("#pnConfirmCancel"), confirmAccept: app.querySelector("#pnConfirmAccept"), newProjectModal: app.querySelector("#pnNewProjectModal"), newProjectName: app.querySelector("#pnNewProjectName"), newProjectCancel: app.querySelector("#pnNewProjectCancel"), newProjectCreate: app.querySelector("#pnCreateProject"),
-      importText: app.querySelector("#pnImportText"), importFile: app.querySelector("#pnImportFile"), importConfirm: app.querySelector("#pnConfirmImport"), importReport: app.querySelector("#pnImportReport"),
+      importText: app.querySelector("#pnImportText"), importFile: app.querySelector("#pnImportFile"), importFileTrigger: app.querySelector("#pnImportFileTrigger"), importFileLabel: app.querySelector("#pnImportFileLabel"), editableHtmlSummary: app.querySelector("#pnEditableHtmlSummary"), importConfirm: app.querySelector("#pnConfirmImport"), importReplace: app.querySelector("#pnReplaceImport"), importReport: app.querySelector("#pnImportReport"),
       outlineMenu: app.querySelector("#pnOutlineMenu"), undoToast: app.querySelector("#pnUndoToast"), undoCopy: app.querySelector("#pnUndoCopy"), undoButton: app.querySelector("#pnUndoButton")
     };
     bindToolbar(app);
@@ -504,6 +536,7 @@
     app.querySelector("#pnNew").addEventListener("click", () => chooseNewDocument());
     app.querySelector("#pnSaveTemplate").addEventListener("click", () => { setTemplateMenuOpen(false); saveCurrentAsTemplate(); });
     app.querySelector("#pnImport").addEventListener("click", () => openImport("document"));
+    app.querySelector("#pnImportEditableHtml").addEventListener("click", () => openImport("editable-html"));
     app.querySelector("#pnImportTemplate").addEventListener("click", () => openImport("template"));
     app.querySelector("#pnCloseImport").addEventListener("click", closeImport);
     els.modal.addEventListener("click", (event) => { if (event.target === els.modal) closeImport(); });
@@ -525,6 +558,10 @@
     });
     els.undoButton.addEventListener("click", undoLastStructuralDelete);
     els.importConfirm.addEventListener("click", importFromDialog);
+    els.importReplace.addEventListener("click", requestEditableHtmlReplacement);
+    els.importFileTrigger.addEventListener("click", () => {
+      if (!els.importFileTrigger.disabled) els.importFile.click();
+    });
     els.importFile.addEventListener("change", readImportFile);
     els.importText.addEventListener("input", () => {
       resetImportWarningConfirmation();
@@ -532,6 +569,7 @@
     });
     app.querySelector("#pnExport").addEventListener("click", () => { exportDocument(); setActionMenuOpen(false); });
     app.querySelector("#pnExportHtml").addEventListener("click", () => { exportHtml(); setActionMenuOpen(false); });
+    app.querySelector("#pnExportEditableHtml").addEventListener("click", () => { exportEditableHtml(); setActionMenuOpen(false); });
     app.querySelector("#pnCopyAi").addEventListener("click", () => { copyAiInstructions(); setActionMenuOpen(false); });
     app.querySelector("#pnExportTemplate").addEventListener("click", () => { exportTemplate(); setTemplateMenuOpen(false); });
     app.querySelector("#pnLang").addEventListener("click", async () => {
@@ -660,23 +698,49 @@
     els.templateMenuToggle.setAttribute("aria-expanded", String(Boolean(open)));
   }
   function openImport(mode) {
+    if (editableHtmlImportInProgress) return;
     setActionMenuOpen(false);
     setTemplateMenuOpen(false);
-    importMode = mode === "template" ? "template" : "document";
+    // Any pending FileReader belongs to the previous import sheet state. A
+    // fresh mode may not be populated by that old asynchronous callback.
+    importFileReadGeneration += 1;
+    importMode = mode === "template" ? "template" : mode === "editable-html" ? "editable-html" : "document";
+    pendingEditableHtml = null;
     resetImportWarningConfirmation();
     els.modal.hidden = false;
-    els.importText.readOnly = false;
-    els.importConfirm.disabled = false;
+    els.importText.value = "";
+    els.importFile.value = "";
+    const editableHtml = importMode === "editable-html";
+    els.importText.hidden = editableHtml;
+    els.importText.readOnly = editableHtml;
+    els.editableHtmlSummary.hidden = !editableHtml;
+    els.editableHtmlSummary.textContent = editableHtml
+      ? tr("请选择 Proofnote 可编辑 HTML 文件。Proofnote 只恢复明确标记的语义字段；普通网页和展示版 HTML 不支持回导。", "Choose a Proofnote Editable HTML file. Proofnote recovers only explicit semantic fields; ordinary webpages and presentation HTML cannot be re-imported.")
+      : "";
+    els.importFile.accept = editableHtml ? ".html,.htm,text/html" : "application/json";
+    els.importFileLabel.textContent = editableHtml ? tr("选择 Proofnote 可编辑 HTML", "Choose Proofnote editable HTML") : tr("选择文件", "Choose file");
+    els.importFile.disabled = false;
+    els.importFileTrigger.disabled = false;
+    if (editableHtml) els.importFileTrigger.setAttribute("aria-describedby", "pnEditableHtmlSummary");
+    else els.importFileTrigger.removeAttribute("aria-describedby");
+    els.importConfirm.disabled = editableHtml;
+    els.importReplace.hidden = !editableHtml;
+    els.importReplace.disabled = true;
     const templateImport = importMode === "template";
     const heading = els.modal.querySelector(".pn-modal-heading h2");
     const copy = els.modal.querySelector(".pn-modal-copy");
-    if (heading) heading.textContent = templateImport ? tr("导入模板", "Import template") : tr("导入 JSON", "Import JSON");
+    if (heading) heading.textContent = templateImport
+      ? tr("导入模板", "Import template")
+      : editableHtml ? tr("导入 Proofnote 可编辑 HTML", "Import Proofnote editable HTML") : tr("导入 JSON", "Import JSON");
     if (copy) copy.textContent = templateImport
       ? tr("仅支持 Proofnote 模板文件。导入模板不会切换或覆盖当前文档。", "Only Proofnote template files are accepted. Importing a template never switches or replaces the current document.")
+      : editableHtml
+        ? tr("仅接受带有完整 Proofnote Editable HTML 协议的文件：它必须包含唯一的 baseline source、稳定的 block/field 关系和版本身份。外部可以修改正文、结构和支持的语义属性；CSS、class、非语义 wrapper 与 KaTeX 预览只属于展示层，导入时会忽略并重新生成。字段重复、归属含糊或跨 block 时，Proofnote 不会猜测，而会拒绝导入。普通网页、展示版 HTML 导出和旧版 Proofnote HTML 都不支持回导。可编辑 HTML 包含完整原始内容，请只与可信对象共享。", "Only a file with the complete Proofnote Editable HTML protocol is accepted: it must contain one baseline source, stable block/field relationships, and version identity. External editors may change text, structure, and supported semantic properties; CSS, classes, non-semantic wrappers, and KaTeX previews are presentation-only and will be ignored and regenerated. If fields are duplicated, ambiguous, or cross blocks, Proofnote refuses to guess. Ordinary webpages, presentation exports, and legacy Proofnote HTML cannot be re-imported. Editable HTML contains complete source content, so share it only with people you trust.")
       : tr("支持 Proofnote Document 和原有 Solution Note 1.0。Solution Note 会无损优先地迁移为可编辑 blocks。导入文档会新建一份文档，不会覆盖当前文档。", "Supports Proofnote Document and Solution Note 1.0. Solution Notes are migrated into editable blocks. Importing creates a new document and never replaces the current one.");
-    els.importConfirm.textContent = templateImport ? tr("导入模板", "Import template") : tr("导入为新文档", "Import as new document");
+    els.importConfirm.textContent = importConfirmLabel();
+    clearImportReport();
     syncModalIsolation();
-    els.importText.focus();
+    root.requestAnimationFrame(() => (editableHtml ? els.importFileTrigger : els.importText).focus());
   }
   function setUtilityOpen(open) {
     // On a compact desktop, two expanded rails squeeze the A4 sheet into an
@@ -727,15 +791,19 @@
   function resetImportWarningConfirmation() {
     importWarningConfirmation = null;
     if (els.importConfirm) els.importConfirm.textContent = importConfirmLabel();
+    if (els.importReplace) els.importReplace.textContent = tr("覆盖当前文档…", "Replace current document…");
   }
   function confirmImportWarnings(warnings, title) {
     if (!warnings || !warnings.length) return true;
-    const source = String(els.importText && els.importText.value || "");
+    const source = importMode === "editable-html" && pendingEditableHtml
+      ? String(pendingEditableHtml.sourceKey || "")
+      : String(els.importText && els.importText.value || "");
     const key = importMode + "\u0000" + source;
     if (importWarningConfirmation === key) return true;
     importWarningConfirmation = key;
     renderSchemaDiagnostics(title, [], warnings);
     els.importConfirm.textContent = tr("仍要导入", "Import anyway");
+    if (importMode === "editable-html" && els.importReplace) els.importReplace.textContent = tr("仍要覆盖当前文档…", "Replace current document anyway…");
     return false;
   }
   function activeModalElement() {
@@ -784,15 +852,69 @@
     els.importReport.className = "pn-import-report" + (kind ? " is-" + kind : "");
     els.importReport.replaceChildren(element("p", { class: "pn-import-message" }, message));
   }
-  function closeImport() {
+  function setEditableHtmlImportBusy(busy) {
+    editableHtmlImportInProgress = Boolean(busy);
+    if (!els || !els.modal) return;
+    els.modal.classList.toggle("is-busy", editableHtmlImportInProgress);
+    const close = els.modal.querySelector("#pnCloseImport");
+    if (close) close.disabled = editableHtmlImportInProgress;
+    if (editableHtmlImportInProgress) {
+      els.importFile.disabled = true;
+      els.importFileTrigger.disabled = true;
+      els.importConfirm.disabled = true;
+      els.importReplace.disabled = true;
+      return;
+    }
+    if (importMode === "editable-html" && !els.modal.hidden) syncEditableHtmlImportActions();
+  }
+  function editableHtmlCanReplace(candidate) {
+    const protocol = root.ProofnoteEditableHtml;
+    if (!candidate || candidate.protocolVersion !== "2" || candidate.status === "STALE" || candidate.replacementEligible !== true) return false;
+    if (!protocol || typeof protocol.protocolLineage !== "function") return false;
+    const currentLineage = protocol.protocolLineage(state);
+    // A pre-v2.1 library may still contain two historical records with the
+    // same portable lineage. The repair pass normally forks them on startup;
+    // this gate is the fail-closed backstop if another tab changed a record
+    // during repair or an old client creates a collision later.
+    return Boolean(currentLineage && candidate.documentId && currentLineage === candidate.documentId && hasExclusiveEditableHtmlLineage(state));
+  }
+  function syncEditableHtmlImportActions() {
+    if (importMode !== "editable-html" || els.modal.hidden) return;
+    const verified = Boolean(pendingEditableHtml);
+    els.importFile.disabled = false;
+    els.importFileTrigger.disabled = false;
+    els.importConfirm.disabled = !verified;
+    els.importReplace.disabled = !editableHtmlCanReplace(pendingEditableHtml);
+  }
+  function closeImport(options) {
+    const opts = options || {};
+    if (editableHtmlImportInProgress && !opts.force) return false;
+    // A user dismissing this sheet has cancelled its in-flight import. A
+    // successful import opts out so its final document activation keeps the
+    // transition generation it started with.
+    if (opts.cancelTransition !== false) transitionGeneration += 1;
     importFileReadGeneration += 1;
+    pendingEditableHtml = null;
+    els.importText.value = "";
+    els.importText.hidden = false;
     els.importText.readOnly = false;
+    els.importFile.value = "";
+    els.importFile.disabled = false;
+    els.importFileTrigger.disabled = false;
+    els.importFileTrigger.removeAttribute("aria-describedby");
+    els.importFile.accept = "application/json";
+    els.importFileLabel.textContent = tr("选择文件", "Choose file");
+    els.editableHtmlSummary.hidden = true;
+    els.editableHtmlSummary.textContent = "";
     els.importConfirm.disabled = false;
+    els.importReplace.hidden = true;
+    els.importReplace.disabled = false;
     els.modal.hidden = true;
     importMode = "document";
     resetImportWarningConfirmation();
     clearImportReport();
     syncModalIsolation();
+    return true;
   }
   function openConfirm(options) {
     const opts = options || {};
@@ -961,12 +1083,86 @@
     });
     renderTemplateLibrary();
   }
+  function localRecordOrder(first, second) {
+    // Keep the currently open record's legacy identity whenever possible.
+    // Otherwise retain the oldest local record deterministically, so a repair
+    // is stable across reloads and tabs rather than depending on array order.
+    const firstCurrent = first && first.id === currentDocumentId;
+    const secondCurrent = second && second.id === currentDocumentId;
+    if (firstCurrent !== secondCurrent) return firstCurrent ? -1 : 1;
+    const firstCreated = String(first && first.createdAt || "");
+    const secondCreated = String(second && second.createdAt || "");
+    const byCreated = firstCreated.localeCompare(secondCreated);
+    return byCreated || String(first && first.id || "").localeCompare(String(second && second.id || ""));
+  }
+  function duplicateEditableHtmlLineageGroups(records) {
+    const groups = new Map();
+    (records || []).forEach((record) => {
+      const lineage = editableHtmlProtocolLineage(record && record.document);
+      if (!lineage) return;
+      const group = groups.get(lineage) || [];
+      group.push(record);
+      groups.set(lineage, group);
+    });
+    return Array.from(groups.values()).filter((group) => group.length > 1).map((group) => group.slice().sort(localRecordOrder));
+  }
+  function hasExclusiveEditableHtmlLineage(document) {
+    const lineage = editableHtmlProtocolLineage(document);
+    if (!lineage) return true;
+    return documents.filter((record) => editableHtmlProtocolLineage(record && record.document) === lineage).length === 1;
+  }
+  async function repairDuplicateEditableHtmlLineages() {
+    if (editableHtmlLineageRepair) return editableHtmlLineageRepair;
+    const repair = async () => {
+      const groups = duplicateEditableHtmlLineageGroups(documents);
+      if (!groups.length) return { repaired: 0, unresolved: 0 };
+      let repaired = 0;
+      let unresolved = 0;
+      for (const group of groups) {
+        // The first record remains the deterministic owner of the historical
+        // lineage. Every other record keeps its content and local ID but gets
+        // a fresh lineage by a revision-checked write.
+        for (const record of group.slice(1)) {
+          const expectedRevision = Number.isSafeInteger(record && record.revision) ? record.revision : 0;
+          let forked;
+          try { forked = forkEditableHtmlLineage(record.document); }
+          catch (_) { unresolved += 1; continue; }
+          let result = null;
+          try { result = await Store.replaceDocument(record.id, forked, expectedRevision, { makeCurrent: false }); }
+          catch (_) { unresolved += 1; continue; }
+          if (result && result.record && saveSucceeded(result.backend)) {
+            repaired += 1;
+            documentRevisions.set(record.id, Number.isSafeInteger(result.record.revision) ? result.record.revision : expectedRevision + 1);
+          } else {
+            // A concurrent writer wins over a migration. Leave its content
+            // untouched; replacement remains disabled until a later refresh
+            // can prove this lineage is no longer shared.
+            unresolved += 1;
+          }
+        }
+      }
+      if (repaired || unresolved) {
+        const library = typeof Store.listDocumentLibrary === "function"
+          ? await Store.listDocumentLibrary()
+          : { records: await Store.listDocuments(), backend: "unknown" };
+        if (library && library.backend !== "failed") {
+          documents = Array.isArray(library.records) ? library.records : [];
+          renderDocumentLibrary();
+        }
+      }
+      if (repaired || unresolved) editableHtmlLineageRepairNotice = { repaired, unresolved };
+      return { repaired, unresolved };
+    };
+    editableHtmlLineageRepair = repair().catch(() => ({ repaired: 0, unresolved: 1 })).finally(() => { editableHtmlLineageRepair = null; });
+    return editableHtmlLineageRepair;
+  }
   async function refreshDocuments() {
     const library = typeof Store.listDocumentLibrary === "function"
       ? await Store.listDocumentLibrary()
       : { records: await Store.listDocuments(), backend: "unknown" };
     documents = Array.isArray(library && library.records) ? library.records : [];
     renderDocumentLibrary();
+    if (library && library.backend !== "failed") await repairDuplicateEditableHtmlLineages();
     return library && library.backend || "failed";
   }
   function currentTemplateId() {
@@ -1041,6 +1237,7 @@
     }
     documents.forEach((record) => {
       const row = element("div", { class: "pn-document-item" + (record.id === currentDocumentId ? " is-active" : ""), role: "listitem" });
+      row.dataset.documentId = record.id;
       if (renamingDocumentId === record.id) {
         const rename = element("input", { class: "pn-document-rename", type: "text", value: renameDrafts.has(record.id) ? renameDrafts.get(record.id) : documentName(record), "aria-label": tr("重命名文档", "Rename document") });
         const save = () => finishDocumentRename(record.id, rename.value);
@@ -1181,7 +1378,12 @@
     return enqueueDocumentTransition(async (generation) => {
     const saved = await saveActiveDocumentNow();
     if (!saveSucceeded(saved)) { reportSaveFailure(saved); return; }
-    const document = Model.normalizeDocument(template.document);
+    let document = Model.normalizeDocument(template.document);
+    // A template is a starting point, not a second handle to the source
+    // document.  In particular, never let a template instance inherit the
+    // Editable HTML replacement lineage of the document from which somebody
+    // saved the template.
+    if (editableHtmlProtocolLineage(document)) document = forkEditableHtmlLineage(document);
     const title = document.blocks.find((block) => block.type === "title");
     document.metadata.name = String(title && title.content || "").trim() || template.template.name;
     document.metadata.templateName = template.template.name;
@@ -1273,7 +1475,13 @@
     const source = documents.find((record) => record.id === id);
     const copiedName = uniqueLibraryDocumentName(documentName(source) + tr(" 副本", " copy"));
     if (!transitionIsCurrent(generation)) return;
-    const duplicate = await Store.duplicateDocument(id, copiedName, { makeCurrent: false });
+    const duplicate = await Store.duplicateDocument(id, copiedName, {
+      makeCurrent: false,
+      // Keep the identity fork inside Store's duplicate transaction.  A
+      // copied document is independently editable and must never be accepted
+      // as a same-lineage replacement target for the source document.
+      transformDocument: (document) => editableHtmlProtocolLineage(document) ? forkEditableHtmlLineage(document) : document
+    });
     if (!duplicate || !duplicate.record || duplicate.backend === "failed") { setStatus(tr("复制文档失败。", "Could not duplicate document."), "error"); return; }
     const finalSaved = await saveActiveDocumentNow();
     if (!saveSucceeded(finalSaved)) { reportSaveFailure(finalSaved); return; }
@@ -2090,14 +2298,14 @@
         && !String(block.summary || "").trim();
     });
   }
-  function prepareImportedProjectDocument(document, context) {
+  function prepareImportedProjectDocument(document, context, excludedDocumentId) {
     if (!document || !document.metadata) return document;
     // A Project has one canonical name across the library, running header,
     // page footer, and paper title. AI JSON supplies content; importing it
     // into a Blank Project must not leave any of those chrome surfaces empty.
     const title = Array.isArray(document.blocks) ? document.blocks.find((block) => block && block.type === "title") : null;
     const requestedName = cleanProjectName(title && title.content || document.metadata.name, tr("未命名文档", "Untitled document"));
-    const name = uniqueLibraryDocumentName(requestedName);
+    const name = uniqueLibraryDocumentName(requestedName, excludedDocumentId);
     document.metadata.name = name;
     document.metadata.documentType = "Project";
     const importedHeader = document.metadata.runningHeader && typeof document.metadata.runningHeader === "object"
@@ -3652,19 +3860,115 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     const status = escapeHtml(state.metadata.status || "");
     return "<article class=\"pn-document pn-proofnote-document\"><div class=\"pn-export-running pn-proofnote-running\"><span class=\"pn-running-brand\">Proofnote</span><span class=\"pn-running-type\">" + type + "</span></div>" + metadataWithoutTitle + blocks + "<footer class=\"pn-export-footer\"><span>" + escapeHtml(exportTr("笔记 ", "Note ")) + note + "</span><span>" + status + "</span></footer></article>";
   }
-  function exportHtml() {
+  function standaloneHtmlDocument(snapshot, editableSource) {
+    // An editable export performs asynchronous safety/integrity work before
+    // rendering. Freeze the reader-facing HTML to the exact same normalised
+    // snapshot whose source is embedded, rather than allowing a keystroke in
+    // between to produce mismatched presentation and editable content.
+    const previousState = state;
+    state = snapshot;
     let katexCss = "", fontsCss = "";
     try { katexCss = root.SOLUTION_NOTE_KATEX_EMBED ? decodeBase64(root.SOLUTION_NOTE_KATEX_EMBED.css) : ""; } catch (_) {}
     try { fontsCss = root.SOLUTION_NOTE_FONTS_EMBED ? decodeBase64(root.SOLUTION_NOTE_FONTS_EMBED.css) : ""; } catch (_) {}
-    const title = escapeHtml(exportDocumentTitle());
-    const language = exportDocumentLanguage();
-    const languageAttribute = language ? " lang=\"" + escapeHtml(language) + "\"" : "";
-    exportLanguageContext = language;
-    let rendered = "";
-    try { rendered = renderStandaloneDocument(); }
-    finally { exportLanguageContext = ""; }
-    const html = "<!doctype html><html" + languageAttribute + "><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + title + "</title><style>" + katexCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + fontsCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS + EXPORT_CODE_SYNTAX_CSS + "</style></head><body>" + rendered + "</body></html>";
+    try {
+      const title = escapeHtml(exportDocumentTitle());
+      const language = exportDocumentLanguage();
+      const languageAttribute = language ? " lang=\"" + escapeHtml(language) + "\"" : "";
+      exportLanguageContext = language;
+      let rendered = "";
+      try { rendered = renderStandaloneDocument(); }
+      finally { exportLanguageContext = ""; }
+      return "<!doctype html><html" + languageAttribute + "><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + title + "</title><style>" + katexCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + fontsCss.replace(/<\/style/gi, "<\\/style") + "</style><style>" + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS + EXPORT_CODE_SYNTAX_CSS + "</style></head><body>" + rendered + (editableSource || "") + "</body></html>";
+    } finally {
+      exportLanguageContext = "";
+      state = previousState;
+    }
+  }
+  function exportHtml() {
+    const html = standaloneHtmlDocument(state, "");
     download(slug() + ".html", html, "text/html");
+  }
+  function editableHtmlScriptEscape(value) {
+    // The payload is JSON, not HTML. Escaping the five HTML-sensitive values
+    // preserves JSON.parse() semantics while making `</script>` in document
+    // prose incapable of terminating the inert source element.
+    return String(value || "")
+      .replace(/</g, "\\u003c")
+      .replace(/>/g, "\\u003e")
+      .replace(/&/g, "\\u0026")
+      .replace(/\u2028/g, "\\u2028")
+      .replace(/\u2029/g, "\\u2029");
+  }
+  async function sha256Hex(value) {
+    const crypto = root.crypto;
+    if (!crypto || !crypto.subtle || typeof crypto.subtle.digest !== "function" || typeof root.TextEncoder !== "function") return "";
+    const bytes = new root.TextEncoder().encode(String(value || ""));
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest)).map((part) => part.toString(16).padStart(2, "0")).join("");
+  }
+  function editableHtmlSourceMarkup(canonicalSource, sourceDigest, htmlDigest) {
+    const escapedSource = editableHtmlScriptEscape(canonicalSource);
+    return "<script id=\"" + EDITABLE_HTML_SOURCE_ID + "\" type=\"" + EDITABLE_HTML_SOURCE_TYPE + "\" data-proofnote-protocol=\"" + EDITABLE_HTML_FORMAT + "\" data-proofnote-protocol-version=\"" + EDITABLE_HTML_VERSION + "\" data-proofnote-json-bytes=\"" + utf8ByteLength(canonicalSource) + "\" data-proofnote-sha256=\"" + sourceDigest + "\" data-proofnote-html-sha256=\"" + htmlDigest + "\">" + escapedSource + "</script>";
+  }
+  function editableHtmlProtocolCss() {
+    // Editable HTML deliberately has its own semantic DOM, but it keeps the
+    // same reader-facing typography as a normal Proofnote export. The CSS is
+    // presentation-only: importing always reconstructs styles from Proofnote
+    // rather than retaining externally edited rules or classes.
+    let katexCss = "", fontsCss = "";
+    try { katexCss = root.SOLUTION_NOTE_KATEX_EMBED ? decodeBase64(root.SOLUTION_NOTE_KATEX_EMBED.css) : ""; } catch (_) {}
+    try { fontsCss = root.SOLUTION_NOTE_FONTS_EMBED ? decodeBase64(root.SOLUTION_NOTE_FONTS_EMBED.css) : ""; } catch (_) {}
+    return katexCss + fontsCss + EXPORT_CSS + EXPORT_DOCUMENT_TYPOGRAPHY_CSS
+      + EXPORT_PROOFNOTE_EDITORIAL_CSS + EXPORT_PROJECT_EDITORIAL_CSS + EXPORT_POLISH_CSS + EXPORT_CODE_SYNTAX_CSS
+      + ".pn-editable-document [data-pn-block-id]{margin:0 0 18px}.pn-editable-document [data-pn-rendered]{pointer-events:none}.pn-editable-document template{display:none}.pn-editable-document [data-pn-metadata]{display:none}.pn-editable-document [data-pn-blocks]>section:last-child{margin-bottom:0}.pn-editable-metadata{max-width:760px;margin:0 0 26px;padding:0 0 14px;border-bottom:1px solid var(--line)}.pn-editable-metadata.pn-editable-metadata-empty,.pn-editable-metadata-row.is-empty{display:none}.pn-editable-metadata dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 22px;margin:0}.pn-editable-metadata dt{font:600 10px/1 var(--heading);letter-spacing:.12em;text-transform:uppercase;color:rgba(32,31,29,.54)}.pn-editable-metadata dd{margin:4px 0 0;min-height:1.2em;font:var(--pn-doc-meta-size)/1.45 var(--body)}";
+  }
+  function persistEditableHtmlLineage(documentId) {
+    const protocol = root.ProofnoteEditableHtml;
+    if (!state || !protocol || typeof protocol.protocolLineage !== "function" || protocol.protocolLineage(state) === documentId) return true;
+    const compatibility = state.compatibility && typeof state.compatibility === "object" && !Array.isArray(state.compatibility)
+      ? JSON.parse(JSON.stringify(state.compatibility)) : {};
+    compatibility.proofnoteEditable = { documentId };
+    state.compatibility = compatibility;
+    changed();
+    return true;
+  }
+  async function exportEditableHtml() {
+    const protocol = root.ProofnoteEditableHtml;
+    if (!protocol || typeof protocol.build !== "function") {
+      setStatus(tr("可编辑 HTML 协议尚未加载；请刷新后重试。", "The Editable HTML protocol has not loaded; refresh and try again."), "error");
+      return;
+    }
+    try {
+      const checked = portableDocumentCheck(state);
+      if (!checked.valid) { setStatus(checked.message, "error"); return; }
+      const imageSafety = await importedImagesWithinLimit(checked.payload);
+      if (!imageSafety.valid) {
+        setStatus(tr("此可编辑 HTML 包含无法安全重新导入的嵌入图片。", "This editable HTML contains an embedded image that could not be safely re-imported."), "error");
+        return;
+      }
+      const exported = await protocol.build(checked.payload, {
+        css: editableHtmlProtocolCss(),
+        title: exportDocumentTitle(),
+        language: exportDocumentLanguage(),
+        codeHtml: (block) => highlightedCodeHtml(block.content, block.language)
+      });
+      // The first editable export mints stable lineage. Persist just that
+      // identity before downloading so a later same-document import can be
+      // safely recognised; do not overwrite in-session image approval state.
+      if (protocol.protocolLineage(state) !== exported.documentId) {
+        persistEditableHtmlLineage(exported.documentId);
+        const saved = await saveActiveDocumentNow();
+        if (!saveSucceeded(saved)) {
+          setStatus(tr("无法保存可编辑 HTML 的文档身份；未导出。请先导出 JSON 备份。", "Proofnote could not save the editable HTML document identity, so nothing was exported. Export a JSON backup first."), "error");
+          return;
+        }
+      }
+      download(slug(exported.document.metadata && exported.document.metadata.name) + ".proofnote.html", exported.html, "text/html;charset=utf-8");
+      setStatus(tr("已导出可编辑 HTML。正文、结构和支持的语义字段可回导；CSS、class 与渲染预览会由 Proofnote 重新生成。", "Editable HTML exported. Content, structure, and supported semantic fields can round-trip; CSS, classes, and rendered previews will be regenerated by Proofnote."), "saved");
+    } catch (error) {
+      const message = error && error.message ? String(error.message) : "";
+      setStatus(message || tr("导出可编辑 HTML 时发生意外错误；没有生成文件。", "An unexpected error occurred while exporting editable HTML; no file was created."), "error");
+    }
   }
   function exportDocumentTitle() {
     const titleBlock = state && state.blocks && state.blocks.find((block) => block && block.type === "title");
@@ -3688,41 +3992,354 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     return "";
   }
 
+  function editableHtmlDiagnostic(heading, message, help) {
+    return {
+      title: tr("无法导入可编辑 HTML", "Could not import editable HTML"),
+      heading, message, help,
+      text: [tr("无法导入可编辑 HTML", "Could not import editable HTML"), heading, message, help].filter(Boolean).join("\n")
+    };
+  }
+  function htmlTagEnd(source, start) {
+    let quote = "";
+    for (let index = start; index < source.length; index += 1) {
+      const character = source[index];
+      if (quote) {
+        if (character === quote) quote = "";
+        continue;
+      }
+      if (character === "\"" || character === "'") { quote = character; continue; }
+      if (character === ">") return index;
+    }
+    return -1;
+  }
+  function strictScriptAttributes(source) {
+    const attributes = Object.create(null);
+    let offset = 0;
+    while (offset < source.length) {
+      while (/\s/.test(source[offset] || "")) offset += 1;
+      if (offset >= source.length) return attributes;
+      const nameMatch = source.slice(offset).match(/^([A-Za-z_:][A-Za-z0-9:._-]*)/);
+      if (!nameMatch) return null;
+      const name = nameMatch[1].toLowerCase();
+      offset += name.length;
+      while (/\s/.test(source[offset] || "")) offset += 1;
+      if (source[offset] !== "=") return null;
+      offset += 1;
+      while (/\s/.test(source[offset] || "")) offset += 1;
+      // The generated envelope has deliberately boring double-quoted ASCII
+      // attributes. Rejecting HTML entities and unquoted forms makes the
+      // scanner deterministic without ever creating a live DOM.
+      if (source[offset] !== "\"") return null;
+      offset += 1;
+      const end = source.indexOf("\"", offset);
+      if (end < 0) return null;
+      if (Object.prototype.hasOwnProperty.call(attributes, name)) return null;
+      attributes[name] = source.slice(offset, end);
+      offset = end + 1;
+    }
+    return attributes;
+  }
+  function editableHtmlSourceElement(html) {
+    const source = String(html || "");
+    if (!/^\s*<!doctype\s+html(?:\s|>)/i.test(source)) {
+      return { diagnostic: editableHtmlDiagnostic(tr("不是 Proofnote 可编辑 HTML", "Not a Proofnote editable HTML file"), tr("文件缺少 Proofnote 可编辑 HTML 所需的完整 HTML 文档标记。", "The file does not contain the complete HTML document marker required by Proofnote Editable HTML."), tr("请从 Proofnote 的“导出可编辑 HTML”操作重新导出；普通 HTML 不支持回导。", "Export it again with Proofnote’s Export editable HTML action; ordinary HTML is not importable.")) };
+    }
+    // Avoid making several full-string copies of a large arbitrary webpage
+    // before we know it even has the exact carrier emitted by this protocol.
+    // Fresh Proofnote Editable HTML always starts its inert carrier this way;
+    // a differently formatted large script is intentionally unsupported.
+    if (source.length > 4 * 1024 * 1024 && source.indexOf("<script id=\"" + EDITABLE_HTML_SOURCE_ID + "\"") < 0) {
+      return { diagnostic: editableHtmlDiagnostic(tr("缺少唯一的 Proofnote 源数据", "Missing a unique Proofnote source"), tr("大型 HTML 文件没有 Proofnote 可编辑 HTML 1.0 的专属源数据容器。Proofnote 不会从页面文字或 DOM 猜测 blocks。", "This large HTML file has no dedicated Proofnote Editable HTML 1.0 source carrier. Proofnote never infers blocks from page text or the DOM."), tr("请使用未修改的“导出 Proofnote 可编辑 HTML”文件，或导入 .proofnote.json 备份。", "Use an unmodified Export Proofnote editable HTML file, or import a .proofnote.json backup.")) };
+    }
+    // Do not treat a marker written inside an HTML comment as a real source
+    // element. Replacing comments with equal-length whitespace preserves
+    // offsets into the original file without needing DOMParser or a live DOM.
+    const scanned = source.replace(/<!--[\s\S]*?-->/g, (comment) => " ".repeat(comment.length));
+    const lower = scanned.toLowerCase();
+    const finalArticleClose = lower.lastIndexOf("</article>");
+    const bodyClose = lower.lastIndexOf("</body>");
+    const candidates = [];
+    let offset = 0;
+    while (offset < scanned.length) {
+      const start = lower.indexOf("<script", offset);
+      if (start < 0) break;
+      const following = scanned[start + 7] || "";
+      if (following && !/[\s/>]/.test(following)) { offset = start + 7; continue; }
+      const tagEnd = htmlTagEnd(scanned, start + 7);
+      if (tagEnd < 0) break;
+      const attributes = strictScriptAttributes(scanned.slice(start + 7, tagEnd));
+      const closeStart = lower.indexOf("</script", tagEnd + 1);
+      const closeEnd = closeStart < 0 ? -1 : htmlTagEnd(scanned, closeStart + 2);
+      if (attributes && attributes.id === EDITABLE_HTML_SOURCE_ID) {
+        if (closeStart < 0 || closeEnd < 0 || !/^<\/script\s*>$/i.test(scanned.slice(closeStart, closeEnd + 1))) {
+          return { diagnostic: editableHtmlDiagnostic(tr("可编辑源数据已截断", "Editable source is truncated"), tr("Proofnote 找到源数据标记，但其 script 容器没有正确结束。", "Proofnote found the source marker, but its script container does not end correctly."), tr("请重新导出该文件；不要手动修改嵌入的源数据。", "Export the file again and do not manually alter its embedded source.")) };
+        }
+        // The exporter appends its inert carrier immediately after the one
+        // reader document and immediately before </body>. This avoids treating
+        // a lookalike tag in arbitrary HTML content as a transport envelope.
+        const carrierPositionValid = finalArticleClose >= 0
+          && bodyClose > finalArticleClose
+          && start > finalArticleClose
+          && closeEnd < bodyClose
+          && !source.slice(finalArticleClose + "</article>".length, start).trim()
+          && !source.slice(closeEnd + 1, bodyClose).trim();
+        if (!carrierPositionValid) {
+          return { diagnostic: editableHtmlDiagnostic(tr("可编辑 HTML 源位置不匹配", "Editable HTML source placement does not match"), tr("Proofnote 源数据必须紧跟在导出的文档之后、并位于 body 结束标签之前。", "The Proofnote source must appear directly after the exported document and before the closing body tag."), tr("请使用未修改的“导出可编辑 HTML”文件。", "Use an unmodified file from Export editable HTML.")) };
+        }
+        candidates.push({ attributes, content: source.slice(tagEnd + 1, closeStart), tagStart: start, tagEnd });
+      }
+      offset = closeEnd >= 0 ? closeEnd + 1 : tagEnd + 1;
+    }
+    if (candidates.length !== 1) {
+      // Presentation-only exports, including older standalone exports, have a
+      // rendered DOM that can resemble a current Proofnote document, but they
+      // never contain the source-only information needed for a faithful
+      // editor document (a complete block mapping, authoring state, hidden
+      // semantic content, and metadata). Rendered/KaTeX fragments are not a
+      // complete recoverable source. Call this out rather than inviting a lossy DOM
+      // reconstruction or making it look like an arbitrary webpage.
+      const legacyProofnotePresentation = /<article\b[^>]*\bclass\s*=\s*(?:"[^"]*\bpn-document\b[^"]*"|'[^']*\bpn-document\b[^']*')/i.test(scanned)
+        && /\bpn-(?:document-title|export-running|proofnote-document|project-document|editorial-section)\b/i.test(scanned);
+      if (!candidates.length && legacyProofnotePresentation) {
+        return { diagnostic: editableHtmlDiagnostic(tr("Proofnote 展示型 HTML 不支持回导", "Proofnote presentation HTML cannot be re-imported"), tr("检测到的是仅供阅读、打印或分享的 Proofnote 展示型 HTML（也包括早期导出）。它不包含完整、可验证的原始文档源（如 blocks 映射、作者状态、隐藏内容与元数据）；页面中即使有渲染或 KaTeX 片段，也不足以无损重建文档。", "This is a presentation-only Proofnote HTML file for reading, printing, or sharing, including earlier exports. It lacks a complete, verifiable original document source (such as a block mapping, authoring state, hidden content, and metadata); rendered or KaTeX fragments are not enough for lossless reconstruction."), tr("请从仍保留在 Proofnote 中的原文档使用“导出 Proofnote 可编辑 HTML”重新导出；若原文档不在本机，请使用 .proofnote.json 备份。", "Open the original document in Proofnote and export it again with Export Proofnote editable HTML; if the original is no longer local, use its .proofnote.json backup.")) };
+      }
+      return { diagnostic: editableHtmlDiagnostic(tr("缺少唯一的 Proofnote 源数据", "Missing a unique Proofnote source"), candidates.length
+        ? tr("文件包含多个可编辑源数据容器；Proofnote 为避免选择错误内容而拒绝导入。", "The file contains multiple editable-source containers, so Proofnote refused to choose one.")
+        : tr("文件没有 Proofnote 可编辑源数据。Proofnote 不会从页面文字或 DOM 猜测 blocks。", "The file has no Proofnote editable source. Proofnote never infers blocks from page text or the DOM."), tr("只接受由“导出可编辑 HTML”生成、且未被拆分或拼接的单一文件。", "Only one intact file generated by Export editable HTML is accepted.")) };
+    }
+    const expected = {
+      id: EDITABLE_HTML_SOURCE_ID,
+      type: EDITABLE_HTML_SOURCE_TYPE,
+      "data-proofnote-protocol": EDITABLE_HTML_FORMAT,
+      "data-proofnote-protocol-version": EDITABLE_HTML_VERSION
+    };
+    const attributes = candidates[0].attributes;
+    const names = Object.keys(attributes).sort();
+    const expectedNames = Object.keys(expected).concat(["data-proofnote-json-bytes", "data-proofnote-sha256", "data-proofnote-html-sha256"]).sort();
+    if (names.length !== expectedNames.length || names.some((name, index) => name !== expectedNames[index]) || Object.entries(expected).some(([name, value]) => attributes[name] !== value)) {
+      return { diagnostic: editableHtmlDiagnostic(tr("可编辑 HTML 协议不匹配", "Editable HTML protocol does not match"), tr("源数据容器的类型、协议或属性不符合 Proofnote 可编辑 HTML 1.0。", "The source container type, protocol, or attributes do not match Proofnote Editable HTML 1.0."), tr("请使用同一版本 Proofnote 导出的完整文件；不要复制或重写其中的 source script。", "Use a complete file exported by a compatible Proofnote version; do not copy or rewrite its source script.")) };
+    }
+    if (!/^[0-9]+$/.test(attributes["data-proofnote-json-bytes"] || "") || !/^[a-f0-9]{64}$/.test(attributes["data-proofnote-sha256"] || "") || !/^[a-f0-9]{64}$/.test(attributes["data-proofnote-html-sha256"] || "")) {
+      return { diagnostic: editableHtmlDiagnostic(tr("可编辑 HTML 完整性信息无效", "Editable HTML integrity data is invalid"), tr("源数据缺少有效的字节长度或 SHA-256 校验值。", "The embedded source is missing a valid byte length or SHA-256 check."), tr("请从 Proofnote 重新导出该文件。", "Export the file again from Proofnote.")) };
+    }
+    return { content: candidates[0].content, attributes, tagStart: candidates[0].tagStart, tagEnd: candidates[0].tagEnd };
+  }
+  function editableHtmlEnvelopeErrors(raw) {
+    const errors = [];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      errors.push({ path: "", message: tr("嵌入源必须是 JSON 对象。", "The embedded source must be a JSON object.") });
+      return errors;
+    }
+    const allowed = new Set(["format", "version", "document"]);
+    Object.keys(raw).forEach((key) => {
+      if (!allowed.has(key)) errors.push({ path: key, message: tr("可编辑 HTML 源不允许未知字段。", "Editable HTML source does not allow unknown fields.") });
+    });
+    if (raw.format !== EDITABLE_HTML_FORMAT) errors.push({ path: "format", message: tr("应为 \"proofnote-editable-html\"。", "Expected \"proofnote-editable-html\".") });
+    if (raw.version !== EDITABLE_HTML_VERSION) errors.push({ path: "version", message: tr("不支持此可编辑 HTML 版本；当前仅支持 1.0。", "This editable HTML version is not supported; only 1.0 is supported.") });
+    if (!raw.document || typeof raw.document !== "object" || Array.isArray(raw.document)) errors.push({ path: "document", message: tr("必须包含一个 Proofnote Document 对象。", "A Proofnote Document object is required.") });
+    else {
+      if (raw.document.format !== Model.FORMAT) errors.push({ path: "document.format", message: tr("只接受 proofnote-document，不接受模板、Solution Note 或其他格式。", "Only proofnote-document is accepted; templates, Solution Notes, and other formats are not accepted.") });
+      if (raw.document.version !== Model.VERSION) errors.push({ path: "document.version", message: tr("该 Proofnote Document 版本不受当前可编辑 HTML 协议支持。", "This Proofnote Document version is not supported by the current editable HTML protocol.") });
+    }
+    return errors;
+  }
+  // Editable HTML 1.0 was an integrity-sealed source carrier. Keep this
+  // reader solely for people who already exported one: it can restore an
+  // intact source, but it cannot reconcile hand-edited visible HTML. New
+  // exports use the semantic v2 protocol below.
+  async function inspectEditableHtmlV1Source(html) {
+    const htmlSource = String(html || "");
+    const sourceElement = editableHtmlSourceElement(htmlSource);
+    if (sourceElement.diagnostic) return sourceElement;
+    const embeddedSource = String(sourceElement.content || "");
+    if (!embeddedSource || utf8ByteLength(embeddedSource) > MAX_EDITABLE_HTML_SOURCE_BYTES) {
+      return { diagnostic: editableHtmlDiagnostic(tr("嵌入源数据超出上限", "Embedded source exceeds the limit"), tr("可编辑 HTML 的嵌入源数据为空或超过安全上限。", "The editable HTML’s embedded source is empty or exceeds the safe limit."), tr("请重新导出或改用 Proofnote JSON 备份。", "Export it again or use a Proofnote JSON backup.")) };
+    }
+    const inspected = inspectImportJson(embeddedSource);
+    if (inspected.diagnostic) {
+      return { diagnostic: Object.assign({}, inspected.diagnostic, {
+        title: tr("无法导入可编辑 HTML", "Could not import editable HTML"),
+        message: tr("嵌入的 Proofnote 源数据无法安全解析。", "The embedded Proofnote source could not be parsed safely.") + (inspected.diagnostic.message ? " " + inspected.diagnostic.message : "")
+      }) };
+    }
+    const warnings = inspected.warnings || [];
+    if (warnings.some((issue) => issue && issue.kind === "duplicate-json-key")) {
+      return { diagnostic: editableHtmlDiagnostic(tr("嵌入源数据不唯一", "Embedded source is ambiguous"), tr("可编辑 HTML 的 JSON 含有重复键。为避免不同解析器选择不同值，Proofnote 拒绝导入。", "The editable HTML JSON contains duplicate keys. Proofnote refused it so parsers cannot choose different values."), tr("请从 Proofnote 重新导出该文件。", "Export the file again from Proofnote.")) };
+    }
+    const envelopeErrors = editableHtmlEnvelopeErrors(inspected.raw);
+    if (envelopeErrors.length) return { envelopeErrors, warnings };
+    const canonicalSource = JSON.stringify(inspected.raw);
+    // The source script must be byte-for-byte in the encoding produced by
+    // this protocol. JSON with equivalent semantics but different spacing or
+    // escapes is still a hand-written carrier, not a Proofnote export.
+    if (embeddedSource !== editableHtmlScriptEscape(canonicalSource)) {
+      return { diagnostic: editableHtmlDiagnostic(tr("可编辑 HTML 源编码不匹配", "Editable HTML source encoding does not match"), tr("嵌入源不是 Proofnote 可编辑 HTML 1.0 要求的规范 JSON 编码。", "The embedded source is not the canonical JSON encoding required by Proofnote Editable HTML 1.0."), tr("请使用未修改的“导出可编辑 HTML”文件。", "Use an unmodified file from Export editable HTML.")) };
+    }
+    const declaredBytes = Number(sourceElement.attributes["data-proofnote-json-bytes"]);
+    if (utf8ByteLength(canonicalSource) !== declaredBytes || utf8ByteLength(canonicalSource) > MAX_EDITABLE_HTML_SOURCE_BYTES) {
+      return { diagnostic: editableHtmlDiagnostic(tr("可编辑 HTML 源数据长度不匹配", "Editable HTML source length does not match"), tr("嵌入源数据的实际 UTF-8 字节长度与文件声明不一致。", "The embedded source’s actual UTF-8 byte length does not match the file declaration."), tr("文件可能被修改或截断；请从 Proofnote 重新导出。", "The file may have been modified or truncated; export it again from Proofnote.")) };
+    }
+    const digest = await sha256Hex(canonicalSource);
+    if (!digest) return { diagnostic: editableHtmlDiagnostic(tr("浏览器无法验证完整性", "Browser cannot verify integrity"), tr("当前浏览器缺少 SHA-256 校验能力，因此 Proofnote 不会导入可编辑 HTML。", "This browser lacks SHA-256 verification, so Proofnote will not import editable HTML."), tr("请使用最新浏览器后重试。", "Try again in a current browser.")) };
+    if (digest !== sourceElement.attributes["data-proofnote-sha256"]) {
+      return { diagnostic: editableHtmlDiagnostic(tr("可编辑 HTML 完整性校验失败", "Editable HTML integrity check failed"), tr("嵌入源数据与文件中的 SHA-256 校验值不一致。", "The embedded source does not match the SHA-256 check stored in the file."), tr("文件可能被意外修改。请从 Proofnote 重新导出，或改用 Proofnote JSON 备份。", "The file may have been modified. Export it again from Proofnote or use a Proofnote JSON backup.")) };
+    }
+    const htmlDigest = sourceElement.attributes["data-proofnote-html-sha256"];
+    const hashAttribute = "data-proofnote-html-sha256=\"" + htmlDigest + "\"";
+    const hashOffset = htmlSource.indexOf(hashAttribute, sourceElement.tagStart);
+    if (hashOffset < sourceElement.tagStart || hashOffset > sourceElement.tagEnd) {
+      return { diagnostic: editableHtmlDiagnostic(tr("可编辑 HTML 完整性封套不一致", "Editable HTML integrity envelope is inconsistent"), tr("完整文件校验字段不在唯一的 Proofnote 源数据容器中。", "The full-file integrity field is not inside the unique Proofnote source container."), tr("请使用未修改的“导出可编辑 HTML”文件。", "Use an unmodified file from Export editable HTML.")) };
+    }
+    const unsignedHtml = htmlSource.slice(0, hashOffset) + "data-proofnote-html-sha256=\"" + EDITABLE_HTML_HASH_PLACEHOLDER + "\"" + htmlSource.slice(hashOffset + hashAttribute.length);
+    const computedHtmlDigest = await sha256Hex(unsignedHtml);
+    if (!computedHtmlDigest) return { diagnostic: editableHtmlDiagnostic(tr("浏览器无法验证完整性", "Browser cannot verify integrity"), tr("当前浏览器缺少 SHA-256 校验能力，因此 Proofnote 不会导入可编辑 HTML。", "This browser lacks SHA-256 verification, so Proofnote will not import editable HTML."), tr("请使用最新浏览器后重试。", "Try again in a current browser.")) };
+    if (computedHtmlDigest !== htmlDigest) {
+      return { diagnostic: editableHtmlDiagnostic(tr("可编辑 HTML 文件已被修改", "Editable HTML file was modified"), tr("整份 HTML（包括可见页面）与 Proofnote 导出时的完整性校验不一致。为避免忽略外部 HTML 改动或导入错误内容，Proofnote 拒绝回导。", "The complete HTML file, including its visible page, does not match Proofnote’s export-time integrity check. Proofnote refused to re-import it rather than ignore external HTML edits or import the wrong content."), tr("请使用未修改的“导出可编辑 HTML”文件；若要编辑内容，请先在 Proofnote 中导入原文件，再在页面内编辑并重新导出。", "Use an unmodified Export editable HTML file. To edit content, import the original into Proofnote, edit it on the page, then export again.")) };
+    }
+    return { raw: inspected.raw.document, warnings, canonicalSource, protocolVersion: "1.0", status: "EXACT", replacementEligible: false };
+  }
+  function editableHtmlV2Candidate(source) {
+    // Do not send an arbitrary web page through the v2 DOM compiler. A v2
+    // carrier declares both its format and version in its inert head metadata;
+    // malformed files that retain either marker still belong to that protocol
+    // and receive its precise INVALID diagnostic rather than falling back to
+    // an unsafe presentation parser.
+    const text = String(source || "");
+    return /<meta\b[^>]*\bname\s*=\s*(?:"proofnote-(?:format|version|magic)"|'proofnote-(?:format|version|magic)'|proofnote-(?:format|version|magic))[^>]*>/i.test(text)
+      || /data-proofnote-protocol-version\s*=\s*(?:"2"|'2'|2)/i.test(text);
+  }
+  async function inspectEditableHtmlSource(html) {
+    const protocol = root.ProofnoteEditableHtml;
+    if (editableHtmlV2Candidate(html)) {
+      if (!protocol || typeof protocol.inspect !== "function") {
+        return { diagnostic: editableHtmlDiagnostic(tr("当前工作区缺少可编辑 HTML 协议", "This workspace is missing the Editable HTML protocol"), tr("Proofnote 无法加载可编辑 HTML 2 的语义恢复模块。当前文档没有被修改。", "Proofnote could not load the Editable HTML 2 semantic-recovery module. The current document was not changed."), tr("请刷新 Proofnote 后重试。", "Refresh Proofnote and try again.")) };
+      }
+      return protocol.inspect(String(html || ""), { currentDocument: state });
+    }
+    return inspectEditableHtmlV1Source(html);
+  }
+  function setEditableHtmlImportSummary(message) {
+    if (!els.editableHtmlSummary) return;
+    els.editableHtmlSummary.hidden = false;
+    els.editableHtmlSummary.textContent = message;
+  }
   function readImportFile() {
     const file = els.importFile.files && els.importFile.files[0];
-    if (!file) return;
-    if (file.size > MAX_IMPORT_BYTES) {
-      showImportMessage(tr("文件超过 25MB 导入上限。", "File exceeds the 25 MB import limit."), "error");
-      els.importFile.value = "";
-      return;
-    }
+    if (!file || editableHtmlImportInProgress) return;
+    const editableHtml = importMode === "editable-html";
+    const modeAtRead = importMode;
+    // Invalidate an earlier verified candidate *before* every failure branch.
+    // Otherwise picking an oversized file after A has verified could leave
+    // Import/Replace armed for A while the UI appears to refer to B.
     const generation = ++importFileReadGeneration;
-    // A selected file replaces the pending source immediately. Do not allow
-    // an earlier textarea value to be imported while FileReader is still
-    // asynchronous, and do not leave that old value behind after failure.
+    pendingEditableHtml = null;
     els.importText.value = "";
     resetImportWarningConfirmation();
     els.importText.readOnly = true;
     els.importConfirm.disabled = true;
+    els.importReplace.disabled = true;
     clearImportReport();
-    const reader = new FileReader();
-    const finish = () => {
-      if (generation !== importFileReadGeneration) return false;
-      els.importText.readOnly = false;
-      els.importConfirm.disabled = false;
+    const release = () => {
+      if (generation !== importFileReadGeneration || els.modal.hidden || importMode !== modeAtRead) return false;
+      els.importText.readOnly = editableHtml;
+      els.importConfirm.disabled = editableHtml;
+      els.importReplace.disabled = true;
       return true;
     };
-    reader.onload = () => {
-      if (!finish()) return;
-      els.importText.value = String(reader.result || "");
-      clearImportReport();
+    const maximumBytes = editableHtml ? MAX_EDITABLE_HTML_BYTES : MAX_IMPORT_BYTES;
+    if (file.size > maximumBytes) {
+      release();
+      if (editableHtml) setEditableHtmlImportSummary(tr("可编辑 HTML 文件超过 64MB 安全上限；没有导入任何内容。", "Editable HTML file exceeds the 64 MB safety limit; nothing was imported."));
+      showImportMessage(editableHtml
+        ? tr("可编辑 HTML 文件超过 64MB 安全上限。", "Editable HTML file exceeds the 64 MB safety limit.")
+        : tr("文件超过 25MB 导入上限。", "File exceeds the 25 MB import limit."), "error");
+      els.importFile.value = "";
+      return;
+    }
+    if (editableHtml) setEditableHtmlImportSummary(tr("正在读取并验证可编辑 HTML…", "Reading and verifying editable HTML…"));
+    const reader = new FileReader();
+    const active = () => generation === importFileReadGeneration && !els.modal.hidden && importMode === modeAtRead;
+    reader.onload = async () => {
+      try {
+        if (!active()) return;
+        const source = String(reader.result || "");
+        if (!editableHtml) {
+          if (!release()) return;
+          els.importText.value = source;
+          clearImportReport();
+          return;
+        }
+        const inspected = await inspectEditableHtmlSource(source);
+        if (!active()) return;
+        if (inspected.diagnostic) {
+          renderImportDiagnostics(inspected.diagnostic);
+          setEditableHtmlImportSummary(tr("未找到可安全导入的 Proofnote 可编辑源。当前文档没有被修改。", "No safely importable Proofnote editable source was found. The current document was not changed."));
+          return;
+        }
+        if (inspected.envelopeErrors && inspected.envelopeErrors.length) {
+          renderSchemaDiagnostics(tr("无法导入可编辑 HTML", "Could not import editable HTML"), inspected.envelopeErrors, inspected.warnings || []);
+          setEditableHtmlImportSummary(tr("可编辑 HTML 的源封套不符合协议。当前文档没有被修改。", "The editable HTML source envelope does not meet the protocol. The current document was not changed."));
+          return;
+        }
+        const recoveredDocument = inspected.document || inspected.raw;
+        if (!recoveredDocument || !recoveredDocument.metadata || !Array.isArray(recoveredDocument.blocks)) {
+          renderImportDiagnostics(editableHtmlDiagnostic(tr("可编辑 HTML 缺少可恢复内容", "Editable HTML has no recoverable content"), tr("协议验证完成，但没有得到可安全导入的 Proofnote 文档。", "The protocol was verified, but it did not produce a safely importable Proofnote document."), tr("请从 Proofnote 重新导出该文件。", "Export the file again from Proofnote.")));
+          setEditableHtmlImportSummary(tr("没有导入任何内容。", "No content was imported."));
+          return;
+        }
+        // File-backed only: do not mirror a potentially 32 MB carrier into a
+        // hidden textarea. `sourceKey` identifies this exact selection while
+        // `htmlSource` is retained only for the just-in-time replacement
+        // revalidation below.
+        pendingEditableHtml = {
+          raw: recoveredDocument,
+          document: recoveredDocument,
+          baseline: inspected.baseline || null,
+          warnings: Array.isArray(inspected.warnings) ? inspected.warnings.map((warning) => typeof warning === "string" ? { path: "", message: warning } : warning).filter(Boolean) : [],
+          sourceKey: source,
+          htmlSource: source,
+          filename: String(file.name || ""),
+          protocolVersion: String(inspected.protocolVersion || inspected.envelope && inspected.envelope.version || "1.0"),
+          status: String(inspected.status || "EXACT"),
+          changes: inspected.changes || { edited: 0, inserted: 0, deleted: 0, moved: 0, visualOnly: false },
+          documentId: String(inspected.documentId || inspected.envelope && inspected.envelope.documentId || ""),
+          revisionId: String(inspected.revisionId || inspected.envelope && inspected.envelope.revisionId || ""),
+          replacementEligible: inspected.replacementEligible === true
+        };
+        els.importText.value = "";
+        els.importText.readOnly = true;
+        syncEditableHtmlImportActions();
+        const name = String(recoveredDocument.metadata && recoveredDocument.metadata.name || "").trim() || tr("未命名文档", "Untitled document");
+        const count = recoveredDocument.blocks.length;
+        const changes = pendingEditableHtml.changes;
+        let statusSummary;
+        if (pendingEditableHtml.protocolVersion !== "2") {
+          statusSummary = tr("这是旧版 Proofnote Editable HTML。它只能导入为新文档，不能覆盖当前文档。", "This is legacy Proofnote Editable HTML. It can only be imported as a new document and cannot replace the current document.");
+        } else if (pendingEditableHtml.status === "STALE") {
+          statusSummary = tr("此文件来自当前文档的较早 revision；可导入为新文档，但不能覆盖当前文档。", "This file was exported from an older revision of the current document. It may be imported as a new document, but cannot replace the current document.");
+        } else if (pendingEditableHtml.status === "RECOVERED" && changes.visualOnly) {
+          statusSummary = tr("未检测到 Proofnote 内容改动；已忽略外部仅视觉改动。", "No ProofNote content changes detected; external visual-only changes were ignored.");
+        } else if (pendingEditableHtml.status === "RECOVERED") {
+          statusSummary = tr("已恢复外部语义改动：" + changes.edited + " 处编辑、" + changes.inserted + " 个新增内容块、" + changes.deleted + " 个删除内容块、" + changes.moved + " 个移动内容块。", "Recovered external semantic changes: " + changes.edited + " edited, " + changes.inserted + " inserted, " + changes.deleted + " deleted, and " + changes.moved + " moved block(s). ");
+        } else {
+          statusSummary = tr("协议、baseline 与语义字段已验证；未检测到外部内容改动。", "The protocol, baseline, and semantic fields were verified; no external content changes were detected.");
+        }
+        setEditableHtmlImportSummary("“" + name + "” · " + count + tr(" 个内容块。", " blocks. ") + statusSummary);
+        clearImportReport();
+      } catch (_) {
+        if (!release()) return;
+        if (editableHtml) setEditableHtmlImportSummary(tr("无法安全验证该可编辑 HTML；没有导入任何内容。", "Could not safely verify this editable HTML; nothing was imported."));
+        showImportMessage(tr("读取或验证文件时发生意外错误；没有导入任何内容。", "An unexpected error occurred while reading or verifying the file; no content was imported."), "error");
+      }
     };
     reader.onerror = () => {
-      if (!finish()) return;
+      if (!release()) return;
+      if (editableHtml) setEditableHtmlImportSummary(tr("无法读取该文件；没有导入任何内容。", "Could not read this file; nothing was imported."));
       showImportMessage(tr("无法读取该文件；没有导入任何内容。", "Could not read that file; no content was imported."), "error");
     };
     reader.onabort = () => {
-      if (!finish()) return;
+      if (!release()) return;
+      if (editableHtml) setEditableHtmlImportSummary(tr("文件读取已取消；没有导入任何内容。", "File reading was cancelled; nothing was imported."));
       showImportMessage(tr("文件读取已取消；没有导入任何内容。", "File reading was cancelled; no content was imported."), "warning");
     };
     reader.readAsText(file);
@@ -3785,7 +4402,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     return { offset, line, column, text: excerpt.join("\n") };
   }
   function focusImportOffset(offset, length) {
-    if (!els.importText) return;
+    if (!els.importText || els.importText.hidden) return;
     const excerpt = importSourceExcerpt(els.importText.value, offset);
     const end = Math.max(excerpt.offset + 1, Math.min(els.importText.value.length, excerpt.offset + Math.max(1, Number(length) || 1)));
     els.importText.focus();
@@ -3960,7 +4577,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
           const key = keyNode && String(keyNode.value || "");
           if (keyNode && seen.has(key)) {
             const location = parser.getLocation(source, keyNode.offset);
-            warnings.push({ path: diagnosticPath(location && location.path), offset: keyNode.offset, length: keyNode.length, message: tr("重复的 JSON 键；后一个值已被采用。", "Duplicate JSON key; the later value was used.") });
+            warnings.push({ kind: "duplicate-json-key", path: diagnosticPath(location && location.path), offset: keyNode.offset, length: keyNode.length, message: tr("重复的 JSON 键；后一个值已被采用。", "Duplicate JSON key; the later value was used.") });
             if (warnings.length >= MAX_IMPORT_DIAGNOSTIC_ISSUES) return;
           }
           seen.add(key);
@@ -4035,12 +4652,18 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     }
     return { raw, warnings: duplicateJsonKeyWarnings(parser, source).concat(latexIssues.warnings) };
   }
-  function renderImportIssues(report, issues, severity) {
+  function canNavigateImportSource() {
+    // Editable HTML is deliberately file-only. Its canonical source is kept
+    // hidden and read-only for integrity purposes, so diagnostic controls
+    // must not pretend they can focus an editable source field.
+    return importMode !== "editable-html" && Boolean(els.importText && !els.importText.hidden);
+  }
+  function renderImportIssues(report, issues, severity, allowNavigation) {
     if (!issues || !issues.length) return;
     const heading = element("h3", { class: "pn-import-diagnostic-list-title" }, severity === "warning" ? tr("可恢复提示", "Recoverable notices") : tr("需要修正", "Problems to fix"));
     const list = element("ol", { class: "pn-import-diagnostic-list" });
     issues.slice(0, 8).forEach((issue) => {
-      const item = Number.isFinite(issue.offset)
+      const item = allowNavigation && Number.isFinite(issue.offset)
         ? button("", "pn-import-diagnostic-item", () => focusImportOffset(issue.offset, issue.length))
         : element("div", { class: "pn-import-diagnostic-item" });
       item.appendChild(element("strong", { class: "pn-import-diagnostic-path" }, issue.path || tr("文档根节点", "Document root")));
@@ -4074,14 +4697,19 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     report.appendChild(element("h3", { class: "pn-import-diagnostic-heading" }, details.heading));
     if (details.position) report.appendChild(element("p", { class: "pn-import-diagnostic-position" }, details.position));
     if (details.message) report.appendChild(element("p", { class: "pn-import-diagnostic-message" }, details.message));
+    const allowNavigation = canNavigateImportSource();
     if (details.snippet) {
-      const snippet = element("pre", { class: "pn-import-diagnostic-snippet", tabindex: "0", title: tr("点击定位到错误", "Click to locate the problem") }, details.snippet);
-      snippet.addEventListener("click", () => focusImportOffset(details.offset, details.length));
-      snippet.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); focusImportOffset(details.offset, details.length); } });
+      const snippet = element("pre", allowNavigation
+        ? { class: "pn-import-diagnostic-snippet", tabindex: "0", title: tr("点击定位到错误", "Click to locate the problem") }
+        : { class: "pn-import-diagnostic-snippet" }, details.snippet);
+      if (allowNavigation) {
+        snippet.addEventListener("click", () => focusImportOffset(details.offset, details.length));
+        snippet.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); focusImportOffset(details.offset, details.length); } });
+      }
       report.appendChild(snippet);
     }
-    renderImportIssues(report, details.issues, "error");
-    renderImportIssues(report, details.warnings, "warning");
+    renderImportIssues(report, details.issues, "error", allowNavigation);
+    renderImportIssues(report, details.warnings, "warning", allowNavigation);
     if (details.help) {
       report.appendChild(element("h3", { class: "pn-import-diagnostic-help-title" }, tr("如何修复", "How to fix it")));
       report.appendChild(element("p", { class: "pn-import-diagnostic-help" }, details.help));
@@ -4108,7 +4736,274 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       text: [title, tr("文档结构错误", "Document structure error")].concat(toText(problems), toText(notices)).join("\n")
     });
   }
+  function editableHtmlProtocolLineage(document) {
+    const protocol = root.ProofnoteEditableHtml;
+    return protocol && typeof protocol.protocolLineage === "function" ? String(protocol.protocolLineage(document) || "") : "";
+  }
+  function forkEditableHtmlLineage(document) {
+    const protocol = root.ProofnoteEditableHtml;
+    if (!protocol || typeof protocol.ensureLineage !== "function") throw new Error("Editable HTML protocol unavailable");
+    const copy = JSON.parse(JSON.stringify(document));
+    if (copy.compatibility && typeof copy.compatibility === "object") delete copy.compatibility.proofnoteEditable;
+    return protocol.ensureLineage(copy).document;
+  }
+  async function prepareEditableHtmlDocument(candidate, options) {
+    const opts = options || {};
+    const mode = opts.mode === "replace" ? "replace" : "new";
+    const excludedDocumentId = opts.excludedDocumentId;
+    if (!candidate || !(candidate.document || candidate.raw)) {
+      showImportMessage(tr("请先选择并验证一个 Proofnote 可编辑 HTML 文件。", "Choose and verify a Proofnote editable HTML file first."), "error");
+      return null;
+    }
+    if (mode === "replace" && !editableHtmlCanReplace(candidate)) {
+      showImportMessage(tr("该文件不属于当前文档的同一可编辑 HTML 谱系，或当前文档已在导出后更新。为避免覆盖错误文档，只能导入为新文档。", "This file does not belong to the current document’s Editable HTML lineage, or the current document changed after export. To avoid overwriting the wrong document, it can only be imported as a new document."), "error");
+      return null;
+    }
+    let warnings = Array.isArray(candidate.warnings) ? candidate.warnings.slice() : [];
+    const sourceDocument = candidate.document || candidate.raw;
+    const validation = Model.validateDocumentRaw(sourceDocument);
+    if (validation.errors.length) {
+      renderSchemaDiagnostics(tr("无法导入可编辑 HTML", "Could not import editable HTML"), validation.errors, warnings.concat(validation.warnings || []));
+      return null;
+    }
+    warnings = warnings.concat(validation.warnings || []);
+    // HTML imports never inherit trust from the browser session. In
+    // particular, a previously approved remote image URL is imported as an
+    // unapproved URL and cannot load without a fresh in-editor consent.
+    let next = Model.normalizeDocument(sourceDocument, { allowRemoteImages: false });
+    next.blocks.forEach((block) => { if (block && block.type === "image") delete block.remoteApproved; });
+    // Import-as-new creates a separate local document. Reusing the same
+    // protocol lineage would later make a file exported from either copy look
+    // eligible to overwrite the other, so fork identity before persisting it.
+    let identityForked = false;
+    if (mode === "new" && editableHtmlProtocolLineage(next)) {
+      next = forkEditableHtmlLineage(next);
+      identityForked = true;
+    }
+    if (next.metadata.documentType === "Project") {
+      const requestedName = String(next.metadata.name || "");
+      prepareImportedProjectDocument(next, null, excludedDocumentId);
+      if (next.metadata.name !== requestedName) {
+        warnings.push({
+          path: "metadata.name",
+          message: tr("项目名称与现有文档冲突，已添加区分后缀。", "The Project name conflicts with an existing document, so a distinguishing suffix was added.")
+        });
+      }
+    }
+    const preparedValidation = Model.validateDocumentRaw(next);
+    if (preparedValidation.errors.length) {
+      renderSchemaDiagnostics(tr("无法导入可编辑 HTML", "Could not import editable HTML"), preparedValidation.errors, warnings.concat(preparedValidation.warnings || []));
+      return null;
+    }
+    warnings = warnings.concat(preparedValidation.warnings || []);
+    const portable = portableDocumentCheck(next);
+    if (!portable.valid) {
+      renderSchemaDiagnostics(tr("无法导入可编辑 HTML", "Could not import editable HTML"), [{
+        path: "",
+        message: portable.message
+      }], warnings);
+      return null;
+    }
+    const imageSafety = await importedImagesWithinLimit(next);
+    if (!imageSafety.valid) {
+      renderSchemaDiagnostics(tr("无法导入可编辑 HTML", "Could not import editable HTML"), [{
+        path: "blocks[" + imageSafety.index + "].src",
+        message: tr("嵌入图片的解码尺寸超过安全上限，或浏览器无法安全读取它。", "The embedded image exceeds the safe decoded-pixel limit or could not be decoded safely.")
+      }], warnings);
+      return null;
+    }
+    return { document: next, warnings, identityForked };
+  }
+  function editableHtmlImportIsCurrent(generation, sourceKey, targetId) {
+    return Boolean(
+      transitionIsCurrent(generation)
+      && importMode === "editable-html"
+      && !els.modal.hidden
+      && pendingEditableHtml
+      && pendingEditableHtml.sourceKey === sourceKey
+      && (!targetId || currentDocumentId === targetId)
+    );
+  }
+  async function importEditableHtmlAsNewDocument() {
+    if (importMode !== "editable-html" || !pendingEditableHtml) {
+      showImportMessage(tr("请先选择并验证一个 Proofnote 可编辑 HTML 文件。", "Choose and verify a Proofnote editable HTML file first."), "error");
+      return;
+    }
+    const sourceKey = pendingEditableHtml.sourceKey;
+    return enqueueDocumentTransition(async (generation) => {
+      const prepared = await prepareEditableHtmlDocument(pendingEditableHtml, { mode: "new" });
+      if (!prepared || !editableHtmlImportIsCurrent(generation, sourceKey)) return;
+      if (!confirmImportWarnings(prepared.warnings, tr("导入可编辑 HTML 需要确认", "Editable HTML import needs confirmation"))) return;
+      const saved = await saveActiveDocumentNow();
+      if (!saveSucceeded(saved)) {
+        showImportMessage(tr("当前文档无法保存；请先导出备份。", "The current document could not be saved; export a backup first."), "error");
+        return;
+      }
+      if (!editableHtmlImportIsCurrent(generation, sourceKey)) return;
+      setEditableHtmlImportBusy(true);
+      setEditableHtmlImportSummary(tr("正在创建新文档；请稍候。", "Creating a new document; please wait."));
+      try {
+        const created = await Store.createDocument(prepared.document, { makeCurrent: false });
+        if (!created || !created.record || created.backend === "failed") {
+          showImportMessage(tr("可编辑 HTML 无法保存到此设备。", "The editable HTML could not be saved on this device."), "error");
+          return;
+        }
+        if (!editableHtmlImportIsCurrent(generation, sourceKey)) return;
+        const finalSaved = await saveActiveDocumentNow();
+        if (!saveSucceeded(finalSaved)) {
+          showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error");
+          return;
+        }
+        if (!editableHtmlImportIsCurrent(generation, sourceKey)) return;
+        setEditableHtmlImportBusy(false);
+        closeImport({ cancelTransition: false });
+        if (!await selectAndActivateDocument(created.record, generation, { status: false })) return;
+        const importedAsNew = prepared.identityForked
+          ? tr("已从可编辑 HTML 导入为新文档；已建立独立身份，今后不会与来源文档互相覆盖。", "Editable HTML imported as a new document with an independent identity; future exports cannot overwrite the source document.")
+          : tr("已从可编辑 HTML 导入为新文档", "Editable HTML imported as a new document");
+        setStatus(prepared.warnings.length ? importedAsNew + tr("另有 " + prepared.warnings.length + " 条可恢复提示。", " It also has " + prepared.warnings.length + " recoverable notice(s).") : importedAsNew, prepared.warnings.length ? "warning" : "saved");
+      } finally {
+        setEditableHtmlImportBusy(false);
+      }
+    });
+  }
+  function requestEditableHtmlReplacement() {
+    if (importMode !== "editable-html" || !pendingEditableHtml) {
+      showImportMessage(tr("请先选择并验证一个 Proofnote 可编辑 HTML 文件。", "Choose and verify a Proofnote editable HTML file first."), "error");
+      return;
+    }
+    if (!editableHtmlCanReplace(pendingEditableHtml)) {
+      showImportMessage(tr("该文件只能导入为新文档，不能覆盖当前文档。", "This file can only be imported as a new document and cannot replace the current document."), "error");
+      return;
+    }
+    const sourceKey = pendingEditableHtml.sourceKey;
+    return enqueueDocumentTransition(async (generation) => {
+      const targetId = currentDocumentId;
+      const prepared = await prepareEditableHtmlDocument(pendingEditableHtml, { mode: "replace", excludedDocumentId: targetId });
+      if (!prepared || !transitionIsCurrent(generation) || !pendingEditableHtml || pendingEditableHtml.sourceKey !== sourceKey) return;
+      if (!confirmImportWarnings(prepared.warnings, tr("覆盖前需要确认可恢复提示", "Recoverable notices need confirmation before replacement"))) return;
+      if (!targetId || targetId !== currentDocumentId || !Number.isSafeInteger(documentRevisions.get(targetId))) {
+        showImportMessage(tr("当前文档没有可安全替换的本地身份；请先导出备份或重新打开文档。", "The current document has no safely replaceable local identity. Export a backup or reopen the document first."), "error");
+        return;
+      }
+      const currentName = documentName(documents.find((record) => record && record.id === targetId) || { document: state });
+      openConfirm({
+        title: tr("覆盖当前文档？", "Replace the current document?"),
+        message: tr("将用已验证的可编辑 HTML 内容替换“" + currentName + "”。Proofnote 会先在文档库创建一个恢复副本，然后原子地替换当前文档；如果保存、备份或并发校验失败，当前文档不会被修改。", "The verified editable HTML will replace “" + currentName + "”. Proofnote will first create a recovery copy in the document library, then atomically replace the current document. If saving, backup creation, or the concurrent-write check fails, the current document will not be changed."),
+        confirmLabel: tr("保存恢复副本并覆盖", "Save recovery copy and replace"),
+        onConfirm: () => performEditableHtmlReplacement({ sourceKey, targetId })
+      });
+    });
+  }
+  async function performEditableHtmlReplacement(candidate) {
+    if (!candidate || !pendingEditableHtml || pendingEditableHtml.sourceKey !== candidate.sourceKey || currentDocumentId !== candidate.targetId) return;
+    setEditableHtmlImportBusy(true);
+    setEditableHtmlImportSummary(tr("正在创建恢复副本并覆盖当前文档；请稍候。", "Creating a recovery copy and replacing the current document; please wait."));
+    let replacementCommitted = false;
+    try {
+      const outcome = await enqueueDocumentTransition(async (generation) => {
+        if (!editableHtmlImportIsCurrent(generation, candidate.sourceKey, candidate.targetId)) return null;
+        const saved = await saveActiveDocumentNow();
+        if (!saveSucceeded(saved)) {
+          showImportMessage(tr("当前文档无法保存；未执行覆盖。请先导出备份。", "The current document could not be saved, so it was not replaced. Export a backup first."), "error");
+          return null;
+        }
+        if (!editableHtmlImportIsCurrent(generation, candidate.sourceKey, candidate.targetId)) return null;
+        // Re-read semantic HTML against the document *after* the final flush.
+        // A stale file must never become a replacement merely because it was
+        // verified before the user continued editing in the confirmation UI.
+        const protocol = root.ProofnoteEditableHtml;
+        const inspected = protocol && typeof protocol.inspect === "function"
+          ? await protocol.inspect(pendingEditableHtml.htmlSource, { currentDocument: state }) : null;
+        if (!inspected || inspected.diagnostic) {
+          if (inspected && inspected.diagnostic) renderImportDiagnostics(inspected.diagnostic);
+          else showImportMessage(tr("可编辑 HTML 协议无法重新验证；未执行覆盖。", "The Editable HTML protocol could not be revalidated, so no replacement was performed."), "error");
+          return null;
+        }
+        const refreshedCandidate = Object.assign({}, pendingEditableHtml, {
+          raw: inspected.document || inspected.raw,
+          document: inspected.document || inspected.raw,
+          baseline: inspected.baseline || null,
+          warnings: Array.isArray(inspected.warnings) ? inspected.warnings.map((warning) => typeof warning === "string" ? { path: "", message: warning } : warning).filter(Boolean) : [],
+          status: inspected.status || "EXACT",
+          changes: inspected.changes || pendingEditableHtml.changes,
+          documentId: inspected.documentId || "",
+          revisionId: inspected.revisionId || "",
+          protocolVersion: String(inspected.envelope && inspected.envelope.version || "2"),
+          replacementEligible: inspected.replacementEligible === true
+        });
+        if (!editableHtmlCanReplace(refreshedCandidate)) {
+          showImportMessage(tr("当前文档已在该 HTML 导出后变化，或文件属于其他文档谱系；未执行覆盖。你仍可把它导入为新文档。", "The current document changed after this HTML export, or the file belongs to another document lineage; no replacement was performed. You can still import it as a new document."), "error");
+          return null;
+        }
+        const prepared = await prepareEditableHtmlDocument(refreshedCandidate, { mode: "replace", excludedDocumentId: candidate.targetId });
+        if (!prepared || !editableHtmlImportIsCurrent(generation, candidate.sourceKey, candidate.targetId)) return null;
+        const expectedRevision = documentRevisions.get(candidate.targetId);
+        if (!Number.isSafeInteger(expectedRevision)) {
+          showImportMessage(tr("当前文档版本无法安全确认；未执行覆盖。", "The current document revision could not be verified safely, so it was not replaced."), "error");
+          return null;
+        }
+        const refreshed = await refreshDocuments();
+        if (!saveSucceeded(refreshed)) {
+          showImportMessage(tr("无法确认当前文档库；未执行覆盖。", "Proofnote could not verify the current document library, so no replacement was performed."), "error");
+          return null;
+        }
+        // Refresh can discover a historical duplicate lineage or lose a
+        // repair race to another tab. Re-evaluate the complete replacement
+        // gate after that refresh, not only before it, so an unresolved
+        // collision can never slip through to the destructive CAS below.
+        if (!editableHtmlCanReplace(refreshedCandidate)) {
+          showImportMessage(tr("Proofnote 发现此可编辑 HTML 谱系仍由多个本地文档共享；为避免跨文档覆盖，未执行覆盖。请导入为新文档，或稍后重新打开文档库后再试。", "Proofnote found that this Editable HTML lineage is still shared by multiple local documents. To avoid a cross-document replacement, no overwrite was performed. Import it as a new document or reopen the library and try again later."), "error");
+          return null;
+        }
+        if (!editableHtmlImportIsCurrent(generation, candidate.sourceKey, candidate.targetId)) return null;
+        const currentRecord = documents.find((record) => record && record.id === candidate.targetId);
+        const backupName = uniqueLibraryDocumentName(documentName(currentRecord || { document: state }) + tr(" — HTML 导入前恢复副本", " — before HTML import"));
+        const backup = await Store.duplicateDocument(candidate.targetId, backupName, {
+          makeCurrent: false,
+          // The recovery copy is a distinct local document.  It preserves
+          // content, but receives its own editable-HTML identity so a future
+          // export cannot be mistaken for a replacement of the live record.
+          transformDocument: (document) => editableHtmlProtocolLineage(document) ? forkEditableHtmlLineage(document) : document
+        });
+        if (!backup || !backup.record || backup.backend === "failed") {
+          showImportMessage(tr("无法先创建恢复副本；当前文档没有被覆盖。", "Proofnote could not create a recovery copy, so the current document was not replaced."), "error");
+          return null;
+        }
+        if (!editableHtmlImportIsCurrent(generation, candidate.sourceKey, candidate.targetId)) return null;
+        const replaced = await Store.replaceDocument(candidate.targetId, prepared.document, expectedRevision, { makeCurrent: true });
+        if (!replaced || !replaced.record || !saveSucceeded(replaced.backend)) {
+          if (replaced && replaced.backend === "conflict") {
+            await refreshDocuments();
+            showImportMessage(tr("另一标签页刚刚更新了当前文档；Proofnote 没有覆盖它。恢复副本已保留，请先打开最新版本后重试。", "Another tab just updated the current document, so Proofnote did not overwrite it. The recovery copy was kept; open the latest version and try again."), "error");
+          } else {
+            showImportMessage(tr("覆盖保存失败；当前文档没有被修改，恢复副本已保留。", "Replacement failed; the current document was not changed and the recovery copy was kept."), "error");
+          }
+          return null;
+        }
+        if (!editableHtmlImportIsCurrent(generation, candidate.sourceKey, candidate.targetId)) return null;
+        return { generation, expectedRevision, record: replaced.record, warnings: prepared.warnings };
+      });
+      if (!outcome || !outcome.record || !transitionIsCurrent(outcome.generation)) return;
+      replacementCommitted = true;
+      documentRevisions.set(candidate.targetId, Number.isSafeInteger(outcome.record.revision) ? outcome.record.revision : outcome.expectedRevision + 1);
+      setEditableHtmlImportBusy(false);
+      closeImport({ cancelTransition: false });
+      await activateDocument(outcome.record, { status: false });
+      const warnings = outcome.warnings || [];
+      setStatus(warnings.length ? tr("当前文档已由可编辑 HTML 覆盖；恢复副本已创建，且有 " + warnings.length + " 条可恢复提示。", "The current document was replaced from editable HTML; a recovery copy was created, with " + warnings.length + " recoverable notice(s).") : tr("当前文档已由可编辑 HTML 覆盖；恢复副本已创建。", "The current document was replaced from editable HTML; a recovery copy was created."), warnings.length ? "warning" : "saved");
+    } catch (_) {
+      if (replacementCommitted) {
+        setStatus(tr("当前文档已覆盖，但工作区无法立即刷新；请重新打开该文档。", "The current document was replaced, but the workspace could not refresh immediately; reopen the document."), "warning");
+      } else {
+        showImportMessage(tr("覆盖过程中发生意外错误；当前文档没有被覆盖。", "An unexpected error occurred during replacement; the current document was not replaced."), "error");
+      }
+    } finally {
+      setEditableHtmlImportBusy(false);
+    }
+  }
   async function importFromDialog() {
+    if (importMode === "editable-html") return importEditableHtmlAsNewDocument();
     if (utf8ByteLength(els.importText.value) > MAX_IMPORT_BYTES) {
       showImportMessage(tr("JSON 文本超过 25MB 导入上限。", "JSON text exceeds the 25 MB import limit."), "error");
       return;
@@ -4123,6 +5018,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     if (inspected.diagnostic) { renderImportDiagnostics(inspected.diagnostic); return; }
     const raw = inspected.raw;
     let next, warnings = inspected.warnings || [];
+    let identityForked = false;
     if (importMode === "template" && (!raw || raw.format !== Model.TEMPLATE_FORMAT)) {
       renderSchemaDiagnostics(tr("无法导入模板", "Could not import template"), [{
         path: "format",
@@ -4180,6 +5076,14 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     }
     const saved = await saveActiveDocumentNow();
     if (!saveSucceeded(saved)) { showImportMessage(tr("当前文档无法保存；请先导出备份。", "The current document could not be saved; export a backup first."), "error"); return; }
+    // A portable JSON backup can contain the v2 replacement lineage too.
+    // JSON's "import as new" path must have the same isolation guarantee as
+    // editable HTML: it creates a distinct local document, never another
+    // handle that can later replace the source record.
+    if (editableHtmlProtocolLineage(next)) {
+      next = forkEditableHtmlLineage(next);
+      identityForked = true;
+    }
     if (importProjectContext) {
       next.metadata.documentType = "Project";
       prepareImportedProjectDocument(next, importProjectContext);
@@ -4217,9 +5121,12 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     const finalSaved = await saveActiveDocumentNow();
     if (!saveSucceeded(finalSaved)) { showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error"); return; }
     if (!transitionIsCurrent(generation)) return;
-    closeImport();
+    closeImport({ cancelTransition: false });
     if (!await selectAndActivateDocument(created.record, generation, { status: false })) return;
-    setStatus(warnings.length ? tr("已导入为新文档；有 " + warnings.length + " 条可恢复提示。", "Imported as a new document with " + warnings.length + " recoverable notice(s).") : tr("已导入为新文档", "Imported as a new document"), warnings.length ? "warning" : "saved");
+    const importedAsNew = identityForked
+      ? tr("已导入为新文档；已建立独立身份，今后不会与来源文档互相覆盖。", "Imported as a new document with an independent identity; future exports cannot overwrite the source document.")
+      : tr("已导入为新文档", "Imported as a new document");
+    setStatus(warnings.length ? importedAsNew + tr("另有 " + warnings.length + " 条可恢复提示。", " It also has " + warnings.length + " recoverable notice(s).") : importedAsNew, warnings.length ? "warning" : "saved");
     });
   }
   async function initialise() {
@@ -4267,7 +5174,17 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       setStatus(tr("本地存储不可用；当前内容尚未保存。请先导出备份。", "Local storage is unavailable; this document is not saved. Export a backup first."), "error");
       return;
     }
+    const lineageRepairNotice = editableHtmlLineageRepairNotice;
+    editableHtmlLineageRepairNotice = null;
     if (startupLegacyWarning) setStatus(startupLegacyWarning, "warning");
+    else if (lineageRepairNotice && lineageRepairNotice.repaired) {
+      const suffix = lineageRepairNotice.unresolved
+        ? tr("；仍有 " + lineageRepairNotice.unresolved + " 个冲突副本暂时禁止覆盖。", "; " + lineageRepairNotice.unresolved + " shared copy/copies remain protected from replacement for now.")
+        : "";
+      setStatus(tr("Proofnote 已为 " + lineageRepairNotice.repaired + " 个旧文档副本建立独立的可编辑 HTML 身份，防止跨文档覆盖。", "Proofnote gave " + lineageRepairNotice.repaired + " legacy document copy/copies an independent Editable HTML identity to prevent cross-document replacement.") + suffix, "warning");
+    } else if (lineageRepairNotice && lineageRepairNotice.unresolved) {
+      setStatus(tr("Proofnote 发现旧文档共享可编辑 HTML 身份；为避免跨文档覆盖，相关文档暂时禁止覆盖。请稍后重新打开文档库。", "Proofnote found legacy documents sharing an Editable HTML identity. To avoid cross-document replacement, affected documents are temporarily protected from replacement; reopen the library later."), "warning");
+    }
     else setPersistenceStatus(library.backend === "localStorage" ? tr("已保存（本地存储）", "Saved locally") : tr("已保存到此设备", "Saved on this device"));
   }
   initialise().catch((error) => { console.error("Proofnote Document editor could not start", error); });

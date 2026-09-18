@@ -71,6 +71,22 @@
     }
     return next;
   }
+  // A library duplicate normally preserves the portable document payload.
+  // A caller may deliberately fork a protocol-specific identity (for example
+  // Proofnote Editable HTML's replacement lineage) before the new record is
+  // committed.  Keep that transform inside the same storage transaction as
+  // the duplicate so no briefly-created copy can expose the source identity.
+  function duplicateDocumentPayload(document, name, options) {
+    const next = documentWithName(document, name);
+    const transform = options && options.transformDocument;
+    if (typeof transform !== "function") return next;
+    const transformed = transform(clone(next));
+    if (!transformed || typeof transformed !== "object" || Array.isArray(transformed)
+      || (transformed && typeof transformed.then === "function")) {
+      throw new Error("Invalid duplicate document transform");
+    }
+    return transformed;
+  }
   function storedDocumentIsSafe(document) {
     if (!document || typeof document !== "object" || Array.isArray(document)) return false;
     // A stored document is still untrusted input: browser crashes, old
@@ -339,7 +355,7 @@
         return null;
       }
       const nextName = String(name || source.document.metadata && source.document.metadata.name || "Untitled document");
-      const document = documentWithName(source.document, nextName);
+      const document = duplicateDocumentPayload(source.document, nextName, opts);
       const now = timestamp();
       document.metadata = Object.assign({}, document.metadata, { createdAt: now, updatedAt: now });
       const record = recordFor(document);
@@ -557,6 +573,42 @@
       }, "failed");
     },
 
+    // A destructive import replaces the content of an existing local record
+    // but must keep that record's identity and prove that no other tab has
+    // changed it since the editor last saw it. Unlike saveDocument(), return
+    // the exact record committed by the compare-and-swap transaction so the
+    // caller never needs a second read that could observe a newer write.
+    async replaceDocument(id, document, expectedRevision, options) {
+      if (!id || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) return { record: null, backend: "failed" };
+      const opts = options || {};
+      const makeCurrent = opts.makeCurrent === true;
+      const apply = (existing) => {
+        const record = recordFor(document, existing);
+        record.id = id;
+        record.lastOpenedAt = existing.lastOpenedAt || record.lastOpenedAt;
+        return record;
+      };
+      return useStorageSession(async () => {
+        const result = await mutateIndexedRecord(id, makeCurrent ? { expectedRevision, currentId: id } : { expectedRevision }, apply);
+        if (result.status === "ok") return { record: clone(result.record), backend: "indexeddb" };
+        return { record: result.record ? clone(result.record) : null, backend: result.status === "conflict" ? "conflict" : "failed" };
+      }, () => {
+        const library = fallbackLibrary(null);
+        if (library.corrupt) return { record: null, backend: "failed" };
+        const index = library.records.findIndex((record) => record.id === id);
+        if (index < 0) return { record: null, backend: "failed" };
+        const existing = library.records[index];
+        if (revisionOf(existing) !== expectedRevision) return { record: clone(existing), backend: "conflict" };
+        const record = apply(existing);
+        library.records[index] = record;
+        if (makeCurrent || library.currentId === record.id) {
+          library.currentId = record.id;
+          library.current = record;
+        }
+        return { record: clone(record), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
+      }, () => ({ record: null, backend: "failed" }));
+    },
+
     async renameDocument(id, name, expectedRevision) {
       const nextName = String(name || "").trim();
       if (!nextName) return null;
@@ -586,7 +638,10 @@
       const opts = options || {};
       const makeCurrent = opts.makeCurrent !== false;
       return useStorageSession(async () => {
-        const record = await duplicateIndexedRecord(id, name, { makeCurrent });
+        // Preserve caller-supplied duplicate transforms on both persistence
+        // backends.  Dropping it here would make IndexedDB copies retain an
+        // identity that localStorage copies correctly fork.
+        const record = await duplicateIndexedRecord(id, name, Object.assign({}, opts, { makeCurrent }));
         if (!record) return null;
         return { record: clone(record), backend: "indexeddb" };
       }, () => {
@@ -595,7 +650,7 @@
         const source = library.records.find((record) => record.id === id);
         if (!source) return null;
         const nextName = String(name || source.document.metadata && source.document.metadata.name || "Untitled document");
-        const document = documentWithName(source.document, nextName);
+        const document = duplicateDocumentPayload(source.document, nextName, opts);
         const now = timestamp();
         document.metadata = Object.assign({}, document.metadata, { createdAt: now, updatedAt: now });
         const record = recordFor(document);

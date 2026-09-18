@@ -3,6 +3,7 @@
 // fetch <script src> files when it is given index.html as a string.
 const fs = require("fs");
 const path = require("path");
+const nodeCrypto = require("crypto");
 const { JSDOM, VirtualConsole } = require("jsdom");
 
 const root = path.join(__dirname, "..");
@@ -11,6 +12,7 @@ const modelSource = fs.readFileSync(path.join(root, "src", "document-model.js"),
 const storeSource = fs.readFileSync(path.join(root, "src", "document-store.js"), "utf8");
 const projectAiInstructionsSource = fs.readFileSync(path.join(root, "src", "project-ai-instructions.js"), "utf8");
 const rendererSource = fs.readFileSync(path.join(root, "src", "document-renderer.js"), "utf8");
+const editableHtmlProtocolSource = fs.readFileSync(path.join(root, "src", "editable-html-protocol.js"), "utf8");
 const legacyBoundarySource = fs.readFileSync(path.join(root, "src", "document-legacy-boundary.js"), "utf8");
 const jsoncParserSource = fs.readFileSync(path.join(root, "vendor", "jsonc-parser", "jsonc-parser.js"), "utf8");
 const prismSource = fs.readFileSync(path.join(root, "vendor", "prism", "prism.js"), "utf8");
@@ -48,6 +50,10 @@ function proofHeaderBlockCount(document) {
   if (!header) return 0;
   return 1 + (header.querySelector(".pn-document-subtitle") ? 1 : 0);
 }
+function chooseFile(window, input, file) {
+  Object.defineProperty(input, "files", { configurable: true, value: [file] });
+  input.dispatchEvent(new window.Event("change", { bubbles: true }));
+}
 
 async function main() {
   const runtimeErrors = [];
@@ -68,6 +74,10 @@ async function main() {
     // The assertion below reports them in a compact, actionable form.
   };
   window.HTMLElement.prototype.scrollIntoView = function () {};
+  // JSDOM exposes Web Crypto without SubtleCrypto. The browser feature is a
+  // hard requirement for editable-HTML integrity checks, so make this test
+  // environment faithfully provide the current-browser implementation.
+  Object.defineProperty(window.crypto, "subtle", { configurable: true, value: nodeCrypto.webcrypto.subtle });
 
   try {
     // Seed a deterministic document before the editor's async initialisation.
@@ -77,6 +87,7 @@ async function main() {
     window.eval(storeSource);
     window.eval(projectAiInstructionsSource);
     window.eval(rendererSource);
+    window.eval(editableHtmlProtocolSource);
     window.eval(legacyBoundarySource);
     const jsoncScript = document.createElement("script");
     jsoncScript.text = jsoncParserSource;
@@ -110,7 +121,22 @@ async function main() {
         Model.createBlock("heading", { level: 1, content: "" })
       ]
     });
-    window.localStorage.setItem("proofnote-document:current:v1", JSON.stringify(fixture));
+    // Simulate two records made by an early Editable HTML implementation
+    // before local-copy operations forked their portable lineage.  Startup
+    // must deterministically retain the active document's identity and fork
+    // the historical sibling before any replacement UI becomes available.
+    const seededFixture = window.ProofnoteEditableHtml.ensureLineage(fixture).document;
+    const historicalLineageCopy = JSON.parse(JSON.stringify(seededFixture));
+    historicalLineageCopy.metadata.name = "Historical lineage copy";
+    const seededAt = "2026-09-18T00:00:00.000Z";
+    window.localStorage.setItem("proofnote-document:library:v2", JSON.stringify({
+      version: 2,
+      currentId: "qa-lineage-owner",
+      records: [
+        { id: "qa-lineage-owner", document: seededFixture, createdAt: seededAt, updatedAt: seededAt, lastOpenedAt: seededAt, revision: 4 },
+        { id: "qa-lineage-historical-copy", document: historicalLineageCopy, createdAt: "2026-09-18T00:00:01.000Z", updatedAt: seededAt, lastOpenedAt: seededAt, revision: 7 }
+      ]
+    }));
     window.eval(editorSource);
     const canvasReady = await settle(window, () => {
       return canvasBlockNodes(document).length + proofHeaderBlockCount(document) === fixture.blocks.length;
@@ -129,15 +155,33 @@ async function main() {
     const outline = document.querySelector("#pnOutline");
     let canvasBlocks = canvasBlockNodes(document);
     const initialCanvasBlockIds = new Set(canvasBlocks.map((block) => block.dataset.blockId));
-    const globalActionIds = ["pnImport", "pnExportHtml", "pnExportMore", "pnExport", "pnCopyAi"];
+    const globalActionIds = ["pnImport", "pnImportEditableHtml", "pnExportHtml", "pnExportMore", "pnExportEditableHtml", "pnExport", "pnCopyAi"];
+
+    const startupLineageRecords = await window.ProofnoteStore.listDocuments();
+    const startupLineageOwner = startupLineageRecords.find((record) => record && record.id === "qa-lineage-owner");
+    const startupLineageCopy = startupLineageRecords.find((record) => record && record.id === "qa-lineage-historical-copy");
+    const startupOwnerLineage = window.ProofnoteEditableHtml?.protocolLineage(startupLineageOwner?.document) || "";
+    const startupCopyLineage = window.ProofnoteEditableHtml?.protocolLineage(startupLineageCopy?.document) || "";
+    const seededLineage = window.ProofnoteEditableHtml?.protocolLineage(seededFixture) || "";
+    check(
+      "editor-editable-html-v2-startup-repairs-historical-duplicate-lineages-before-enabling-replacement",
+      Boolean(startupLineageOwner)
+        && Boolean(startupLineageCopy)
+        && Boolean(seededLineage)
+        && startupOwnerLineage === seededLineage
+        && Boolean(startupCopyLineage)
+        && startupCopyLineage !== seededLineage
+        && startupLineageCopy?.revision === 8,
+      JSON.stringify({ owner: startupLineageOwner, copy: startupLineageCopy, seededLineage, startupOwnerLineage, startupCopyLineage })
+    );
 
     check("editor-external-scripts-boot", Boolean(document.querySelector("#proofnoteDocumentApp")) && Boolean(window.ProofnoteDocument) && Boolean(window.ProofnoteStore) && Boolean(window.ProofnoteJsoncParser?.parse) && Boolean(window.Prism)
       && Boolean(window.Prism.languages.python)
       && html.includes('window.Prism = { manual: true }')
       && html.includes('./vendor/prism/prism-python.min.js?v=1.30.0')
-      && Boolean(window.ProofnoteRenderer) && Boolean(window.ProofnoteLegacyBoundary)
+      && Boolean(window.ProofnoteRenderer) && Boolean(window.ProofnoteEditableHtml) && Boolean(window.ProofnoteLegacyBoundary)
       && html.includes('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1')
-        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260917-59'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
+        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260918-64'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
     check(
       "editor-document-typography-is-shared",
       [
@@ -342,6 +386,7 @@ async function main() {
       Boolean(exportMore)
         && Boolean(exportMoreMenu)
         && exportMoreMenu.hidden === false
+        && Boolean(exportMoreMenu.querySelector("#pnExportEditableHtml"))
         && Boolean(exportMoreMenu.querySelector("#pnExport"))
         && !document.querySelector("#pnExportLegacy")
         && editorSource.includes('download(slug() + ".proofnote.json"')
@@ -376,8 +421,10 @@ async function main() {
     check(
       "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.30"
-        && editorSource.includes('const APP_VERSION = "v1.30";')
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.34"
+        && editorSource.includes('const APP_VERSION = "v1.34";')
+        && Boolean(document.querySelector("#pnImportEditableHtml"))
+        && Boolean(document.querySelector("#pnExportEditableHtml"))
         && !document.querySelector("#pnEditMetadata")
         && !document.querySelector("#pnExportLegacy")
         && !/Document info|文档信息|Proofnote Document Format/.test(actionMenu.textContent),
@@ -396,8 +443,8 @@ async function main() {
         && !projectAiInstructionsSource.includes("hardenPortableObjectGraph")
         && legacyBoundarySource.includes("function validateSolutionNote")
         && rendererSource.includes("root.ProofnoteRenderer")
-        && html.indexOf("./src/document-renderer.js?v=workspace-20260917-59") < html.indexOf("./src/document-editor.js?v=workspace-20260917-59")
-        && html.indexOf("./src/document-legacy-boundary.js?v=workspace-20260917-59") < html.indexOf("./src/document-editor.js?v=workspace-20260917-59"),
+        && html.indexOf("./src/document-renderer.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260918-64")
+        && html.indexOf("./src/document-legacy-boundary.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260918-64"),
       "reader rendering must not borrow the retired test hook, and legacy hardening must stay in its required boundary module"
     );
     const tableHeaderSource = editorSource.slice(editorSource.indexOf("function setTableHeader"), editorSource.indexOf("function imageFilePicker"));
@@ -1483,9 +1530,9 @@ check(
         && document.querySelector("#pnPageHeader .pn-running-left")?.value === "当前核心通用结构"
         && document.querySelector("#pnPageHeader .pn-running-right")?.value === "Project"
         && document.querySelector("#pnFooterName")?.textContent === "当前核心通用结构"
-        && /Import as new document|导入为新文档/.test(confirmImport?.textContent || "")
+        && /Import as new document|导入为新文档|Import anyway|仍要导入/.test(confirmImport?.textContent || "")
         && editorSource.includes("const importProjectContext = isBlankProjectImportSource() ? projectImportContext() : null;")
-        && editorSource.includes("function prepareImportedProjectDocument(document, context)")
+        && editorSource.includes("function prepareImportedProjectDocument(document, context, excludedDocumentId)")
         && editorSource.includes('next.metadata.documentType = "Project";'),
       JSON.stringify(projectImportState)
     );
@@ -1751,6 +1798,369 @@ check(
     if (importClose) importClose.click();
     check("editor-modal-isolation-releases-the-workspace-on-close", document.querySelector(".pn-shell")?.inert === false, String(document.querySelector(".pn-shell")?.inert));
 
+    // Editable HTML v2 is a semantic transport: the file has a baseline
+    // carrier plus explicitly owned block fields. The browser flow below
+    // proves that it accepts supported semantic edits, ignores presentation
+    // changes, and never makes an unsafe replacement available.
+    const EditableProtocol = window.ProofnoteEditableHtml;
+    async function captureEditableHtmlExport() {
+      const originalCreateObjectUrl = window.URL.createObjectURL;
+      const originalRevokeObjectUrl = window.URL.revokeObjectURL;
+      const originalAnchorClick = window.HTMLAnchorElement.prototype.click;
+      let blob = null;
+      let filename = "";
+      window.URL.createObjectURL = (value) => {
+        blob = value;
+        return "blob:proofnote-editable-export";
+      };
+      window.URL.revokeObjectURL = () => {};
+      window.HTMLAnchorElement.prototype.click = function () { filename = this.download; };
+      try {
+        const action = document.querySelector("#pnExportEditableHtml");
+        if (action) action.click();
+        await settle(window, () => Boolean(blob), 4000);
+        return { html: blob ? await blob.text() : "", filename };
+      } finally {
+        window.URL.createObjectURL = originalCreateObjectUrl;
+        window.URL.revokeObjectURL = originalRevokeObjectUrl;
+        window.HTMLAnchorElement.prototype.click = originalAnchorClick;
+      }
+    }
+    function mutateEditableHtml(source, mutate) {
+      const external = new JSDOM(source);
+      try {
+        mutate(external.window.document);
+        return "<!doctype html>" + external.window.document.documentElement.outerHTML;
+      } finally {
+        external.window.close();
+      }
+    }
+    async function openEditableImport() {
+      const trigger = document.querySelector("#pnImportEditableHtml");
+      if (document.querySelector("#pnImportModal")?.hidden && trigger) trigger.click();
+      await settle(window, () => document.querySelector("#pnImportModal")?.hidden === false);
+    }
+    async function closeEditableImport() {
+      const close = document.querySelector("#pnCloseImport");
+      if (close && !close.disabled) close.click();
+      await settle(window, () => document.querySelector("#pnImportModal")?.hidden === true);
+    }
+    const exportedEditable = await captureEditableHtmlExport();
+    const editableExportHtml = exportedEditable.html;
+    const editableExportInspection = EditableProtocol ? await EditableProtocol.inspect(editableExportHtml) : null;
+    check(
+      "editor-editable-html-v2-export-has-a-semantic-carrier-without-changing-normal-html-export",
+      Boolean(EditableProtocol)
+        && /\.proofnote\.html$/i.test(exportedEditable.filename)
+        && /<meta name="proofnote-format" content="editable-html">/i.test(editableExportHtml)
+        && /<meta name="proofnote-version" content="2">/i.test(editableExportHtml)
+        && /data-pn-document="proofnote-editable-html-v2"/i.test(editableExportHtml)
+        && /data-pn-block-id=/i.test(editableExportHtml)
+        && /data-pn-type=/i.test(editableExportHtml)
+        && /data-pn-field=/i.test(editableExportHtml)
+        && /id="proofnote-editable-source"/i.test(editableExportHtml)
+        && editableExportHtml.includes(".pn-editable-metadata.pn-editable-metadata-empty,.pn-editable-metadata-row.is-empty{display:none}")
+        && editableExportInspection?.status === "EXACT"
+        && exportedProjectHtml && !/proofnote-editable-source/i.test(exportedProjectHtml),
+      JSON.stringify({ filename: exportedEditable.filename, status: editableExportInspection?.status, diagnostic: editableExportInspection?.diagnostic, tail: editableExportHtml.slice(-450) })
+    );
+    // Every local copy boundary must sever Editable HTML replacement lineage.
+    // Template creation is intentionally covered as a source-level contract
+    // here; the duplicate/recovery/import paths below exercise the same rule
+    // through the running editor and storage backends.
+    check(
+      "editor-editable-html-v2-local-copy-paths-explicitly-fork-replacement-lineage",
+      editorSource.includes("if (editableHtmlProtocolLineage(document)) document = forkEditableHtmlLineage(document);")
+        && editorSource.includes("transformDocument: (document) => editableHtmlProtocolLineage(document) ? forkEditableHtmlLineage(document) : document")
+        && editorSource.includes('if (mode === "new" && editableHtmlProtocolLineage(next))')
+        && editorSource.includes("if (editableHtmlProtocolLineage(next)) {")
+        && editorSource.includes("next = forkEditableHtmlLineage(next);")
+        && editorSource.includes("async function repairDuplicateEditableHtmlLineages()")
+        && editorSource.includes("hasExclusiveEditableHtmlLineage(state)")
+        && editorSource.includes("Store.replaceDocument(record.id, forked, expectedRevision, { makeCurrent: false })")
+        && !editorSource.includes("editableHtmlLineageExists"),
+      "template instances, document/recovery duplicates, editable HTML imports, JSON imports, and historical library repairs must each preserve one exclusive v2 lineage"
+    );
+
+    const editableFileInput = document.querySelector("#pnImportFile");
+    const editableImportConfirm = document.querySelector("#pnConfirmImport");
+    const editableImportReplace = document.querySelector("#pnReplaceImport");
+    const editableImportSummary = document.querySelector("#pnEditableHtmlSummary");
+    const activeIdBeforeEditableImport = document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId || "";
+    const documentCountBeforeEditableImport = document.querySelectorAll("#pnDocuments .pn-document-item").length;
+    const oldCanvasText = canvas.textContent;
+    await openEditableImport();
+    chooseFile(window, editableFileInput, new window.File(["<!doctype html><html><body><h1>ordinary page</h1></body></html>"], "ordinary.html", { type: "text/html" }));
+    await settle(window, () => /missing a unique Proofnote source|缺少唯一的 Proofnote 源数据/.test(importReport?.textContent || ""));
+    const ordinaryHtmlRejected = /missing a unique Proofnote source|缺少唯一的 Proofnote 源数据/.test(importReport?.textContent || "");
+    chooseFile(window, editableFileInput, new window.File([exportedProjectHtml], "proofnote-presentation.html", { type: "text/html" }));
+    await settle(window, () => /Proofnote presentation HTML cannot be re-imported|Proofnote 展示型 HTML 不支持回导/.test(importReport?.textContent || ""));
+    check(
+      "editor-editable-html-v2-rejects-ordinary-and-presentation-html-without-mutating-the-current-document",
+      ordinaryHtmlRejected
+        && /Proofnote presentation HTML cannot be re-imported|Proofnote 展示型 HTML 不支持回导/.test(importReport?.textContent || "")
+        && editableImportConfirm?.disabled === true
+        && editableImportReplace?.disabled === true
+        && document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId === activeIdBeforeEditableImport
+        && document.querySelectorAll("#pnDocuments .pn-document-item").length === documentCountBeforeEditableImport
+        && canvas.textContent === oldCanvasText,
+      importReport?.textContent || "ordinary or presentation HTML was not rejected"
+    );
+
+    const visualOnlyHtml = editableExportHtml
+      .replace("</head>", "<style>.external-editorial-wrapper{color:rebeccapurple}</style></head>")
+      .replace('class="pn-document', 'class="external-editorial-wrapper pn-document');
+    const visualOnlyInspection = EditableProtocol ? await EditableProtocol.inspect(visualOnlyHtml) : null;
+    chooseFile(window, editableFileInput, new window.File([visualOnlyHtml], "visual-only.proofnote.html", { type: "text/html" }));
+    await settle(window, () => editableImportConfirm?.disabled === false && editableImportReplace?.disabled === false, 4000);
+    check(
+      "editor-editable-html-v2-recovers-visual-only-mutations-and-allows-same-lineage-replacement",
+      visualOnlyInspection?.status === "RECOVERED"
+        && visualOnlyInspection?.changes?.visualOnly === true
+        && editableImportConfirm?.disabled === false
+        && editableImportReplace?.disabled === false
+        && /No ProofNote content changes|未检测到 Proofnote 内容改动/.test(editableImportSummary?.textContent || ""),
+      JSON.stringify({ inspection: visualOnlyInspection && { status: visualOnlyInspection.status, changes: visualOnlyInspection.changes, diagnostic: visualOnlyInspection.diagnostic }, summary: editableImportSummary?.textContent, newDisabled: editableImportConfirm?.disabled, replaceDisabled: editableImportReplace?.disabled })
+    );
+
+    const recoveredText = "Recovered semantic text from editable HTML.";
+    let semanticEditApplied = false;
+    const semanticEditHtml = mutateEditableHtml(editableExportHtml, (externalDocument) => {
+      const target = externalDocument.querySelector('[data-pn-type="paragraph"] [data-pn-field="content"] [data-pn-paragraph]')
+        || externalDocument.querySelector('[data-pn-field="content"] [data-pn-paragraph]');
+      if (target) {
+        target.textContent = recoveredText;
+        semanticEditApplied = true;
+      }
+    });
+    const semanticEditInspection = EditableProtocol ? await EditableProtocol.inspect(semanticEditHtml) : null;
+    chooseFile(window, editableFileInput, new window.File([semanticEditHtml], "semantic-edit.proofnote.html", { type: "text/html" }));
+    await settle(window, () => editableImportConfirm?.disabled === false && editableImportReplace?.disabled === false, 4000);
+    check(
+      "editor-editable-html-v2-recovers-explicit-semantic-content-edits",
+      semanticEditApplied
+        && semanticEditInspection?.status === "RECOVERED"
+        && Number(semanticEditInspection?.changes?.edited || 0) >= 1
+        && editableImportConfirm?.disabled === false
+        && editableImportReplace?.disabled === false
+        && /Recovered external semantic changes|已恢复外部语义改动/.test(editableImportSummary?.textContent || ""),
+      JSON.stringify({ applied: semanticEditApplied, inspection: semanticEditInspection && { status: semanticEditInspection.status, changes: semanticEditInspection.changes, diagnostic: semanticEditInspection.diagnostic }, summary: editableImportSummary?.textContent })
+    );
+
+    const duplicateFieldHtml = mutateEditableHtml(editableExportHtml, (externalDocument) => {
+      const block = externalDocument.querySelector('[data-pn-type="paragraph"]');
+      const field = block && block.querySelector('[data-pn-field="content"]');
+      if (block && field) block.appendChild(field.cloneNode(true));
+    });
+    const duplicateFieldInspection = EditableProtocol ? await EditableProtocol.inspect(duplicateFieldHtml) : null;
+    chooseFile(window, editableFileInput, new window.File([duplicateFieldHtml], "ambiguous.proofnote.html", { type: "text/html" }));
+    await settle(window, () => editableImportConfirm?.disabled === true && editableImportReplace?.disabled === true, 4000);
+    check(
+      "editor-editable-html-v2-refuses-duplicated-semantic-fields-instead-of-guessing",
+      duplicateFieldInspection?.status === "INVALID"
+        && duplicateFieldInspection?.diagnostic?.code === "ambiguous-field"
+        && editableImportConfirm?.disabled === true
+        && editableImportReplace?.disabled === true,
+      JSON.stringify({ inspection: duplicateFieldInspection, report: importReport?.textContent })
+    );
+
+    const unrelatedDocument = window.ProofnoteDocument.blankDocument({
+      name: "Unrelated editable HTML",
+      blocks: [
+        window.ProofnoteDocument.createBlock("title", { content: "Unrelated editable HTML" }),
+        window.ProofnoteDocument.createBlock("paragraph", { content: "This file belongs to a different lineage." })
+      ]
+    });
+    const unrelatedExport = EditableProtocol ? await EditableProtocol.build(unrelatedDocument, {}) : null;
+    chooseFile(window, editableFileInput, new window.File([unrelatedExport?.html || ""], "unrelated.proofnote.html", { type: "text/html" }));
+    await settle(window, () => editableImportConfirm?.disabled === false && editableImportReplace?.disabled === true, 4000);
+    check(
+      "editor-editable-html-v2-keeps-unrelated-lineages-on-the-new-document-path",
+      unrelatedExport
+        && editableImportConfirm?.disabled === false
+        && editableImportReplace?.disabled === true,
+      JSON.stringify({ summary: editableImportSummary?.textContent, newDisabled: editableImportConfirm?.disabled, replaceDisabled: editableImportReplace?.disabled })
+    );
+
+    // Advance the live document through its native editor after its original
+    // export. That must turn the original same-lineage file into STALE, not a
+    // replacement candidate.
+    const localAdvanceControl = Array.from(canvas.querySelectorAll("input:not([type=checkbox]):not([type=radio]), textarea"))
+      .find((control) => !control.disabled && String(control.value || "").trim().length > 0);
+    const localAdvanceOriginal = localAdvanceControl ? String(localAdvanceControl.value) : "";
+    if (localAdvanceControl) {
+      localAdvanceControl.value = localAdvanceOriginal + " — local revision";
+      localAdvanceControl.dispatchEvent(new window.Event("input", { bubbles: true }));
+      await settle(window);
+    }
+    chooseFile(window, editableFileInput, new window.File([editableExportHtml], "stale.proofnote.html", { type: "text/html" }));
+    await settle(window, () => editableImportConfirm?.disabled === false && editableImportReplace?.disabled === true, 4000);
+    check(
+      "editor-editable-html-v2-disables-replacement-for-a-stale-same-lineage-file",
+      Boolean(localAdvanceControl)
+        && editableImportConfirm?.disabled === false
+        && editableImportReplace?.disabled === true
+        && /older revision|较早 revision|changed since this editable HTML baseline|已在该 HTML 导出后变化/.test(editableImportSummary?.textContent || ""),
+      JSON.stringify({ localAdvanceOriginal, summary: editableImportSummary?.textContent, newDisabled: editableImportConfirm?.disabled, replaceDisabled: editableImportReplace?.disabled })
+    );
+    await closeEditableImport();
+
+    // Re-export from the advanced current document, then change one explicit
+    // field. The only safe replacement path creates a recovery copy first.
+    const refreshedEditable = await captureEditableHtmlExport();
+    let replacementEditApplied = false;
+    const replacementHtml = mutateEditableHtml(refreshedEditable.html, (externalDocument) => {
+      const target = externalDocument.querySelector('[data-pn-type="paragraph"] [data-pn-field="content"] [data-pn-paragraph]')
+        || externalDocument.querySelector('[data-pn-field="content"] [data-pn-paragraph]');
+      if (target) {
+        target.textContent = recoveredText;
+        replacementEditApplied = true;
+      }
+    });
+    await openEditableImport();
+    chooseFile(window, editableFileInput, new window.File([replacementHtml], "replacement.proofnote.html", { type: "text/html" }));
+    await settle(window, () => editableImportConfirm?.disabled === false && editableImportReplace?.disabled === false, 4000);
+    const idBeforeReplacement = document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId || "";
+    const countBeforeReplacement = document.querySelectorAll("#pnDocuments .pn-document-item").length;
+    const recordIdsBeforeReplacement = new Set((await window.ProofnoteStore.listDocuments()).map((record) => record && record.id));
+    if (editableImportReplace) editableImportReplace.click();
+    await settle(window, () => confirmModal?.hidden === false, 3000);
+    const replacementConfirmCopy = document.querySelector("#pnConfirmCopy")?.textContent || "";
+    const replacementAccept = document.querySelector("#pnConfirmAccept");
+    if (replacementAccept) replacementAccept.click();
+    await settle(window, () => document.querySelector("#pnImportModal")?.hidden === true
+      && confirmModal?.hidden === true
+      && document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId === idBeforeReplacement
+      && document.querySelectorAll("#pnDocuments .pn-document-item").length === countBeforeReplacement + 1
+      && blockHasControlValue(canvas, recoveredText), 6000);
+    const recordsAfterReplacement = await window.ProofnoteStore.listDocuments();
+    const recoveryRecord = recordsAfterReplacement.find((record) => record && !recordIdsBeforeReplacement.has(record.id));
+    const replacedRecord = recordsAfterReplacement.find((record) => record && record.id === idBeforeReplacement);
+    const recoveryLineage = EditableProtocol && recoveryRecord ? EditableProtocol.protocolLineage(recoveryRecord.document) : "";
+    const replacedLineage = EditableProtocol && replacedRecord ? EditableProtocol.protocolLineage(replacedRecord.document) : "";
+    check(
+      "editor-editable-html-v2-replacement-creates-a-recovery-copy-before-updating-the-same-document",
+      replacementEditApplied
+        && /recovery copy|恢复副本/.test(replacementConfirmCopy)
+        && document.querySelector("#pnImportModal")?.hidden === true
+        && document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId === idBeforeReplacement
+        && document.querySelectorAll("#pnDocuments .pn-document-item").length === countBeforeReplacement + 1
+        && blockHasControlValue(canvas, recoveredText)
+        && Boolean(recoveryRecord)
+        && Boolean(recoveryLineage)
+        && recoveryLineage !== replacedLineage,
+      JSON.stringify({ applied: replacementEditApplied, confirmation: replacementConfirmCopy, activeId: document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId, count: document.querySelectorAll("#pnDocuments .pn-document-item").length, recovered: blockHasControlValue(canvas, recoveredText), recoveryId: recoveryRecord?.id, recoveryLineage, replacedLineage, status: document.querySelector("#pnStatus")?.textContent })
+    );
+
+    // A valid v2 file can always be imported as a new document. When its
+    // lineage already exists locally, the importer must fork that identity so
+    // later replacements cannot cross between the two local records.
+    const countBeforeEditableAsNew = document.querySelectorAll("#pnDocuments .pn-document-item").length;
+    const idBeforeEditableAsNew = document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId || "";
+    await openEditableImport();
+    chooseFile(window, editableFileInput, new window.File([replacementHtml], "fork.proofnote.html", { type: "text/html" }));
+    await settle(window, () => editableImportConfirm?.disabled === false, 4000);
+    if (editableImportConfirm) editableImportConfirm.click();
+    await settle(window, () => /Import anyway|仍要导入/.test(editableImportConfirm?.textContent || "") || document.querySelector("#pnImportModal")?.hidden === true, 3000);
+    if (document.querySelector("#pnImportModal")?.hidden === false && /Import anyway|仍要导入/.test(editableImportConfirm?.textContent || "") && editableImportConfirm) editableImportConfirm.click();
+    await settle(window, () => document.querySelector("#pnImportModal")?.hidden === true
+      && document.querySelectorAll("#pnDocuments .pn-document-item").length === countBeforeEditableAsNew + 1
+      && document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId !== idBeforeEditableAsNew, 6000);
+    const forkedActiveId = document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId || "";
+    const recordsAfterFork = await window.ProofnoteStore.listDocuments();
+    const originalLineage = EditableProtocol && refreshedEditable.html
+      ? (await EditableProtocol.inspect(refreshedEditable.html)).documentId : "";
+    const forkedRecord = recordsAfterFork.find((record) => record && record.id === forkedActiveId);
+    const forkedLineage = EditableProtocol && forkedRecord ? EditableProtocol.protocolLineage(forkedRecord.document) : "";
+    check(
+      "editor-editable-html-v2-import-as-new-works-and-forks-an-existing-lineage",
+      document.querySelector("#pnImportModal")?.hidden === true
+        && document.querySelectorAll("#pnDocuments .pn-document-item").length === countBeforeEditableAsNew + 1
+        && forkedActiveId !== idBeforeEditableAsNew
+        && Boolean(forkedLineage)
+        && forkedLineage !== originalLineage,
+      JSON.stringify({ before: { count: countBeforeEditableAsNew, id: idBeforeEditableAsNew }, after: { count: document.querySelector("#pnDocuments .pn-document-item").length, id: forkedActiveId }, originalLineage, forkedLineage, modalHidden: document.querySelector("#pnImportModal")?.hidden, report: importReport?.textContent, confirmation: editableImportConfirm?.textContent })
+    );
+
+    // A normal library duplicate must fork its protocol identity too.  In
+    // particular, an editable export from the source cannot ever become a
+    // replacement candidate for the newly-created local copy.
+    const duplicateSourceExport = await captureEditableHtmlExport();
+    const duplicateSourceId = document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId || "";
+    const duplicateCountBefore = document.querySelectorAll("#pnDocuments .pn-document-item").length;
+    const lineageDuplicateSourceRow = document.querySelector("#pnDocuments .pn-document-item.is-active");
+    const lineageDuplicateActions = lineageDuplicateSourceRow?.querySelector(".pn-document-more");
+    const duplicateControl = Array.from(lineageDuplicateActions?.querySelectorAll("button") || [])
+      .find((control) => /Duplicate|制作副本/.test(control.textContent || ""));
+    if (lineageDuplicateActions) lineageDuplicateActions.open = true;
+    if (duplicateControl) duplicateControl.click();
+    await settle(window, () => document.querySelectorAll("#pnDocuments .pn-document-item").length === duplicateCountBefore + 1
+      && document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId !== duplicateSourceId, 6000);
+    const duplicateActiveId = document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId || "";
+    const recordsAfterDuplicate = await window.ProofnoteStore.listDocuments();
+    const duplicateSourceRecord = recordsAfterDuplicate.find((record) => record && record.id === duplicateSourceId);
+    const duplicateRecord = recordsAfterDuplicate.find((record) => record && record.id === duplicateActiveId);
+    const duplicateSourceLineage = EditableProtocol && duplicateSourceRecord ? EditableProtocol.protocolLineage(duplicateSourceRecord.document) : "";
+    const duplicateLineage = EditableProtocol && duplicateRecord ? EditableProtocol.protocolLineage(duplicateRecord.document) : "";
+    const sourceAgainstDuplicate = EditableProtocol && duplicateRecord
+      ? await EditableProtocol.inspect(duplicateSourceExport.html, { currentDocument: duplicateRecord.document }) : null;
+    await openEditableImport();
+    chooseFile(window, editableFileInput, new window.File([duplicateSourceExport.html], "source-after-duplicate.proofnote.html", { type: "text/html" }));
+    await settle(window, () => editableImportConfirm?.disabled === false && editableImportReplace?.disabled === true, 4000);
+    check(
+      "editor-editable-html-v2-document-duplicates-fork-lineage-and-cannot-cross-replace",
+      Boolean(duplicateControl)
+        && duplicateActiveId !== duplicateSourceId
+        && document.querySelectorAll("#pnDocuments .pn-document-item").length === duplicateCountBefore + 1
+        && Boolean(duplicateSourceLineage)
+        && Boolean(duplicateLineage)
+        && duplicateSourceLineage !== duplicateLineage
+        && sourceAgainstDuplicate?.replacementEligible === false
+        && editableImportConfirm?.disabled === false
+        && editableImportReplace?.disabled === true,
+      JSON.stringify({ sourceId: duplicateSourceId, duplicateId: duplicateActiveId, sourceLineage: duplicateSourceLineage, duplicateLineage, inspection: sourceAgainstDuplicate && { status: sourceAgainstDuplicate.status, replacementEligible: sourceAgainstDuplicate.replacementEligible, warnings: sourceAgainstDuplicate.warnings }, newDisabled: editableImportConfirm?.disabled, replaceDisabled: editableImportReplace?.disabled })
+    );
+    await closeEditableImport();
+
+    // The ordinary JSON route is also always import-as-new. A portable backup
+    // may carry a v2 lineage, but it must never create a second local record
+    // that could later replace the document it was exported from.
+    const jsonLineageExport = EditableProtocol ? await EditableProtocol.build(window.ProofnoteDocument.blankDocument({
+      name: "Portable v2 JSON lineage",
+      blocks: [
+        window.ProofnoteDocument.createBlock("title", { content: "Portable v2 JSON lineage" }),
+        window.ProofnoteDocument.createBlock("paragraph", { content: "A normal JSON import must fork editable HTML identity." })
+      ]
+    }), {}) : null;
+    const jsonSourceLineage = jsonLineageExport?.documentId || "";
+    const jsonImportCountBefore = document.querySelectorAll("#pnDocuments .pn-document-item").length;
+    const jsonImportActiveBefore = document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId || "";
+    const normalImportTrigger = document.querySelector("#pnImport");
+    if (normalImportTrigger) normalImportTrigger.click();
+    await settle(window, () => document.querySelector("#pnImportModal")?.hidden === false);
+    if (importText) importText.value = JSON.stringify(jsonLineageExport?.document || {});
+    if (confirmImport) confirmImport.click();
+    await settle(window, () => document.querySelector("#pnImportModal")?.hidden === true
+      || /Import anyway|仍要导入/.test(confirmImport?.textContent || ""), 3000);
+    if (document.querySelector("#pnImportModal")?.hidden === false && /Import anyway|仍要导入/.test(confirmImport?.textContent || "") && confirmImport) confirmImport.click();
+    await settle(window, () => document.querySelector("#pnImportModal")?.hidden === true
+      && document.querySelectorAll("#pnDocuments .pn-document-item").length === jsonImportCountBefore + 1
+      && document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId !== jsonImportActiveBefore, 6000);
+    const jsonImportedId = document.querySelector("#pnDocuments .pn-document-item.is-active")?.dataset.documentId || "";
+    const recordsAfterJsonImport = await window.ProofnoteStore.listDocuments();
+    const jsonImportedRecord = recordsAfterJsonImport.find((record) => record && record.id === jsonImportedId);
+    const jsonImportedLineage = EditableProtocol && jsonImportedRecord ? EditableProtocol.protocolLineage(jsonImportedRecord.document) : "";
+    check(
+      "editor-editable-html-v2-portable-json-import-forks-lineage-before-persistence",
+      Boolean(jsonLineageExport)
+        && jsonImportedId !== jsonImportActiveBefore
+        && document.querySelectorAll("#pnDocuments .pn-document-item").length === jsonImportCountBefore + 1
+        && Boolean(jsonSourceLineage)
+        && Boolean(jsonImportedLineage)
+        && jsonImportedLineage !== jsonSourceLineage
+        && /independent identity|独立身份/.test(document.querySelector("#pnStatus")?.textContent || ""),
+      JSON.stringify({ sourceLineage: jsonSourceLineage, importedLineage: jsonImportedLineage, beforeId: jsonImportActiveBefore, importedId: jsonImportedId, count: document.querySelectorAll("#pnDocuments .pn-document-item").length, status: document.querySelector("#pnStatus")?.textContent, report: importReport?.textContent })
+    );
     check("editor-no-runtime-errors", runtimeErrors.length === 0, runtimeErrors.join(" | ").slice(0, 500));
   } catch (error) {
     check("editor-test-harness", false, error && error.stack ? error.stack : String(error));
