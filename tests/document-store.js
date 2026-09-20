@@ -73,7 +73,7 @@ async function main() {
   );
   const created = await Library.createDocument({ metadata: { name: "Second note" }, blocks: [] });
   check("store-creates-separate-document-records", Boolean(created && created.record && created.record.id && created.record.id !== initial.record.id));
-  const fallbackEnvelope = JSON.parse(libraryWindow.localStorage.getItem("proofnote-document:library:v2") || "null");
+  const fallbackEnvelope = JSON.parse(libraryWindow.localStorage.getItem("proofnote-document:library:v3") || "null");
   check(
     "store-fallback-library-writes-records-and-current-id-as-one-envelope",
     Boolean(fallbackEnvelope && fallbackEnvelope.version === 3
@@ -117,9 +117,66 @@ async function main() {
       && fallbackOrderedRecords.some((record) => record.id === fallbackSibling.record.id && record.projectPosition === fallbackUnpinned.record.projectPosition),
     JSON.stringify({ fallbackUnpinned, fallbackSibling, fallbackReordered, fallbackOrderedRecords })
   );
+  const fallbackPinnedForBucket = await Library.createDocument({ metadata: { name: "Pinned bucket document" }, blocks: [] }, {
+    makeCurrent: false,
+    projectId: fallbackProject.project && fallbackProject.project.id,
+    projectGroup: "Research",
+    projectPinned: true
+  });
+  const unpinnedBeforeBucketMove = (await Library.listDocuments()).filter((record) => record.projectId === fallbackProject.project.id
+    && record.projectGroup === "Research" && record.projectPinned !== true);
+  const fallbackMovedAcrossPinBucket = await Library.assignDocumentToProject(fallbackPinnedForBucket.record && fallbackPinnedForBucket.record.id, {
+    projectPinned: false
+  }, fallbackPinnedForBucket.record && fallbackPinnedForBucket.record.revision);
+  const fallbackGroupedForBucket = await Library.createDocument({ metadata: { name: "Grouped bucket document" }, blocks: [] }, {
+    makeCurrent: false,
+    projectId: fallbackProject.project && fallbackProject.project.id,
+    projectGroup: "Archive"
+  });
+  const researchBeforeGroupMove = (await Library.listDocuments()).filter((record) => record.projectId === fallbackProject.project.id
+    && record.projectGroup === "Research" && record.projectPinned !== true);
+  const fallbackMovedAcrossGroupBucket = await Library.assignDocumentToProject(fallbackGroupedForBucket.record && fallbackGroupedForBucket.record.id, {
+    projectGroup: "Research"
+  }, fallbackGroupedForBucket.record && fallbackGroupedForBucket.record.revision);
+  check(
+    "store-reallocates-local-position-when-project-group-or-pin-bucket-changes",
+    Boolean(fallbackMovedAcrossPinBucket && fallbackMovedAcrossPinBucket.record)
+      && fallbackMovedAcrossPinBucket.record.projectPosition > Math.max.apply(null, unpinnedBeforeBucketMove.map((record) => record.projectPosition))
+      && Boolean(fallbackMovedAcrossGroupBucket && fallbackMovedAcrossGroupBucket.record)
+      && fallbackMovedAcrossGroupBucket.record.projectPosition > Math.max.apply(null, researchBeforeGroupMove.map((record) => record.projectPosition)),
+    JSON.stringify({ unpinnedBeforeBucketMove, fallbackMovedAcrossPinBucket, researchBeforeGroupMove, fallbackMovedAcrossGroupBucket })
+  );
+  const fallbackDisposableProject = await Library.createProject("Fallback disposable Project");
+  const fallbackDisposableDocument = await Library.createDocument({ metadata: { name: "Keep me when Project is deleted" }, blocks: [] }, {
+    makeCurrent: false,
+    projectId: fallbackDisposableProject.project && fallbackDisposableProject.project.id,
+    projectGroup: "Research",
+    projectPinned: true
+  });
+  const fallbackDeletedProject = await Library.deleteProject(
+    fallbackDisposableProject.project && fallbackDisposableProject.project.id,
+    fallbackDisposableProject.project && fallbackDisposableProject.project.revision
+  );
+  const fallbackDetachedDocument = (await Library.listDocuments()).find((record) => record.id === fallbackDisposableDocument.record?.id);
+  const fallbackProjectsAfterDelete = await Library.listProjects();
+  check(
+    "store-deleting-a-local-project-keeps-its-documents-as-unfiled-records",
+    fallbackDeletedProject.backend === "localStorage"
+      && fallbackDeletedProject.project?.id === fallbackDisposableProject.project?.id
+      && fallbackDeletedProject.records.length === 1
+      && fallbackDetachedDocument?.projectId === ""
+      && fallbackDetachedDocument?.projectGroup === ""
+      && fallbackDetachedDocument?.projectPinned === false
+      && fallbackDetachedDocument?.projectPosition === 0
+      && !fallbackProjectsAfterDelete.projects.some((project) => project.id === fallbackDisposableProject.project?.id),
+    JSON.stringify({ fallbackDeletedProject, fallbackDetachedDocument, fallbackProjectsAfterDelete })
+  );
   // Keep the following legacy-library lifecycle assertions independent from
   // this extra Project fixture record.
   await Library.deleteDocument(fallbackSibling.record.id);
+  await Library.deleteDocument(fallbackPinnedForBucket.record.id);
+  await Library.deleteDocument(fallbackGroupedForBucket.record.id);
+  await Library.deleteDocument(fallbackDisposableDocument.record.id);
   const opened = await Library.openDocument(initial.record.id);
   check("store-opens-a-document-by-local-id", Boolean(opened && opened.record && opened.record.id === initial.record.id));
   const renamed = await Library.renameDocument(initial.record.id, "Renamed note");
@@ -144,8 +201,9 @@ async function main() {
   await Library.deleteDocument(initial.record.id);
   const afterLastDelete = await Library.initialiseDocumentLibrary({ metadata: { name: "Fresh seed" } });
   check("store-deleting-last-document-does-not-resurrect-the-legacy-record", Boolean(afterLastDelete.record && afterLastDelete.record.document.metadata.name === "Fresh seed"));
-  libraryWindow.localStorage.setItem("proofnote-document:library:v2", JSON.stringify({
-    version: 2,
+  libraryWindow.localStorage.setItem("proofnote-document:library:v3", JSON.stringify({
+    version: 3,
+    projects: [],
     currentId: "opened-later",
     records: [
       { id: "opened-later", document: { metadata: { name: "Opened later" }, blocks: [] }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z", lastOpenedAt: "2026-01-04T00:00:00.000Z" },
@@ -169,7 +227,7 @@ async function main() {
   // A damaged fallback library must remain recoverable. It is not an empty
   // library, so startup and listing must fail explicitly without replacing
   // the original bytes with a seed document.
-  const corruptFallbackValues = new Map([["proofnote-document:library:v2", "{ damaged fallback JSON"]]);
+  const corruptFallbackValues = new Map([["proofnote-document:library:v3", "{ damaged fallback JSON"]]);
   const corruptFallbackWindow = { localStorage: memoryStorage(corruptFallbackValues) };
   vm.runInNewContext(source, { window: corruptFallbackWindow, JSON, Promise, Date, Error, Math, Map, String, Object, Array, WeakSet });
   const CorruptFallback = corruptFallbackWindow.ProofnoteStore;
@@ -179,8 +237,61 @@ async function main() {
     "store-corrupt-fallback-library-is-not-treated-as-empty-or-overwritten",
     corruptFallbackInitial.backend === "failed"
       && corruptFallbackList.backend === "failed"
-      && corruptFallbackValues.get("proofnote-document:library:v2") === "{ damaged fallback JSON",
-    JSON.stringify({ initial: corruptFallbackInitial, list: corruptFallbackList, stored: corruptFallbackValues.get("proofnote-document:library:v2") })
+      && corruptFallbackValues.get("proofnote-document:library:v3") === "{ damaged fallback JSON",
+    JSON.stringify({ initial: corruptFallbackInitial, list: corruptFallbackList, stored: corruptFallbackValues.get("proofnote-document:library:v3") })
+  );
+
+  // v1.44 briefly stored v3-shaped Project data under the v2 key. A newly
+  // upgraded client must copy that envelope to a new v3 key, preserving both
+  // Projects and the legacy bytes that a still-open pre-Project tab may read.
+  const historicalProject = {
+    id: "project_historical", name: "Historical Project",
+    createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z", revision: 1
+  };
+  const historicalRecord = {
+    id: "doc_historical", document: { metadata: { name: "Historical Project document" }, blocks: [] },
+    createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z", lastOpenedAt: "2026-09-18T00:00:00.000Z",
+    revision: 1, projectId: "project_historical", projectGroup: "", projectPinned: false, projectPosition: 0
+  };
+  const historicalV2Raw = JSON.stringify({ version: 3, records: [historicalRecord], projects: [historicalProject], currentId: "doc_historical" });
+  const historicalFallbackValues = new Map([["proofnote-document:library:v2", historicalV2Raw]]);
+  const historicalFallbackWindow = { localStorage: memoryStorage(historicalFallbackValues) };
+  vm.runInNewContext(source, { window: historicalFallbackWindow, JSON, Promise, Date, Error, Math, Map, String, Object, Array, WeakSet });
+  const HistoricalFallback = historicalFallbackWindow.ProofnoteStore;
+  const historicalInitial = await HistoricalFallback.initialiseDocumentLibrary({ metadata: { name: "Unexpected seed" }, blocks: [] });
+  const migratedV3Envelope = JSON.parse(historicalFallbackValues.get("proofnote-document:library:v3") || "null");
+  check(
+    "store-migrates-the-project-envelope-from-v2-to-v3-without-clobbering-projects",
+    historicalInitial.backend === "localStorage"
+      && historicalInitial.record?.id === "doc_historical"
+      && migratedV3Envelope?.version === 3
+      && migratedV3Envelope?.projects?.[0]?.id === "project_historical"
+      && migratedV3Envelope?.records?.[0]?.projectId === "project_historical"
+      && historicalFallbackValues.get("proofnote-document:library:v2") === historicalV2Raw,
+    JSON.stringify({ historicalInitial, migratedV3Envelope, preservedV2: historicalFallbackValues.get("proofnote-document:library:v2") })
+  );
+
+  // The template key is a separate recoverable store. A parse failure must
+  // not look like an empty list that save/delete can overwrite.
+  const corruptTemplateRaw = "{ damaged template JSON";
+  const corruptTemplateValues = new Map([["proofnote-document:templates:v1", corruptTemplateRaw]]);
+  const corruptTemplateWindow = { localStorage: memoryStorage(corruptTemplateValues) };
+  vm.runInNewContext(source, { window: corruptTemplateWindow, JSON, Promise, Date, Error, Math, Map, String, Object, Array, WeakSet });
+  const CorruptTemplates = corruptTemplateWindow.ProofnoteStore;
+  const corruptTemplateList = await CorruptTemplates.listTemplates();
+  const corruptTemplateSave = await CorruptTemplates.saveTemplate({
+    format: "proofnote-template", version: "1.0", template: { id: "should-not-write", name: "Should not write" },
+    document: { format: "proofnote-document", version: "1.0", metadata: { name: "Template" }, blocks: [] }
+  });
+  const corruptTemplateDelete = await CorruptTemplates.deleteTemplate("anything");
+  check(
+    "store-corrupt-fallback-template-data-is-not-treated-as-empty-or-overwritten",
+    Array.isArray(corruptTemplateList)
+      && corruptTemplateList.length === 0
+      && corruptTemplateSave === "failed"
+      && corruptTemplateDelete === "failed"
+      && corruptTemplateValues.get("proofnote-document:templates:v1") === corruptTemplateRaw,
+    JSON.stringify({ corruptTemplateList, corruptTemplateSave, corruptTemplateDelete, stored: corruptTemplateValues.get("proofnote-document:templates:v1") })
   );
 
   // Protocol-specific local identity changes must be applied during the
@@ -254,6 +365,60 @@ async function main() {
       && indexedProjectRecords.projects.some((project) => project.id === indexedProject.project.id),
     JSON.stringify({ indexedProject, indexedAssigned, indexedProjectRecords })
   );
+  const indexedPinnedForBucket = await IndexedLibrary.createDocument({ metadata: { name: "Indexed pinned bucket" }, blocks: [] }, {
+    makeCurrent: false,
+    projectId: indexedProject.project && indexedProject.project.id,
+    projectGroup: "Main",
+    projectPinned: true
+  });
+  const indexedUnpinnedBeforeBucketMove = (await IndexedLibrary.listDocuments()).filter((record) => record.projectId === indexedProject.project.id
+    && record.projectGroup === "Main" && record.projectPinned !== true);
+  const indexedMovedAcrossPinBucket = await IndexedLibrary.assignDocumentToProject(indexedPinnedForBucket.record && indexedPinnedForBucket.record.id, {
+    projectPinned: false
+  }, indexedPinnedForBucket.record && indexedPinnedForBucket.record.revision);
+  const indexedGroupedForBucket = await IndexedLibrary.createDocument({ metadata: { name: "Indexed grouped bucket" }, blocks: [] }, {
+    makeCurrent: false,
+    projectId: indexedProject.project && indexedProject.project.id,
+    projectGroup: "Archive"
+  });
+  const indexedMainBeforeGroupMove = (await IndexedLibrary.listDocuments()).filter((record) => record.projectId === indexedProject.project.id
+    && record.projectGroup === "Main" && record.projectPinned !== true);
+  const indexedMovedAcrossGroupBucket = await IndexedLibrary.assignDocumentToProject(indexedGroupedForBucket.record && indexedGroupedForBucket.record.id, {
+    projectGroup: "Main"
+  }, indexedGroupedForBucket.record && indexedGroupedForBucket.record.revision);
+  check(
+    "store-indexeddb-reallocates-local-position-when-project-group-or-pin-bucket-changes",
+    Boolean(indexedMovedAcrossPinBucket && indexedMovedAcrossPinBucket.record)
+      && indexedMovedAcrossPinBucket.record.projectPosition > Math.max.apply(null, indexedUnpinnedBeforeBucketMove.map((record) => record.projectPosition))
+      && Boolean(indexedMovedAcrossGroupBucket && indexedMovedAcrossGroupBucket.record)
+      && indexedMovedAcrossGroupBucket.record.projectPosition > Math.max.apply(null, indexedMainBeforeGroupMove.map((record) => record.projectPosition)),
+    JSON.stringify({ indexedUnpinnedBeforeBucketMove, indexedMovedAcrossPinBucket, indexedMainBeforeGroupMove, indexedMovedAcrossGroupBucket })
+  );
+  const indexedDisposableProject = await IndexedLibrary.createProject("Indexed disposable Project");
+  const indexedDisposableDocument = await IndexedLibrary.createDocument({ metadata: { name: "Keep indexed document" }, blocks: [] }, {
+    makeCurrent: false,
+    projectId: indexedDisposableProject.project && indexedDisposableProject.project.id,
+    projectGroup: "Main"
+  });
+  const indexedDeletedProject = await IndexedLibrary.deleteProject(
+    indexedDisposableProject.project && indexedDisposableProject.project.id,
+    indexedDisposableProject.project && indexedDisposableProject.project.revision
+  );
+  const indexedDetachedDocument = (await IndexedLibrary.listDocuments()).find((record) => record.id === indexedDisposableDocument.record?.id);
+  const indexedProjectsAfterDelete = await IndexedLibrary.listProjects();
+  check(
+    "store-indexeddb-deleting-a-project-keeps-its-documents-as-unfiled-records",
+    indexedDeletedProject.backend === "indexeddb"
+      && indexedDeletedProject.project?.id === indexedDisposableProject.project?.id
+      && indexedDeletedProject.records.length === 1
+      && indexedDetachedDocument?.projectId === ""
+      && indexedDetachedDocument?.projectGroup === ""
+      && indexedDetachedDocument?.projectPinned === false
+      && indexedDetachedDocument?.projectPosition === 0
+      && !indexedProjectsAfterDelete.projects.some((project) => project.id === indexedDisposableProject.project?.id),
+    JSON.stringify({ indexedDeletedProject, indexedDetachedDocument, indexedProjectsAfterDelete })
+  );
+  await IndexedLibrary.deleteDocument(indexedDisposableDocument.record.id);
 
   const indexedLineageSource = await IndexedLibrary.createDocument({
     metadata: { name: "Indexed lineage source" }, blocks: [],

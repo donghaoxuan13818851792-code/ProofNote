@@ -236,16 +236,17 @@ separately from recent local documents.
 
 A **local Project container** is a navigator and workspace concept, not a new
 portable document type. It has its own local ID, name, timestamps, and local
-revision. A document record may refer to one Project and may carry a local
-group, pinned state, and position for that Project’s tree. These fields live on
-the device-only library record; they are never added to the portable
-`proofnote-document` object.
+revision. A document record may refer to one Project. That membership and the
+local ordering metadata live on the device-only library record; they are never
+added to the portable `proofnote-document` object.
 
-Consequently, moving a document between Projects, grouping it, pinning it, or
-reordering it does not alter the document body, canonical metadata, Editable
-HTML lineage, JSON backup, template payload, or HTML export. A Project’s
-landing page is a local overview of its independent documents. It deliberately
-does not expose a filesystem, arbitrary folders, source files, assets, or an
+Consequently, moving a document between Projects or changing its local order
+does not alter the document body, canonical metadata, Editable HTML lineage,
+JSON backup, template payload, or HTML export. The current UI orders Project
+documents by their most recent edit. Deleting a Project removes only the local
+container and returns its documents to the unfiled library. A Project’s landing
+page is a local overview of its independent documents. It deliberately does
+not expose a filesystem, arbitrary folders, source files, assets, or an
 implicit project-wide AI context.
 
 ## Solution Note compatibility

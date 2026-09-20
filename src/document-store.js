@@ -19,7 +19,11 @@
   // A single envelope makes the localStorage fallback's library mutation
   // atomic at the key level. The two v1 keys remain read-only migration
   // sources; never update them independently after this point.
-  const FALLBACK_LIBRARY = "proofnote-document:library:v2";
+  // Version 3 gained Project containers. Keep its envelope in a new key so a
+  // still-open pre-Project build can write its v2 snapshot without erasing
+  // Project metadata from the newer library.
+  const FALLBACK_LIBRARY_V2 = "proofnote-document:library:v2";
+  const FALLBACK_LIBRARY = "proofnote-document:library:v3";
   // Pick one durable backend for the lifetime of this page. Falling back from
   // a healthy IndexedDB session for one failed write creates two divergent
   // histories, and a later reload would silently prefer the older IndexedDB
@@ -222,15 +226,20 @@
       tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"));
     });
   }
-  function fallbackRead(key, empty) {
-    try { return JSON.parse(root.localStorage.getItem(key) || JSON.stringify(empty)); } catch (_) { return empty; }
-  }
   function fallbackReadChecked(key, empty) {
     try {
       const raw = root.localStorage.getItem(key);
       if (!raw) return { value: empty, valid: true };
       return { value: JSON.parse(raw), valid: true };
     } catch (_) { return { value: empty, valid: false }; }
+  }
+  function fallbackTemplates() {
+    const stored = fallbackReadChecked(FALLBACK_TEMPLATES, []);
+    // A damaged template store is not an empty template store. Callers that
+    // mutate it must fail closed so a save/delete cannot replace the only
+    // remaining recoverable copy with a newly-created empty list.
+    if (!stored.valid || !Array.isArray(stored.value)) return { templates: [], corrupt: true };
+    return { templates: stored.value, corrupt: false };
   }
   function fallbackReadString(key) {
     try { return String(root.localStorage.getItem(key) || ""); } catch (_) { return ""; }
@@ -251,15 +260,38 @@
     } catch (_) { return false; }
   }
   function fallbackLibrary(seedDocument) {
-    const envelope = fallbackReadChecked(FALLBACK_LIBRARY, null);
-    if (!envelope.valid) {
+    const currentEnvelope = fallbackReadChecked(FALLBACK_LIBRARY, null);
+    if (!currentEnvelope.valid) {
       // Never reinterpret damaged library JSON as an empty library and write
       // a seed document over it. Keep the original value untouched so it can
       // be recovered manually or by a future repair flow.
       return { records: [], projects: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
     }
-    const usingEnvelope = envelope.value !== null;
-    const stored = usingEnvelope ? envelope : fallbackReadChecked(FALLBACK_DOCUMENTS, []);
+    let stored = currentEnvelope;
+    let usingEnvelope = currentEnvelope.value !== null;
+    let envelopeMigration = false;
+    if (usingEnvelope && Number(currentEnvelope.value && currentEnvelope.value.version) !== 3) {
+      return { records: [], projects: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+    }
+    if (!usingEnvelope) {
+      const previousEnvelope = fallbackReadChecked(FALLBACK_LIBRARY_V2, null);
+      if (!previousEnvelope.valid) {
+        return { records: [], projects: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+      }
+      if (previousEnvelope.value !== null) {
+        // Accept both historical v2 envelopes and the short-lived v3-shaped
+        // payload written under the old key during the Project rollout.
+        const previousVersion = Number(previousEnvelope.value && previousEnvelope.value.version);
+        if (previousVersion !== 2 && previousVersion !== 3) {
+          return { records: [], projects: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
+        }
+        stored = previousEnvelope;
+        usingEnvelope = true;
+        envelopeMigration = true;
+      } else {
+        stored = fallbackReadChecked(FALLBACK_DOCUMENTS, []);
+      }
+    }
     if (!stored.valid || (usingEnvelope && (!stored.value || typeof stored.value !== "object" || Array.isArray(stored.value) || !Array.isArray(stored.value.records))) || (!usingEnvelope && !Array.isArray(stored.value))) {
       return { records: [], projects: [], current: null, currentId: "", migrated: false, hasLegacy: false, corrupt: true };
     }
@@ -296,7 +328,7 @@
       currentId = current.id;
       return { records, projects, current, currentId, migrated: true, hasLegacy, corrupt: false };
     }
-    return { records, projects, current, currentId, migrated: false, hasLegacy, corrupt: false };
+    return { records, projects, current, currentId, migrated: envelopeMigration, hasLegacy, corrupt: false };
   }
   function persistFallbackLibrary(library, includeLegacy) {
     const saved = fallbackWrite(FALLBACK_LIBRARY, {
@@ -431,6 +463,33 @@
       return { status: "ok", project: clone(project) };
     } finally { db.close(); }
   }
+  async function deleteIndexedProject(id, expectedRevision) {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction(["documents", "projects"], "readwrite");
+      const documents = tx.objectStore("documents");
+      const projects = tx.objectStore("projects");
+      const project = await requestValue(projects.get(id));
+      if (!validProject(project)) { await transactionDone(tx); return { status: "missing", project: null, records: [] }; }
+      if (expectedRevision !== undefined && revisionOf(project) !== expectedRevision) {
+        await transactionDone(tx);
+        return { status: "conflict", project: clone(project), records: [] };
+      }
+      const allRecords = await requestValue(documents.getAll());
+      const affected = (Array.isArray(allRecords) ? allRecords : [])
+        .filter((record) => validRecord(record) && projectMembership(record).projectId === id)
+        .map((record) => membershipRecord(record, {
+          projectId: "",
+          projectGroup: "",
+          projectPinned: false,
+          projectPosition: 0
+        }));
+      affected.forEach((record) => documents.put(clone(record), record.id));
+      projects.delete(id);
+      await transactionDone(tx);
+      return { status: "ok", project: clone(project), records: affected.map(clone) };
+    } finally { db.close(); }
+  }
   function membershipRecord(record, assignment) {
     const previous = projectMembership(record);
     const input = assignment && typeof assignment === "object" ? assignment : {};
@@ -473,7 +532,11 @@
       const requestedGroup = request ? String(assignment && assignment.projectGroup !== undefined ? assignment.projectGroup : projectMembership(existing).projectGroup || "").trim().slice(0, 80) : "";
       const requestedPinned = request && assignment && assignment.projectPinned !== undefined ? assignment.projectPinned === true : projectMembership(existing).projectPinned;
       let requestedPosition = assignment && assignment.projectPosition;
-      if (request && requestedPosition === undefined && projectMembership(existing).projectId !== request) {
+      const previousMembership = projectMembership(existing);
+      const bucketChanged = previousMembership.projectId !== request
+        || previousMembership.projectGroup !== requestedGroup
+        || previousMembership.projectPinned !== requestedPinned;
+      if (request && requestedPosition === undefined && bucketChanged) {
         const records = await requestValue(documents.getAll());
         requestedPosition = nextProjectPosition(Array.isArray(records) ? records : [], request, requestedGroup, requestedPinned);
       }
@@ -751,6 +814,44 @@
         return { project: clone(project), backend: persistFallbackLibrary(library) ? "localStorage" : "failed" };
       }, () => ({ project: null, backend: "failed" }));
     },
+    async deleteProject(id, expectedRevision) {
+      return useStorageSession(async () => {
+        const result = await deleteIndexedProject(id, expectedRevision);
+        return {
+          project: result.project || null,
+          records: result.records || [],
+          backend: result.status === "ok" ? "indexeddb" : result.status
+        };
+      }, () => {
+        const library = fallbackLibrary(null);
+        if (library.corrupt) return { project: null, records: [], backend: "failed" };
+        const index = library.projects.findIndex((project) => project && project.id === id);
+        if (index < 0) return { project: null, records: [], backend: "missing" };
+        const project = library.projects[index];
+        if (expectedRevision !== undefined && revisionOf(project) !== expectedRevision) {
+          return { project: clone(project), records: [], backend: "conflict" };
+        }
+        const affected = [];
+        library.records = library.records.map((record) => {
+          if (projectMembership(record).projectId !== id) return record;
+          const detached = membershipRecord(record, {
+            projectId: "",
+            projectGroup: "",
+            projectPinned: false,
+            projectPosition: 0
+          });
+          affected.push(detached);
+          if (library.currentId === detached.id) library.current = detached;
+          return detached;
+        });
+        library.projects.splice(index, 1);
+        return {
+          project: clone(project),
+          records: affected.map(clone),
+          backend: persistFallbackLibrary(library) ? "localStorage" : "failed"
+        };
+      }, () => ({ project: null, records: [], backend: "failed" }));
+    },
     async assignDocumentToProject(id, assignment, expectedRevision) {
       const next = assignment && typeof assignment === "object" ? assignment : {};
       return useStorageSession(async () => {
@@ -768,7 +869,10 @@
         if (projectId && !library.projects.some((project) => project && project.id === projectId)) return { record: clone(existing), backend: "missing-project" };
         const group = projectId ? String(next.projectGroup === undefined ? previous.projectGroup : next.projectGroup || "").trim().slice(0, 80) : "";
         const pinned = projectId ? (next.projectPinned === undefined ? previous.projectPinned : next.projectPinned === true) : false;
-        const position = projectId && next.projectPosition === undefined && previous.projectId !== projectId
+        const bucketChanged = previous.projectId !== projectId
+          || previous.projectGroup !== group
+          || previous.projectPinned !== pinned;
+        const position = projectId && next.projectPosition === undefined && bucketChanged
           ? nextProjectPosition(library.records, projectId, group, pinned)
           : next.projectPosition;
         const record = membershipRecord(existing, { projectId, projectGroup: group, projectPinned: pinned, projectPosition: position });
@@ -1005,7 +1109,10 @@
         const value = await requestValue(tx.objectStore("templates").getAll());
         await transactionDone(tx); db.close();
         return Array.isArray(value) ? value.map(clone) : [];
-      }, () => fallbackRead(FALLBACK_TEMPLATES, []), () => []);
+      }, () => {
+        const templates = fallbackTemplates();
+        return templates.corrupt ? [] : templates.templates.map(clone);
+      }, () => []);
     },
     async saveTemplate(template) {
       const payload = clone(template);
@@ -1013,7 +1120,9 @@
         await transaction("templates", "readwrite", (objectStore) => objectStore.put(payload));
         return "indexeddb";
       }, () => {
-        const templates = fallbackRead(FALLBACK_TEMPLATES, []).filter((item) => item && item.template && item.template.id !== payload.template.id);
+        const stored = fallbackTemplates();
+        if (stored.corrupt) return "failed";
+        const templates = stored.templates.filter((item) => item && item.template && item.template.id !== payload.template.id);
         templates.push(payload);
         return fallbackWrite(FALLBACK_TEMPLATES, templates) ? "localStorage" : "failed";
       }, "failed");
@@ -1028,7 +1137,9 @@
         // localStorage has no compare-and-set primitive. It remains a
         // single-device fallback, while the primary IndexedDB backend gets a
         // genuine add-if-absent transaction above.
-        const templates = fallbackRead(FALLBACK_TEMPLATES, []);
+        const stored = fallbackTemplates();
+        if (stored.corrupt) return "failed";
+        const templates = stored.templates;
         if (templates.some((item) => item && item.template && item.template.id === id)) return "exists";
         templates.push(payload);
         return fallbackWrite(FALLBACK_TEMPLATES, templates) ? "added" : "failed";
@@ -1041,13 +1152,13 @@
       const nextId = payload && payload.template && String(payload.template.id || "");
       if (!hasPreviousId || !nextId) return "failed";
       return useStorageSession(async () => repairIndexedTemplate(previousId, payload), () => {
-        const templates = fallbackReadChecked(FALLBACK_TEMPLATES, []);
-        if (!templates.valid || !Array.isArray(templates.value)) return "failed";
-        const index = templates.value.findIndex((item) => item && item.template && item.template.id === previousId);
+        const templates = fallbackTemplates();
+        if (templates.corrupt) return "failed";
+        const index = templates.templates.findIndex((item) => item && item.template && item.template.id === previousId);
         if (index < 0) return "missing";
-        if (previousId !== nextId && templates.value.some((item, itemIndex) => itemIndex !== index && item && item.template && item.template.id === nextId)) return "exists";
-        templates.value[index] = payload;
-        return fallbackWrite(FALLBACK_TEMPLATES, templates.value) ? "localStorage" : "failed";
+        if (previousId !== nextId && templates.templates.some((item, itemIndex) => itemIndex !== index && item && item.template && item.template.id === nextId)) return "exists";
+        templates.templates[index] = payload;
+        return fallbackWrite(FALLBACK_TEMPLATES, templates.templates) ? "localStorage" : "failed";
       }, "failed");
     },
     async deleteTemplate(templateId) {
@@ -1055,7 +1166,9 @@
         await transaction("templates", "readwrite", (objectStore) => objectStore.delete(templateId));
         return "indexeddb";
       }, () => {
-        return fallbackWrite(FALLBACK_TEMPLATES, fallbackRead(FALLBACK_TEMPLATES, []).filter((item) => item && item.template && item.template.id !== templateId)) ? "localStorage" : "failed";
+        const templates = fallbackTemplates();
+        if (templates.corrupt) return "failed";
+        return fallbackWrite(FALLBACK_TEMPLATES, templates.templates.filter((item) => item && item.template && item.template.id !== templateId)) ? "localStorage" : "failed";
       }, "failed");
     }
   };

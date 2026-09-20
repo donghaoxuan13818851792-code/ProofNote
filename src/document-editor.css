@@ -142,6 +142,7 @@ body.pn-sidebar-resizing { cursor: col-resize; user-select: none; }
 .pn-document-more-menu { position: absolute; z-index: 24; top: calc(100% + 3px); right: 0; width: 134px; padding: 4px; border: 1px solid color-mix(in srgb, var(--color-divider) 88%, transparent); background: color-mix(in srgb, var(--color-bg) 98%, white); box-shadow: 0 8px 16px rgba(25,23,20,.10); }
 .pn-document-more-item { display: flex; width: 100%; border: 0; padding: 6px; background: transparent; color: var(--color-text); cursor: pointer; font: 400 11px/1.35 var(--pn-ui); text-align: left; }
 .pn-document-more-item:hover { background: color-mix(in srgb, var(--color-text) 5%, transparent); color: var(--color-accent-700); }
+.pn-action-menu-item:disabled,.pn-template-menu-item:disabled { cursor: default; opacity: .42; }
 .pn-document-more-project-trigger { align-items: center; justify-content: space-between; gap: 8px; }
 .pn-document-more-project-arrow { margin-left: auto; color: color-mix(in srgb, var(--color-text) 52%, transparent); font: 16px/1 var(--pn-ui); }
 .pn-document-more-project-trigger[aria-expanded="true"] { background: color-mix(in srgb, var(--color-text) 5%, transparent); color: var(--color-accent-700); }

@@ -178,6 +178,18 @@ const numberedHeadingExport = Model.documentToSolutionNote(Model.blankDocument({
   Model.createBlock("semantic", { kind: "proof", title: "Step", content: "Because." })
 ] }));
 check("document-legacy-export-canonicalizes-editorial-heading-folios", numberedHeadingExport.note.core.whyItWorks.length === 1, JSON.stringify(numberedHeadingExport));
+const bareNumberHeadingExport = Model.documentToSolutionNote(Model.blankDocument({ blocks: [
+  Model.createBlock("heading", { level: 1, content: "20 Why It Works" }),
+  Model.createBlock("semantic", { kind: "proof", title: "A real heading", content: "It must not be reclassified." })
+] }));
+const bareRomanHeadingExport = Model.documentToSolutionNote(Model.blankDocument({ blocks: [
+  Model.createBlock("heading", { level: 1, content: "IV Evidence" }),
+  Model.createBlock("paragraph", { content: "It must not be reclassified either." })
+] }));
+check("document-legacy-export-preserves-bare-number-and-roman-heading-meaning", bareNumberHeadingExport.note.core.whyItWorks.length === 0
+  && bareRomanHeadingExport.note.core.evidence.length === 0
+  && bareNumberHeadingExport.warnings.some((warning) => /20 Why It Works/.test(warning))
+  && bareRomanHeadingExport.warnings.some((warning) => /IV Evidence/.test(warning)), JSON.stringify({ bareNumberHeadingExport, bareRomanHeadingExport }));
 const referencesExport = Model.documentToSolutionNote(Model.blankDocument({ blocks: [
   Model.createBlock("heading", { level: 1, content: "References" }),
   Model.createBlock("paragraph", { content: "Not a legacy reference list" })

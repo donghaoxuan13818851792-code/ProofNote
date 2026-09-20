@@ -10,7 +10,7 @@
   if (!Model || !Store || !Renderer || !LegacyBoundary) return;
 
   // Increment this small, user-facing version for each released workspace update.
-  const APP_VERSION = "v1.44";
+  const APP_VERSION = "v1.47";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Standalone equation", "独立公式"], ["code", "Code", "代码"],
@@ -759,6 +759,7 @@
   }
   function setExportMoreOpen(open, focusFirstItem) {
     if (!els.exportMore || !els.exportMoreMenu) return;
+    if (projectLandingIsOpen()) open = false;
     els.exportMoreMenu.hidden = !open;
     els.exportMore.setAttribute("aria-expanded", String(Boolean(open)));
     if (!open || !focusFirstItem) return;
@@ -767,6 +768,11 @@
   function setTemplateMenuOpen(open) {
     els.templateMenu.hidden = !open;
     els.templateMenuToggle.setAttribute("aria-expanded", String(Boolean(open)));
+  }
+  function requireDocumentAction() {
+    if (!projectLandingIsOpen()) return true;
+    setStatus(tr("项目概览中没有选中的文档；请先打开一份文档。", "Project overview has no selected document. Open a document first."), "warning");
+    return false;
   }
   function closeDocumentMoreMenus(except) {
     if (!els || !els.app) return;
@@ -1336,6 +1342,21 @@
     return documentName(first).localeCompare(documentName(second)) || String(first.id || "").localeCompare(String(second.id || ""));
   }
   function projectById(projectId) { return projects.find((project) => project && project.id === projectId) || null; }
+  function projectLandingIsOpen() { return Boolean(projectLandingId && projectById(projectLandingId)); }
+  function projectCreationContextId() { return projectLandingIsOpen() ? projectLandingId : activeProjectId || ""; }
+  function syncProjectLandingActionAvailability() {
+    const unavailable = projectLandingIsOpen();
+    const reason = unavailable ? tr("请先打开一份文档", "Open a document first") : "";
+    ["pnExportHtml", "pnExportMore", "pnExportEditableHtml", "pnExport", "pnCopyAi", "pnSaveTemplate", "pnExportTemplate"].forEach((id) => {
+      const control = els && els.app ? els.app.querySelector("#" + id) : null;
+      if (!control) return;
+      control.disabled = unavailable;
+      control.setAttribute("aria-disabled", String(unavailable));
+      if (unavailable) control.title = reason;
+      else control.removeAttribute("title");
+    });
+    if (unavailable) setExportMoreOpen(false);
+  }
   function projectDocuments(projectId) {
     return documents.filter((record) => localProjectMembership(record).projectId === projectId).sort(projectDocumentOrder);
   }
@@ -1383,7 +1404,8 @@
       const menu = element("div", { class: "pn-document-more-menu" });
       menu.append(
         button(tr("重命名", "Rename"), "pn-document-more-item", () => requestRenameProject(project)),
-        button(tr("查看概览", "View overview"), "pn-document-more-item", () => showProjectLanding(projectId))
+        button(tr("查看概览", "View overview"), "pn-document-more-item", () => showProjectLanding(projectId)),
+        button(tr("删除项目", "Delete Project"), "pn-document-more-item pn-document-danger", () => requestDeleteProject(project))
       );
       actions.appendChild(menu);
       heading.append(open, actions);
@@ -1505,6 +1527,7 @@
     const open = Boolean(project);
     els.projectLanding.hidden = !open;
     els.docPage.hidden = open;
+    syncProjectLandingActionAvailability();
     if (!open) return;
     const records = projectDocuments(project.id);
     const recent = records.slice(0, 5);
@@ -1546,6 +1569,7 @@
     currentDocumentId = record.id;
     projectLandingId = "";
     activeProjectId = localProjectMembership(record).projectId;
+    syncProjectLandingActionAvailability();
     documentRevisions.set(record.id, Number.isSafeInteger(record.revision) ? record.revision : 0);
     restoreOutlineCollapseState(record.id, false);
     selectedTemplateId = "";
@@ -1669,6 +1693,39 @@
     renderProjectLanding();
     setStatus(tr("项目已重命名", "Project renamed"), "saved");
   }
+  function requestDeleteProject(project) {
+    if (!project || typeof Store.deleteProject !== "function") return;
+    openConfirm({
+      title: tr("删除项目？", "Delete Project?"),
+      message: tr(
+        "将删除“" + project.name + "”这个本地项目容器。其中的文档会保留，并移至未归属文档。此操作不会删除任何文档内容。",
+        "This deletes the local Project container “" + project.name + "”. Its documents will remain and move to Unfiled documents. No document content will be deleted."
+      ),
+      confirmLabel: tr("删除项目", "Delete Project"),
+      onConfirm: () => enqueueDocumentTransition(async (generation) => {
+        const saved = await saveActiveDocumentNow();
+        if (!saveSucceeded(saved)) { reportSaveFailure(saved); return; }
+        if (!transitionIsCurrent(generation)) return;
+        const deleted = await Store.deleteProject(project.id, projectRevisions.get(project.id));
+        if (!deleted || !saveSucceeded(deleted.backend)) {
+          setStatus(deleted && deleted.backend === "conflict"
+            ? tr("项目已在另一标签页更新；请刷新项目列表后重试。", "This Project changed in another tab. Refresh the Project list and try again.")
+            : tr("删除项目失败。", "Could not delete Project."), "error");
+          return;
+        }
+        if (!transitionIsCurrent(generation)) return;
+        projectRevisions.delete(project.id);
+        if (activeProjectId === project.id) activeProjectId = "";
+        if (projectLandingId === project.id) projectLandingId = "";
+        const detached = Array.isArray(deleted.records) ? deleted.records : [];
+        detached.forEach((record) => documentRevisions.set(record.id, Number.isSafeInteger(record.revision) ? record.revision : 0));
+        await refreshDocuments();
+        setStatus(detached.length
+          ? tr("项目已删除；其中的 " + detached.length + " 份文档已移至未归属文档。", "Project deleted; its " + detached.length + " document" + (detached.length === 1 ? " was" : "s were") + " moved to Unfiled documents.")
+          : tr("项目已删除。", "Project deleted."), "saved");
+      })
+    });
+  }
   async function updateDocumentProject(documentId, assignment) {
     const record = documents.find((entry) => entry && entry.id === documentId);
     if (!record || typeof Store.assignDocumentToProject !== "function") return false;
@@ -1683,7 +1740,10 @@
     }
     documentRevisions.set(documentId, Number.isSafeInteger(result.record.revision) ? result.record.revision : 0);
     documents = documents.map((entry) => entry.id === documentId ? result.record : entry);
-    if (documentId === currentDocumentId) activeProjectId = localProjectMembership(result.record).projectId;
+    // A landing page owns the creation context while it is visible. Its
+    // hidden previous document may move elsewhere, but must not silently
+    // redirect the next New/Import/Template action to that destination.
+    if (documentId === currentDocumentId && !projectLandingIsOpen()) activeProjectId = localProjectMembership(result.record).projectId;
     renderProjectLibrary();
     renderDocumentLibrary();
     renderProjectLanding();
@@ -1748,7 +1808,7 @@
       ]
     });
     if (!transitionIsCurrent(generation)) return;
-    const created = await Store.createDocument(project, { makeCurrent: false, projectId: activeProjectId || "" });
+    const created = await Store.createDocument(project, { makeCurrent: false, projectId: projectCreationContextId() });
     if (!created || !created.record || created.backend === "failed") {
       setStatus(tr("新建文档失败。", "Could not create document."), "error");
       return;
@@ -1787,7 +1847,7 @@
     // collisions before the document receives a local identity.
     if (document.metadata.documentType === "Project") prepareImportedProjectDocument(document, null);
     if (!transitionIsCurrent(generation)) return;
-    const created = await Store.createDocument(document, { makeCurrent: false, projectId: activeProjectId || "" });
+    const created = await Store.createDocument(document, { makeCurrent: false, projectId: projectCreationContextId() });
     if (!created || !created.record || created.backend === "failed") { setStatus(tr("无法从模板创建文档。", "Could not create a document from this template."), "error"); return; }
     const finalSaved = await saveActiveDocumentNow();
     if (!saveSucceeded(finalSaved)) { reportSaveFailure(finalSaved); return; }
@@ -1955,6 +2015,7 @@
     });
   }
   async function saveCurrentAsTemplate() {
+    if (!requireDocumentAction()) return;
     const name = root.prompt(tr("模板名称", "Template name"), state.metadata.name || tr("我的模板", "My template"));
     if (!name || !name.trim()) return;
     const template = Model.makeTemplate(state, { name: name.trim(), description: tr("由当前 Proofnote 文档保存", "Saved from the current Proofnote document") });
@@ -4088,6 +4149,7 @@
     return raw.replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/(^-|-$)/g, "").slice(0, 120) || "proofnote-document";
   }
   async function exportDocument() {
+    if (!requireDocumentAction()) return;
     // A backup is only useful when the same Proofnote version can accept it
     // again. Size alone is insufficient: the model also owns aggregate-text,
     // table/render, and equation budgets that an authoring session can reach.
@@ -4105,6 +4167,7 @@
     setStatus(tr("已导出 Document JSON", "Document JSON exported"), "saved");
   }
   async function exportTemplate() {
+    if (!requireDocumentAction()) return;
     const selected = templateById(currentTemplateId());
     const template = Model.normalizeTemplate(selected || Model.makeTemplate(state, { name: state.metadata.name || tr("我的模板", "My template") }));
     const validation = Model.validateTemplateRaw(template);
@@ -4152,6 +4215,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     return isProjectDocument() ? PROJECT_AI_DOCUMENT_INSTRUCTIONS : AI_DOCUMENT_INSTRUCTIONS;
   }
   async function copyAiInstructions() {
+    if (!requireDocumentAction()) return;
     const instructions = aiInstructionsForCurrentDocument();
     try {
       await root.navigator.clipboard.writeText(instructions);
@@ -4282,6 +4346,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     }
   }
   function exportHtml() {
+    if (!requireDocumentAction()) return;
     const html = standaloneHtmlDocument(state, "");
     download(slug() + ".html", html, "text/html");
   }
@@ -4330,6 +4395,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     return true;
   }
   async function exportEditableHtml() {
+    if (!requireDocumentAction()) return;
     const protocol = root.ProofnoteEditableHtml;
     if (!protocol || typeof protocol.build !== "function") {
       setStatus(tr("可编辑 HTML 协议尚未加载；请刷新后重试。", "The Editable HTML protocol has not loaded; refresh and try again."), "error");
@@ -5240,7 +5306,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
       setEditableHtmlImportBusy(true);
       setEditableHtmlImportSummary(tr("正在创建新文档；请稍候。", "Creating a new document; please wait."));
       try {
-        const created = await Store.createDocument(prepared.document, { makeCurrent: false, projectId: activeProjectId || "" });
+        const created = await Store.createDocument(prepared.document, { makeCurrent: false, projectId: projectCreationContextId() });
         if (!created || !created.record || created.backend === "failed") {
           showImportMessage(tr("可编辑 HTML 无法保存到此设备。", "The editable HTML could not be saved on this device."), "error");
           return;
@@ -5410,7 +5476,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     // created Blank Project contributes its display preset to the new record;
     // importing from an established Project must not silently inherit document
     // metadata or otherwise change the imported document's own identity.
-    const importProjectContext = isBlankProjectImportSource() ? projectImportContext() : null;
+    const importProjectContext = !projectLandingIsOpen() && isBlankProjectImportSource() ? projectImportContext() : null;
     const inspected = inspectImportJson(els.importText.value);
     if (inspected.diagnostic) { renderImportDiagnostics(inspected.diagnostic); return; }
     const raw = inspected.raw;
@@ -5513,7 +5579,7 @@ For LaTeX inside prose, return valid JSON: escape every literal backslash. For e
     }
     if (!confirmImportWarnings(warnings, tr("导入文档需要确认", "Document import needs confirmation"))) return;
     if (!transitionIsCurrent(generation)) return;
-    const created = await Store.createDocument(next, { makeCurrent: false, projectId: activeProjectId || "" });
+    const created = await Store.createDocument(next, { makeCurrent: false, projectId: projectCreationContextId() });
     if (!created || !created.record || created.backend === "failed") { showImportMessage(tr("导入文档无法保存到此设备。", "The imported document could not be saved on this device."), "error"); return; }
     const finalSaved = await saveActiveDocumentNow();
     if (!saveSucceeded(finalSaved)) { showImportMessage(tr("导入期间产生的当前文档编辑无法保存；导入文件已保存为新文档，但尚未打开。请先导出当前文档备份。", "Edits to the current document made during import could not be saved. The imported file was saved as a new document but was not opened. Export the current document first."), "error"); return; }

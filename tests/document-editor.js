@@ -181,7 +181,7 @@ async function main() {
       && html.includes('./vendor/prism/prism-python.min.js?v=1.30.0')
       && Boolean(window.ProofnoteRenderer) && Boolean(window.ProofnoteEditableHtml) && Boolean(window.ProofnoteLegacyBoundary)
       && html.includes('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1')
-        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260918-75'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
+        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260919-78'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
     check(
       "editor-document-typography-is-shared",
       [
@@ -421,8 +421,8 @@ async function main() {
     check(
       "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.44"
-        && editorSource.includes('const APP_VERSION = "v1.44";')
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.47"
+        && editorSource.includes('const APP_VERSION = "v1.47";')
         && Boolean(document.querySelector("#pnImportEditableHtml"))
         && Boolean(document.querySelector("#pnExportEditableHtml"))
         && document.querySelector("#pnImportEditableHtml")?.textContent.trim() === "导入可编辑 HTML"
@@ -445,8 +445,8 @@ async function main() {
         && !projectAiInstructionsSource.includes("hardenPortableObjectGraph")
         && legacyBoundarySource.includes("function validateSolutionNote")
         && rendererSource.includes("root.ProofnoteRenderer")
-        && html.indexOf("./src/document-renderer.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260918-75")
-        && html.indexOf("./src/document-legacy-boundary.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260918-75"),
+        && html.indexOf("./src/document-renderer.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260919-78")
+        && html.indexOf("./src/document-legacy-boundary.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260919-78"),
       "reader rendering must not borrow the retired test hook, and legacy hardening must stay in its required boundary module"
     );
     const tableHeaderSource = editorSource.slice(editorSource.indexOf("function setTableHeader"), editorSource.indexOf("function imageFilePicker"));
@@ -1533,7 +1533,7 @@ check(
         && document.querySelector("#pnPageHeader .pn-running-right")?.value === "Project"
         && document.querySelector("#pnFooterName")?.textContent === "当前核心通用结构"
         && /Import as new document|导入为新文档|Import anyway|仍要导入/.test(confirmImport?.textContent || "")
-        && editorSource.includes("const importProjectContext = isBlankProjectImportSource() ? projectImportContext() : null;")
+        && editorSource.includes("const importProjectContext = !projectLandingIsOpen() && isBlankProjectImportSource() ? projectImportContext() : null;")
         && editorSource.includes("function prepareImportedProjectDocument(document, context, excludedDocumentId)")
         && editorSource.includes('next.metadata.documentType = "Project";'),
       JSON.stringify(projectImportState)
@@ -2216,6 +2216,42 @@ check(
     await settle(window, () => document.querySelector("#pnProjectModal")?.hidden === true
       && document.querySelector("#pnProjectLanding")?.hidden === false
       && /Other Project container QA/.test(document.querySelector("#pnProjectLanding")?.textContent || ""), 4000);
+    // A Project landing deliberately keeps the last document in memory so it
+    // can be reopened. Moving that hidden document must neither redirect the
+    // landing's New/Import context nor leave its document-only toolbar actions
+    // pointing at invisible content.
+    const actionControlIds = ["pnExportHtml", "pnExportMore", "pnExportEditableHtml", "pnExport", "pnCopyAi", "pnSaveTemplate", "pnExportTemplate"];
+    const otherProjectContainer = (await window.ProofnoteStore.listProjects()).projects
+      .find((project) => project && project.name === "Other Project container QA");
+    const landingContainedRow = Array.from(document.querySelectorAll("#pnProjects .pn-document-item"))
+      .find((row) => row.dataset.documentId === containedRecord?.id);
+    const landingMoveTrigger = landingContainedRow?.querySelector(".pn-document-more-project-trigger");
+    if (landingMoveTrigger) landingMoveTrigger.click();
+    await settle(window, () => document.querySelector("#pnProjectMoveMenu")?.hidden === false, 2000);
+    const landingMoveDestination = Array.from(document.querySelectorAll("#pnProjectMoveMenu .pn-document-more-project-choice"))
+      .find((choice) => (choice.textContent || "").trim() === "Other Project container QA");
+    if (landingMoveDestination) landingMoveDestination.click();
+    await settle(window, () => document.querySelector("#pnProjectMoveMenu")?.hidden !== false
+      && Array.from(document.querySelectorAll("#pnProjects .pn-project-item")).some((row) => {
+        const label = row.querySelector(".pn-project-open")?.textContent || "";
+        return label.trim() === "Other Project container QA"
+          && Array.from(row.querySelectorAll(".pn-document-item")).some((item) => item.dataset.documentId === containedRecord?.id);
+      }), 4000);
+    const movedContainedRecord = (await window.ProofnoteStore.listDocuments()).find((record) => record && record.id === containedRecord?.id);
+    check(
+      "editor-project-landing-keeps-creation-context-and-disables-hidden-document-actions",
+      Boolean(otherProjectContainer)
+        && movedContainedRecord?.projectId === otherProjectContainer.id
+        && document.querySelector("#pnProjectLanding")?.hidden === false
+        && /Other Project container QA/.test(document.querySelector("#pnProjectLanding")?.textContent || "")
+        && actionControlIds.every((id) => document.querySelector("#" + id)?.disabled === true),
+      JSON.stringify({
+        movedProjectId: movedContainedRecord?.projectId,
+        expectedProjectId: otherProjectContainer?.id,
+        landingHidden: document.querySelector("#pnProjectLanding")?.hidden,
+        disabled: Object.fromEntries(actionControlIds.map((id) => [id, document.querySelector("#" + id)?.disabled]))
+      })
+    );
     const containedOpen = Array.from(document.querySelectorAll("#pnProjects .pn-document-item"))
       .find((row) => row.dataset.documentId === containedRecord?.id)?.querySelector(".pn-document-open");
     if (containedOpen) containedOpen.click();
@@ -2256,7 +2292,38 @@ check(
         && !projectOrderImplementation.includes("projectPosition"),
       JSON.stringify({ menu: containedMenuText, projectOrderSource })
     );
-    const directProjectTrigger = containedRow?.querySelector(".pn-document-more-project-trigger");
+    // While the Other Project landing is visible, create through the landing
+    // itself. This catches the split-state regression where a hidden document
+    // move used to send the next creation to its destination instead.
+    const otherProjectOpen = Array.from(document.querySelectorAll("#pnProjects .pn-project-item"))
+      .find((row) => (row.querySelector(".pn-project-open")?.textContent || "").trim() === "Other Project container QA")
+      ?.querySelector(".pn-project-open");
+    if (otherProjectOpen) otherProjectOpen.click();
+    await settle(window, () => document.querySelector("#pnProjectLanding")?.hidden === false
+      && /Other Project container QA/.test(document.querySelector("#pnProjectLanding")?.textContent || ""), 4000);
+    document.querySelector("#pnProjectLanding .pn-project-landing-new")?.click();
+    await settle(window, () => document.querySelector("#pnNewProjectModal")?.hidden === false);
+    const landingContextName = document.querySelector("#pnNewProjectName");
+    if (landingContextName) landingContextName.value = "Landing context document";
+    document.querySelector("#pnCreateProject")?.click();
+    await settle(window, () => document.querySelector("#pnNewProjectModal")?.hidden === true
+      && document.querySelector("#pnProjectLanding")?.hidden === true
+      && Array.from(document.querySelectorAll("#pnProjects .pn-document-item")).some((row) => /Landing context document/.test(row.textContent || "")), 5000);
+    const landingContextRecord = (await window.ProofnoteStore.listDocuments()).find((record) => record && record.document?.metadata?.name === "Landing context document");
+    check(
+      "editor-project-landing-creates-documents-in-its-visible-project-context",
+      Boolean(landingContextRecord)
+        && landingContextRecord.projectId === otherProjectContainer?.id
+        && actionControlIds.every((id) => document.querySelector("#" + id)?.disabled === false),
+      JSON.stringify({
+        createdProjectId: landingContextRecord?.projectId,
+        expectedProjectId: otherProjectContainer?.id,
+        disabled: Object.fromEntries(actionControlIds.map((id) => [id, document.querySelector("#" + id)?.disabled]))
+      })
+    );
+    const containedRowAfterLanding = Array.from(document.querySelectorAll("#pnProjects .pn-document-item"))
+      .find((row) => row.dataset.documentId === containedRecord?.id);
+    const directProjectTrigger = containedRowAfterLanding?.querySelector(".pn-document-more-project-trigger");
     if (directProjectTrigger) directProjectTrigger.click();
     const directProjectMenu = document.querySelector("#pnProjectMoveMenu");
     check(
@@ -2266,8 +2333,43 @@ check(
         && directProjectMenu.hidden === false
         && directProjectTrigger?.getAttribute("aria-expanded") === "true"
         && /Remove from project|移出项目/.test(directProjectMenu.textContent || "")
-        && /Other Project container QA/.test(directProjectMenu.textContent || ""),
+        && /Project container QA/.test(directProjectMenu.textContent || ""),
       JSON.stringify({ hasModal: Boolean(document.querySelector("#pnMoveDocumentModal")), hasMenu: Boolean(directProjectMenu), menuHidden: directProjectMenu?.hidden, expanded: directProjectTrigger?.getAttribute("aria-expanded"), menuText: directProjectMenu?.textContent })
+    );
+    // Removing a Project must be an explicit, non-destructive action: its
+    // container disappears, while every member document remains available in
+    // Unfiled documents and the currently open member stays editable.
+    const otherProjectRowForDelete = Array.from(document.querySelectorAll("#pnProjects .pn-project-item"))
+      .find((row) => (row.querySelector(".pn-project-open")?.textContent || "").trim() === "Other Project container QA");
+    const otherProjectDeleteOverflow = otherProjectRowForDelete?.querySelector("details.pn-project-more");
+    otherProjectDeleteOverflow?.querySelector("summary")?.click();
+    await settle(window, () => otherProjectDeleteOverflow?.open === true, 2000);
+    const deleteProjectButton = Array.from(otherProjectDeleteOverflow?.querySelectorAll(".pn-document-danger") || [])
+      .find((button) => /Delete Project|删除项目/.test(button.textContent || ""));
+    if (deleteProjectButton) deleteProjectButton.click();
+    await settle(window, () => document.querySelector("#pnConfirmModal")?.hidden === false, 2000);
+    const deleteProjectPrompt = document.querySelector("#pnConfirmCopy")?.textContent || "";
+    document.querySelector("#pnConfirmAccept")?.click();
+    await settle(window, () => !Array.from(document.querySelectorAll("#pnProjects .pn-project-item"))
+      .some((row) => (row.querySelector(".pn-project-open")?.textContent || "").trim() === "Other Project container QA")
+      && Array.from(document.querySelectorAll("#pnDocuments .pn-document-item"))
+        .some((row) => row.dataset.documentId === containedRecord?.id)
+      && Array.from(document.querySelectorAll("#pnDocuments .pn-document-item"))
+        .some((row) => row.dataset.documentId === landingContextRecord?.id), 5000);
+    const recordsAfterProjectDelete = await window.ProofnoteStore.listDocuments();
+    const detachedContained = recordsAfterProjectDelete.find((record) => record?.id === containedRecord?.id);
+    const detachedLandingContext = recordsAfterProjectDelete.find((record) => record?.id === landingContextRecord?.id);
+    check(
+      "editor-project-delete-confirms-and-keeps-member-documents-unfiled",
+      Boolean(deleteProjectButton)
+        && /will remain|会保留|不会删除任何文档内容/.test(deleteProjectPrompt)
+        && !Array.from(document.querySelectorAll("#pnProjects .pn-project-item"))
+          .some((row) => (row.querySelector(".pn-project-open")?.textContent || "").trim() === "Other Project container QA")
+        && detachedContained?.projectId === ""
+        && detachedLandingContext?.projectId === ""
+        && document.querySelector("#pnProjectLanding")?.hidden === true
+        && document.querySelector("#pnDocPage")?.hidden === false,
+      JSON.stringify({ deleteProjectPrompt, detachedContained, detachedLandingContext, landingHidden: document.querySelector("#pnProjectLanding")?.hidden, documentHidden: document.querySelector("#pnDocPage")?.hidden })
     );
     check("editor-no-runtime-errors", runtimeErrors.length === 0, runtimeErrors.join(" | ").slice(0, 500));
   } catch (error) {

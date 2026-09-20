@@ -8,7 +8,7 @@
 const fs = require("fs");
 const path = require("path");
 const nodeCrypto = require("crypto");
-const { JSDOM } = require("jsdom");
+const { JSDOM, VirtualConsole } = require("jsdom");
 
 const root = path.join(__dirname, "..");
 const modelSource = fs.readFileSync(path.join(root, "src", "document-model.js"), "utf8");
@@ -132,6 +132,29 @@ async function main() {
         && built.html.includes("Edit semantic values; preserve semantic identity.")
         && built.html.includes('Do not "clean up", simplify, deduplicate, or reformat Proofnote infrastructure.'),
       built.html.slice(0, Math.max(1000, headClose + 7))
+    );
+
+    // CSS is caller-provided presentation only, but it is still placed in a
+    // raw-text <style> element. HTML end tags are case-insensitive, so a
+    // mixed-case closing tag must stay escaped instead of breaking into page
+    // markup in an exported standalone file.
+    const cssBreakout = await Protocol.build(fixture, {
+      css: "body{color:inherit}</STYLE><script id=\"pn-css-breakout\">window.__pnCssBreakout=true</script>"
+    });
+    // The deliberately hostile CSS is invalid stylesheet syntax after its
+    // escaped raw-text terminator. Keep jsdom from printing that expected CSS
+    // parser warning while we assert it cannot escape into executable markup.
+    const cssBreakoutDom = new JSDOM(cssBreakout.html, {
+      runScripts: "dangerously",
+      virtualConsole: new VirtualConsole()
+    });
+    check(
+      "editable-html-protocol-escapes-case-insensitive-style-end-tags-in-supplied-css",
+      !cssBreakoutDom.window.document.querySelector("#pn-css-breakout")
+        && cssBreakoutDom.window.__pnCssBreakout !== true
+        && cssBreakout.html.includes("<\\/style><script id=\"pn-css-breakout\">")
+        && !cssBreakout.html.includes("</STYLE><script id=\"pn-css-breakout\">"),
+      cssBreakout.html.slice(cssBreakout.html.indexOf("<style>"), cssBreakout.html.indexOf("</head>"))
     );
 
     // The notice helps agents edit safely, but it is not protocol metadata.

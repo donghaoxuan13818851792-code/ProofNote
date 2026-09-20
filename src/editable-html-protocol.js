@@ -672,7 +672,10 @@
     const documentType = string(document.metadata && document.metadata.documentType);
     const presentationClass = documentType === "Project" ? " pn-project-document"
       : (documentType === "Solution Note" ? " pn-proofnote-document" : "");
-    const safeCss = css.split("</style").join("<\\/style");
+    // HTML end tags are ASCII case-insensitive. Escaping only lowercase
+    // `</style` lets a caller-provided `</STYLE>` terminate this raw-text
+    // element and inject markup into the exported standalone file.
+    const safeCss = css.replace(/<\/style/gi, "<\\/style");
     const notice = agentNotice(options).replace(/-->/g, "—>");
     return "<!doctype html><html" + htmlLanguage + "><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"proofnote-format\" content=\"editable-html\"><meta name=\"proofnote-version\" content=\"" + VERSION + "\"><!--\n" + notice + "\n--><meta name=\"proofnote-magic\" content=\"" + MAGIC + "\"><meta name=\"proofnote-document-id\" content=\"" + attr(envelope.documentId) + "\"><meta name=\"proofnote-revision-id\" content=\"" + attr(envelope.revisionId) + "\"><meta name=\"proofnote-html-sha256\" content=\"" + htmlHash + "\"><title>" + escapeHtml(title) + "</title><style>" + safeCss + "</style></head><body><article class=\"pn-document pn-editable-document" + presentationClass + "\" data-pn-document=\"" + MAGIC + "\"><template data-pn-metadata>" + metadata + "</template>" + visibleMetadata + "<main data-pn-blocks>" + blocks + "</main></article>" + sourceMarkup(source, sourceHash) + "</body></html>";
   }

@@ -663,7 +663,12 @@ if (/^data:image\//i.test(source) && source.length > LIMITS.maxImageDataUrlLengt
   // same semantic heading without treating its number as document content.
   function canonicalLegacySectionHeading(value) {
     const source = string(value).trim();
-    const withoutFolio = source.replace(/^\s*(?:(?:\d{1,2}|[ivxlcdm]+)\s*(?:[.)：:]\s*|\s+))/i, "");
+    // Strip only an unambiguous rendered folio. A bare leading number or
+    // Roman-looking word is legitimate document content (for example,
+    // “20 Questions” or “IV Therapy”) and must not change how the legacy
+    // compatibility exporter classifies the section that follows it. Older
+    // padded editor folios such as “03 Why It Works” remain supported.
+    const withoutFolio = source.replace(/^\s*(?:(?:0\d{1,2})\s+|(?:\d{1,2}|i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii|xiii|xiv|xv|xvi|xvii|xviii|xix|xx)\s*(?:[.)]|[：:])\s*)/i, "");
     return withoutFolio.trim().toLowerCase();
   }
 
