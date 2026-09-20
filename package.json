@@ -1,7 +1,7 @@
 {
   "name": "proofnote",
   "version": "3.1.0-rc.1",
-  "description": "Proofnote — structured math, without the JSON pain. An editor, validator and renderer for the Solution Note format.",
+  "description": "A local-first, AI-friendly editor for structured research documents, strict JSON import, and re-importable Editable HTML.",
   "private": true,
   "license": "MIT",
   "scripts": {
