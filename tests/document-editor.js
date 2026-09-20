@@ -55,6 +55,34 @@ function chooseFile(window, input, file) {
   input.dispatchEvent(new window.Event("change", { bubbles: true }));
 }
 
+async function bootReloadedEditor(fallbackLibrary) {
+  const dom = new JSDOM(html, {
+    runScripts: "dangerously",
+    pretendToBeVisual: true,
+    url: "http://localhost/proofnote/"
+  });
+  const window = dom.window;
+  const document = window.document;
+  window.HTMLElement.prototype.scrollIntoView = function () {};
+  Object.defineProperty(window.crypto, "subtle", { configurable: true, value: nodeCrypto.webcrypto.subtle });
+  window.localStorage.setItem("proofnote-document:library:v3", JSON.stringify(fallbackLibrary));
+  window.eval(modelSource);
+  window.eval(storeSource);
+  window.eval(projectAiInstructionsSource);
+  window.eval(rendererSource);
+  window.eval(editableHtmlProtocolSource);
+  window.eval(legacyBoundarySource);
+  const jsoncScript = document.createElement("script");
+  jsoncScript.text = jsoncParserSource;
+  document.head.appendChild(jsoncScript);
+  window.Prism = { manual: true };
+  window.eval(prismSource);
+  prismLanguageSources.forEach((source) => window.eval(source));
+  window.eval(editorSource);
+  const ready = await settle(window, () => Boolean(document.querySelector("#pnDocPage")) && document.querySelector("#pnDocPage").hidden === false);
+  return { dom, window, document, ready };
+}
+
 async function main() {
   const runtimeErrors = [];
   const virtualConsole = new VirtualConsole();
@@ -181,7 +209,23 @@ async function main() {
       && html.includes('./vendor/prism/prism-python.min.js?v=1.30.0')
       && Boolean(window.ProofnoteRenderer) && Boolean(window.ProofnoteEditableHtml) && Boolean(window.ProofnoteLegacyBoundary)
       && html.includes('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1')
-        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=workspace-20260919-78'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
+        && html.indexOf('./vendor/jsonc-parser/jsonc-parser.js?v=3.3.1') < html.indexOf('./src/document-editor.js?v=release-20260920-1'), "document-model.js, document-store.js, renderer, legacy boundary, JSON diagnostics, Prism, and document-editor.js did not all boot in browser load order");
+    const coreRuntimeAssets = [
+      "./src/doc-page.js", "./src/document-editor.css", "./src/document-model.js",
+      "./src/document-store.js", "./src/project-ai-instructions.js", "./src/document-renderer.js",
+      "./src/editable-html-protocol.js", "./src/document-legacy-boundary.js", "./src/document-editor.js"
+    ];
+    const runtimeReleaseStamps = coreRuntimeAssets.map((asset) => {
+      const escaped = asset.replace(/[./-]/g, "\\$&");
+      return html.match(new RegExp(escaped + "\\?v=([^\\\"']+)"))?.[1] || "";
+    });
+    check(
+      "editor-core-runtime-assets-share-one-release-cache-stamp",
+      runtimeReleaseStamps.length === coreRuntimeAssets.length
+        && /^release-\d{8}-\d+$/.test(runtimeReleaseStamps[0] || "")
+        && runtimeReleaseStamps.every((stamp) => stamp === runtimeReleaseStamps[0]),
+      JSON.stringify(Object.fromEntries(coreRuntimeAssets.map((asset, index) => [asset, runtimeReleaseStamps[index]])))
+    );
     check(
       "editor-document-typography-is-shared",
       [
@@ -421,8 +465,8 @@ async function main() {
     check(
       "editor-action-menu-is-file-only",
       !document.querySelector(".pn-wordmark .pn-badge")
-        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.47"
-        && editorSource.includes('const APP_VERSION = "v1.47";')
+        && document.querySelector(".pn-wordmark .pn-app-version")?.textContent === "v1.48"
+        && editorSource.includes('const APP_VERSION = "v1.48";')
         && Boolean(document.querySelector("#pnImportEditableHtml"))
         && Boolean(document.querySelector("#pnExportEditableHtml"))
         && document.querySelector("#pnImportEditableHtml")?.textContent.trim() === "导入可编辑 HTML"
@@ -445,8 +489,8 @@ async function main() {
         && !projectAiInstructionsSource.includes("hardenPortableObjectGraph")
         && legacyBoundarySource.includes("function validateSolutionNote")
         && rendererSource.includes("root.ProofnoteRenderer")
-        && html.indexOf("./src/document-renderer.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260919-78")
-        && html.indexOf("./src/document-legacy-boundary.js?v=workspace-20260917-61") < html.indexOf("./src/document-editor.js?v=workspace-20260919-78"),
+        && html.indexOf("./src/document-renderer.js?v=release-20260920-1") < html.indexOf("./src/document-editor.js?v=release-20260920-1")
+        && html.indexOf("./src/document-legacy-boundary.js?v=release-20260920-1") < html.indexOf("./src/document-editor.js?v=release-20260920-1"),
       "reader rendering must not borrow the retired test hook, and legacy hardening must stay in its required boundary module"
     );
     const tableHeaderSource = editorSource.slice(editorSource.indexOf("function setTableHeader"), editorSource.indexOf("function imageFilePicker"));
@@ -2370,6 +2414,65 @@ check(
         && document.querySelector("#pnProjectLanding")?.hidden === true
         && document.querySelector("#pnDocPage")?.hidden === false,
       JSON.stringify({ deleteProjectPrompt, detachedContained, detachedLandingContext, landingHidden: document.querySelector("#pnProjectLanding")?.hidden, documentHidden: document.querySelector("#pnDocPage")?.hidden })
+    );
+    // Reloads and Project deletions both refresh the local library. Creation
+    // context must be derived from the surviving visible state rather than
+    // from whichever Project was last clicked before that refresh.
+    const contextNow = "2026-09-20T00:00:00.000Z";
+    const contextProjectA = { id: "qa-project-a", name: "QA project A", createdAt: contextNow, updatedAt: contextNow, revision: 1 };
+    const contextProjectB = { id: "qa-project-b", name: "QA project B", createdAt: contextNow, updatedAt: contextNow, revision: 1 };
+    const contextDocument = Model.blankDocument({ name: "Reloaded Project document" });
+    const contextRecord = {
+      id: "qa-project-document", document: contextDocument, createdAt: contextNow, updatedAt: contextNow,
+      lastOpenedAt: contextNow, revision: 1, projectId: contextProjectB.id, projectGroup: "", projectPinned: false, projectPosition: 0
+    };
+    const reloaded = await bootReloadedEditor({ version: 3, records: [contextRecord], projects: [contextProjectA, contextProjectB], currentId: contextRecord.id });
+    let reloadedCreated = null;
+    let afterDeleteCreated = null;
+    let projectADeleted = false;
+    try {
+      reloaded.document.querySelector("#pnNew")?.click();
+      await settle(reloaded.window, () => reloaded.document.querySelector("#pnNewProjectModal")?.hidden === false, 3000);
+      const reloadName = reloaded.document.querySelector("#pnNewProjectName");
+      if (reloadName) reloadName.value = "Created after reload";
+      reloaded.document.querySelector("#pnCreateProject")?.click();
+      await settle(reloaded.window, () => reloaded.document.querySelector("#pnNewProjectModal")?.hidden === true
+        && Array.from(reloaded.document.querySelectorAll(".pn-document-item")).some((row) => /Created after reload/.test(row.textContent || "")), 4000);
+      reloadedCreated = (await reloaded.window.ProofnoteStore.listDocuments()).find((record) => record?.document?.metadata?.name === "Created after reload");
+
+      const projectARow = Array.from(reloaded.document.querySelectorAll("#pnProjects .pn-project-item"))
+        .find((row) => (row.querySelector(".pn-project-open")?.textContent || "").trim() === contextProjectA.name);
+      projectARow?.querySelector(".pn-project-open")?.click();
+      await settle(reloaded.window, () => reloaded.document.querySelector("#pnProjectLanding")?.hidden === false, 3000);
+      const projectAMore = projectARow?.querySelector("details.pn-project-more");
+      projectAMore?.querySelector("summary")?.click();
+      await settle(reloaded.window, () => projectAMore?.open === true, 1500);
+      Array.from(projectAMore?.querySelectorAll(".pn-document-danger") || []).find((control) => /Delete Project|删除项目/.test(control.textContent || ""))?.click();
+      await settle(reloaded.window, () => reloaded.document.querySelector("#pnConfirmModal")?.hidden === false, 1500);
+      reloaded.document.querySelector("#pnConfirmAccept")?.click();
+      await settle(reloaded.window, () => !Array.from(reloaded.document.querySelectorAll("#pnProjects .pn-project-item"))
+        .some((row) => (row.querySelector(".pn-project-open")?.textContent || "").trim() === contextProjectA.name)
+        && reloaded.document.querySelector("#pnProjectLanding")?.hidden === true, 4000);
+      projectADeleted = true;
+
+      reloaded.document.querySelector("#pnNew")?.click();
+      await settle(reloaded.window, () => reloaded.document.querySelector("#pnNewProjectModal")?.hidden === false, 3000);
+      const afterDeleteName = reloaded.document.querySelector("#pnNewProjectName");
+      if (afterDeleteName) afterDeleteName.value = "Created after deleting A";
+      reloaded.document.querySelector("#pnCreateProject")?.click();
+      await settle(reloaded.window, () => reloaded.document.querySelector("#pnNewProjectModal")?.hidden === true
+        && Array.from(reloaded.document.querySelectorAll(".pn-document-item")).some((row) => /Created after deleting A/.test(row.textContent || "")), 4000);
+      afterDeleteCreated = (await reloaded.window.ProofnoteStore.listDocuments()).find((record) => record?.document?.metadata?.name === "Created after deleting A");
+    } finally {
+      reloaded.dom.window.close();
+    }
+    check(
+      "editor-project-creation-context-reconciles-after-reload-and-unrelated-project-deletion",
+      Boolean(reloaded.ready)
+        && reloadedCreated?.projectId === contextProjectB.id
+        && projectADeleted
+        && afterDeleteCreated?.projectId === contextProjectB.id,
+      JSON.stringify({ ready: reloaded.ready, reloadedCreated, projectADeleted, afterDeleteCreated, expectedProjectId: contextProjectB.id })
     );
     check("editor-no-runtime-errors", runtimeErrors.length === 0, runtimeErrors.join(" | ").slice(0, 500));
   } catch (error) {

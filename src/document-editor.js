@@ -10,7 +10,7 @@
   if (!Model || !Store || !Renderer || !LegacyBoundary) return;
 
   // Increment this small, user-facing version for each released workspace update.
-  const APP_VERSION = "v1.47";
+  const APP_VERSION = "v1.48";
   const TYPE_OPTIONS = [
     ["title", "Title", "标题"], ["subtitle", "Subtitle", "副标题"], ["heading", "Heading", "章节标题"],
     ["paragraph", "Paragraph", "正文"], ["equation", "Standalone equation", "独立公式"], ["code", "Code", "代码"],
@@ -1252,8 +1252,7 @@
     projects = Array.isArray(projectLibrary && projectLibrary.projects) ? projectLibrary.projects : [];
     projectRevisions.clear();
     projects.forEach((project) => projectRevisions.set(project.id, Number.isSafeInteger(project.revision) ? project.revision : 0));
-    if (activeProjectId && !projects.some((project) => project.id === activeProjectId)) activeProjectId = "";
-    if (projectLandingId && !projects.some((project) => project.id === projectLandingId)) projectLandingId = "";
+    reconcileProjectContext();
     renderProjectLibrary();
     renderDocumentLibrary();
     renderProjectLanding();
@@ -1342,6 +1341,21 @@
     return documentName(first).localeCompare(documentName(second)) || String(first.id || "").localeCompare(String(second.id || ""));
   }
   function projectById(projectId) { return projects.find((project) => project && project.id === projectId) || null; }
+  function reconcileProjectContext() {
+    // The visible Project landing owns creation/import context. Otherwise the
+    // currently open document owns it. Centralising this after every library
+    // refresh covers startup and asynchronous Project deletion alike, instead
+    // of relying on individual callers to remember a second piece of state.
+    const landing = projectById(projectLandingId);
+    if (landing) {
+      activeProjectId = landing.id;
+      return;
+    }
+    projectLandingId = "";
+    const current = documents.find((record) => record && record.id === currentDocumentId);
+    const projectId = localProjectMembership(current).projectId;
+    activeProjectId = projectById(projectId) ? projectId : "";
+  }
   function projectLandingIsOpen() { return Boolean(projectLandingId && projectById(projectLandingId)); }
   function projectCreationContextId() { return projectLandingIsOpen() ? projectLandingId : activeProjectId || ""; }
   function syncProjectLandingActionAvailability() {
